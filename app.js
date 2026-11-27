@@ -292,7 +292,8 @@ function ensureDayLog(dateStr) {
     state.logs[dateStr] = {
       entries: [],
       sportDone: [],
-      badHabits: { cigarettes: null, vape: null, alcohol: null }
+      badHabits: { cigarettes: null, vape: null, alcohol: null },
+      routines: { creatine: false, skincare: false }
     };
   }
   if (!state.logs[dateStr].badHabits) {
@@ -301,7 +302,34 @@ function ensureDayLog(dateStr) {
   ['cigarettes', 'vape', 'alcohol'].forEach(k => {
     state.logs[dateStr].badHabits[k] = normalizeHabitStatus(state.logs[dateStr].badHabits[k]);
   });
+  if (!state.logs[dateStr].routines) {
+    state.logs[dateStr].routines = { creatine: false, skincare: false };
+  }
+  state.logs[dateStr].routines.creatine = Boolean(state.logs[dateStr].routines.creatine);
+  state.logs[dateStr].routines.skincare = Boolean(state.logs[dateStr].routines.skincare);
   return state.logs[dateStr];
+}
+
+function toggleRoutine(key) {
+  const day = ensureDayLog(state.selectedDate);
+  day.routines[key] = !day.routines[key];
+  saveState();
+  render();
+}
+
+function getRoutineStreak(key) {
+  let streak = 0;
+  const cursor = new Date(state.selectedDate + 'T12:00:00');
+  while (true) {
+    const iso = cursor.toISOString().slice(0, 10);
+    if (state.logs[iso]?.routines?.[key]) {
+      streak++;
+      cursor.setDate(cursor.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+  return streak;
 }
 
 // ---------- NAVIGATION & UI STATE ----------
@@ -1242,15 +1270,27 @@ function renderRecipesTab() {
                   ${Math.round(tot.kcal)} kcal · P ${Math.round(tot.p)}g · C ${Math.round(tot.c)}g · F ${Math.round(tot.f)}g
                 </p>
               </div>
-              <div class="flex gap-1.5 shrink-0">
-                <button onclick="editRecipeById('${rec.id}')" class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200">
-                  Anpassen
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="logRecipeToDay('${rec.id}', 1)" title="Heute loggen" aria-label="Heute loggen"
+                  class="w-8 h-8 flex items-center justify-center rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-400 transition">
+                  <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 5v14M5 12h14"/>
+                  </svg>
                 </button>
-                <button onclick="logRecipeToDay('${rec.id}', 1)" class="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 text-emerald-300 font-medium text-xs">
-                  + Heute loggen
+                <button onclick="editRecipeById('${rec.id}')" title="Rezept anpassen" aria-label="Rezept anpassen"
+                  class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                    <path d="m15 5 4 4"/>
+                  </svg>
                 </button>
-                <button onclick="deleteRecipeById('${rec.id}')" title="Rezept löschen" class="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-400 text-xs">
-                  🗑
+                <button onclick="deleteRecipeById('${rec.id}')" title="Rezept löschen" aria-label="Rezept löschen"
+                  class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-rose-500/15 border border-border hover:border-rose-500/30 text-zinc-400 hover:text-rose-400 transition">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 6h18"/>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                  </svg>
                 </button>
               </div>
             </div>
@@ -1293,6 +1333,9 @@ function renderSearchTab() {
 function renderHabitsTab() {
   const days30 = getLastNDays(30);
   const insights = computeHabitInsights();
+  const todayLog = ensureDayLog(state.selectedDate);
+  const creatineStreak = getRoutineStreak('creatine');
+  const skincareStreak = getRoutineStreak('skincare');
 
   const metricTabs = [
     { id: 'alcohol', label: '🍷 Alkohol' },
@@ -1450,6 +1493,77 @@ function renderHabitsTab() {
             <span class="flex items-center gap-1 text-amber-300"><span class="w-2 h-2 rounded-full bg-amber-400"></span> ${selectedHeatmapMetric === 'sport' ? 'Ruhetag / Offen' : 'Nicht erfasst'}</span>
           </div>
           <span>Letzte 30 Tage</span>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border text-[11px] text-zinc-400">
+          <div class="flex items-center gap-3">
+            <span class="flex items-center gap-1 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-500"></span> ${selectedHeatmapMetric === 'sport' ? 'Absolviert' : 'Clean'}</span>
+            ${selectedHeatmapMetric !== 'sport' ? `<span class="flex items-center gap-1 text-rose-300"><span class="w-2 h-2 rounded-full bg-rose-500"></span> Konsumiert</span>` : ''}
+            <span class="flex items-center gap-1 text-amber-300"><span class="w-2 h-2 rounded-full bg-amber-400"></span> ${selectedHeatmapMetric === 'sport' ? 'Ruhetag / Offen' : 'Nicht erfasst'}</span>
+          </div>
+          <span>Letzte 30 Tage</span>
+        </div>
+      </div>
+
+      <!-- <-- HIER DIE NEUE KARTE EINFÜGEN: -->
+      <div id="sec-routines" class="bg-card border border-border rounded-3xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-sm font-semibold text-white">Routine & Supplements</h2>
+            <p class="text-[11px] text-zinc-400">Tägliche Basics für ${state.selectedDate}</p>
+          </div>
+          <span class="text-[11px] text-zinc-400">
+            ${(todayLog.routines.creatine ? 1 : 0) + (todayLog.routines.skincare ? 1 : 0)}/2 erledigt
+          </span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2.5">
+          <button onclick="toggleRoutine('creatine')"
+            class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
+              todayLog.routines.creatine
+                ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
+                : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800/80'
+            }">
+            <div class="min-w-0">
+              <div class="text-xs font-semibold truncate">Kreatin</div>
+              <div class="text-[11px] mt-0.5 ${todayLog.routines.creatine ? 'text-emerald-400' : 'text-zinc-500'}">
+                ${creatineStreak > 0 ? `${creatineStreak}d Streak` : 'Heute offen'}
+              </div>
+            </div>
+            <div class="w-7 h-7 rounded-xl flex items-center justify-center shrink-0 border ${
+              todayLog.routines.creatine
+                ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
+                : 'bg-zinc-950/60 border-border text-zinc-500'
+            }">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6 9 17l-5-5"/>
+              </svg>
+            </div>
+          </button>
+
+          <button onclick="toggleRoutine('skincare')"
+            class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
+              todayLog.routines.skincare
+                ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
+                : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800/80'
+            }">
+            <div class="min-w-0">
+              <div class="text-xs font-semibold truncate">Skincare</div>
+              <div class="text-[11px] mt-0.5 ${todayLog.routines.skincare ? 'text-emerald-400' : 'text-zinc-500'}">
+                ${skincareStreak > 0 ? `${skincareStreak}d Streak` : 'Heute offen'}
+              </div>
+            </div>
+            <div class="w-7 h-7 rounded-xl flex items-center justify-center shrink-0 border ${
+              todayLog.routines.skincare
+                ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
+                : 'bg-zinc-950/60 border-border text-zinc-500'
+            }">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6 9 17l-5-5"/>
+              </svg>
+            </div>
+          </button>
         </div>
       </div>
 
