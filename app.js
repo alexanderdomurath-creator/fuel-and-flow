@@ -564,6 +564,34 @@ function deleteDayEntry(entryId) {
   render();
 }
 
+function saveDayEntryAsRecipe(entryId) {
+  const log = ensureDayLog(state.selectedDate);
+  const entry = log.entries.find(e => e.id === entryId);
+  if (!entry) return;
+
+  const cleanName = String(entry.name || 'Mahlzeit').replace(/^✨\s*/, '').trim();
+  const now = Date.now();
+
+  state.recipes.unshift({
+    id: 'rec_' + now,
+    name: cleanName,
+    items: [
+      {
+        id: 'it_' + now,
+        name: cleanName,
+        grams: 100,
+        kcal100: Math.round(Number(entry.kcal) || 0),
+        p100: Math.round((Number(entry.p) || 0) * 10) / 10,
+        c100: Math.round((Number(entry.c) || 0) * 10) / 10,
+        f100: Math.round((Number(entry.f) || 0) * 10) / 10
+      }
+    ]
+  });
+
+  saveState();
+  switchTab('recipes');
+}
+
 // ---------- GEWICHTS- & KALORIEN-VERLAUFSCHART ----------
 function setChartRange(days) {
   chartRangeDays = days;
@@ -873,11 +901,14 @@ function renderDashboard() {
         <div class="space-y-1.5 pt-1 border-t border-border">
           ${log.entries.map(e => `
             <div class="flex items-center justify-between text-xs py-1.5 px-2 rounded-xl bg-zinc-900/50">
-              <div>
+              <div class="min-w-0 pr-2">
                 <span class="font-medium text-zinc-200">${e.name}</span>
                 <span class="text-zinc-500 ml-2">${e.kcal} kcal · P ${e.p}g</span>
               </div>
-              <button onclick="deleteDayEntry('${e.id}')" class="text-zinc-500 hover:text-rose-400 px-1.5">✕</button>
+              <div class="flex items-center gap-1 shrink-0">
+                <button onclick="saveDayEntryAsRecipe('${e.id}')" title="Als Rezept speichern" class="text-zinc-400 hover:text-emerald-400 px-1.5">📖</button>
+                <button onclick="deleteDayEntry('${e.id}')" title="Eintrag löschen" class="text-zinc-500 hover:text-rose-400 px-1.5">✕</button>
+              </div>
             </div>
           `).join('')}
         </div>
