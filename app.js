@@ -797,7 +797,8 @@ function renderWeightCalorieChart() {
   const minW = Math.min(...weights) - 0.4;
   const maxW = Math.max(...weights) + 0.4;
   const spanW = Math.max(0.5, maxW - minW);
-  const maxKcal = Math.max(state.calorieGoal * 1.15, ...series.map(s => s.kcal), 2500);
+  const chartBaseGoal = getDynamicCalorieTarget(state.selectedDate).total;
+  const maxKcal = Math.max(chartBaseGoal * 1.15, ...series.map(s => s.kcal), 2500);
 
   const W = 560, H = 175;
   const padL = 34, padR = 12, padT = 16, padB = 24;
@@ -811,7 +812,7 @@ function renderWeightCalorieChart() {
   const getKcalH = (k) => (k / maxKcal) * (plotH * 0.75);
 
   const linePoints = series.map((s, idx) => `${getX(idx).toFixed(1)},${getWeightY(s.weight).toFixed(1)}`).join(' ');
-  const goalY = padT + plotH - getKcalH(state.calorieGoal);
+  const goalY = padT + plotH - getKcalH(chartBaseGoal);
 
   const activePoint = series.find(s => s.dateStr === selectedChartDate) || series[series.length - 1];
   const labelInterval = chartRangeDays === 7 ? 1 : (chartRangeDays === 14 ? 2 : 5);
@@ -915,6 +916,56 @@ function render() {
   else if (currentTab === 'habits') container.innerHTML = renderHabitsTab();
 }
 
+// ---------- DYNAMISCHES KALORIENZIEL ----------
+function getLatestWeightKg() {
+  if (!Array.isArray(state.weightHistory) || state.weightHistory.length === 0) return 74.0;
+  const sorted = [...state.weightHistory].sort((a, b) => a.date.localeCompare(b.date));
+  const last = sorted[sorted.length - 1];
+  return Number(last.weight) > 0 ? Number(last.weight) : 74.0;
+}
+
+function getSportActivityKcal(sportName, weightKg) {
+  const name = String(sportName || '').toLowerCase();
+  // Durchschnittswerte für ca. 60 Min. Training (Mann, 1,75 m, gewichtsabhängig nach MET)
+  if (name.includes('jogg') || name.includes('lauf') || name.includes('run')) {
+    return Math.round(8.5 * weightKg); // ~630 kcal bei 74 kg
+  }
+  if (name.includes('gym') || name.includes('kraft') || name.includes('weight') || name.includes('fitness')) {
+    return Math.round(5.0 * weightKg); // ~370 kcal bei 74 kg
+  }
+  return Math.round(6.0 * weightKg);   // ~445 kcal bei 74 kg für sonstige Aktivitäten
+}
+
+function getDynamicCalorieTarget(dateStr = state.selectedDate) {
+  const weightKg = getLatestWeightKg();
+  const heightCm = 175;
+  const age = 36;
+
+  // Mifflin-St Jeor Grundumsatz (Mann) + Alltagsfaktor 1,35 (Remote/Büro ohne Sport)
+  const bmr = 10 * weightKg + 6.25 * heightCm - 5 * age + 5;
+  const baseTdee = Math.round(bmr * 1.35);
+
+  const log = state.logs[dateStr];
+  const doneIds = Array.isArray(log?.sportDone) ? log.sportDone : [];
+  let sportBonus = 0;
+
+  doneIds.forEach(id => {
+    const habit = state.sportHabits.find(h => h.id === id);
+    sportBonus += getSportActivityKcal(habit ? habit.name : '', weightKg);
+  });
+
+  const offset = Number(state.calorieOffset) || 0;
+  const total = Math.max(1200, baseTdee + sportBonus + offset);
+
+  return {
+    total,
+    baseTdee,
+    sportBonus,
+    offset,
+    weightKg
+  };
+}
+
 function renderDashboard() {
   const log = ensureDayLog(state.selectedDate);
   const totals = log.entries.reduce((a, e) => {
@@ -925,7 +976,9 @@ function renderDashboard() {
     return a;
   }, { kcal: 0, p: 0, c: 0, f: 0 });
 
-  const kcalPct = Math.min(100, Math.round((totals.kcal / state.calorieGoal) * 100));
+  const dynTarget = getDynamicCalorieTarget(state.selectedDate);
+  const effectiveCalorieGoal = dynTarget.total;
+  const kcalPct = Math.min(100, Math.round((totals.kcal / effectiveCalorieGoal) * 100));
   const days7 = getLast7Days();
   const creatineStreak = getRoutineStreak('creatine');
   const skincareStreak = getRoutineStreak('skincare');
@@ -1026,7 +1079,10 @@ function renderDashboard() {
           <h2 class="text-xs uppercase tracking-wider text-zinc-400 font-semibold">Tagesbilanz</h2>
           <div class="mt-1 flex items-baseline gap-2">
             <span class="text-2xl font-bold text-white">${Math.round(totals.kcal)}</span>
-            <span class="text-xs text-zinc-400">/ ${state.calorieGoal} kcal</span>
+            <span class="text-xs text-zinc-400">/ ${effectiveCalorieGoal} kcal</span>
+          </div>
+          <div class="text-[11px] text-zinc-500 mt-0.5">
+            ${dynTarget.weightKg.toFixed(1)} kg · Basis ${dynTarget.baseTdee}${dynTarget.sportBonus > 0 ? ` + ${dynTarget.sportBonus} Sport` : ''}${dynTarget.offset !== 0 ? ` (${dynTarget.offset > 0 ? '+' : ''}${dynTarget.offset} Ziel)` : ''}
           </div>
         </div>
         <div class="flex gap-1.5">
@@ -2285,8 +2341,8 @@ function openGoalModal() {
       </div>
       <div class="grid grid-cols-2 gap-2.5">
         <div>
-          <label class="text-[11px] text-zinc-400">Kalorien (kcal)</label>
-          <input id="g-kcal" type="number" value="${state.calorieGoal}" class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white" />
+          <label class="text-[11px] text-zinc-400">Ziel-Offset (kcal zur dynamischen Basis ${getDynamicCalorieTarget(getTodayStr()).baseTdee} kcal)</label>
+          <input id="g-offset" type="number" step="50" value="${Number(state.calorieOffset) || 0}" placeholder="0 = Erhalt, -300 = Defizit" class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white" />
         </div>
         <div>
           <label class="text-[11px] text-zinc-400">Protein (g)</label>
@@ -2309,7 +2365,8 @@ function openGoalModal() {
 }
 
 function saveGoals() {
-  state.calorieGoal = Number(document.getElementById('g-kcal').value) || 2400;
+  state.calorieOffset = Number(document.getElementById('g-offset').value) || 0;
+  state.calorieGoal = getDynamicCalorieTarget(state.selectedDate).total;
   state.proteinGoal = Number(document.getElementById('g-p').value) || 160;
   state.carbsGoal = Number(document.getElementById('g-c').value) || 260;
   state.fatGoal = Number(document.getElementById('g-f').value) || 75;
