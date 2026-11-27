@@ -154,9 +154,9 @@ function buildInitialState() {
       { id: 'sp_surf', name: 'Surfen / Mobility' }
     ],
     weightHistory: [
-      { date: getPastDateStr(14), weight: 74.6, bodyFat: 16.4, muscle: 59.1 },
-      { date: getPastDateStr(7), weight: 74.2, bodyFat: 16.1, muscle: 59.3 },
-      { date: today, weight: 74.0, bodyFat: 15.9, muscle: 59.4 }
+      { date: getPastDateStr(14), weight: 74.6, bodyFat: 16.4, muscle: 59.1, bioAge: 35 },
+      { date: getPastDateStr(7), weight: 74.2, bodyFat: 16.1, muscle: 59.3, bioAge: 34 },
+      { date: today, weight: 74.0, bodyFat: 15.9, muscle: 59.4, bioAge: 34 }
     ],
     logs
   };
@@ -208,7 +208,6 @@ let navHistory = ['dashboard'];
 let editingRecipe = null;
 let searchResultsCache = [];
 let selectedHeatmapMetric = 'alcohol'; // 'alcohol' | 'nicotine' | 'sport'
-
 let chartRangeDays = 14; // 7 | 14 | 30
 let selectedChartDate = null;
 
@@ -565,7 +564,7 @@ function deleteDayEntry(entryId) {
   render();
 }
 
-// ---------- FEATURE 1: GEWICHTS- & KALORIEN-VERLAUFSCHART ----------
+// ---------- GEWICHTS- & KALORIEN-VERLAUFSCHART ----------
 function setChartRange(days) {
   chartRangeDays = days;
   selectedChartDate = null;
@@ -584,7 +583,6 @@ function renderWeightCalorieChart() {
     .sort((a, b) => a.date.localeCompare(b.date))
     .forEach(w => { weightMap[w.date] = Number(w.weight); });
 
-  // Letztes bekanntes Gewicht vor dem Zeitfenster als Ausgangswert ermitteln
   const priorWeights = [...state.weightHistory]
     .filter(w => w.date < days[0].dateStr)
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -655,16 +653,12 @@ function renderWeightCalorieChart() {
       </div>
 
       <svg viewBox="0 0 ${W} ${H}" class="w-full h-44 overflow-visible select-none">
-        <!-- Y-Achsen-Hilfslinien Gewicht -->
         <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#27272a" stroke-dasharray="3 3" />
         <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="#27272a" />
         <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" fill="#71717a" font-size="9">${maxW.toFixed(1)}</text>
         <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="#71717a" font-size="9">${minW.toFixed(1)}</text>
-
-        <!-- Kalorienziel-Referenzlinie -->
         <line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" stroke="#0ea5e9" stroke-opacity="0.35" stroke-dasharray="4 4" />
 
-        <!-- Kalorienbalken -->
         ${series.map((s, idx) => {
           const x = getX(idx);
           const bh = getKcalH(s.kcal);
@@ -681,10 +675,8 @@ function renderWeightCalorieChart() {
           `;
         }).join('')}
 
-        <!-- Gewichtslinie -->
         <polyline fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${linePoints}" />
 
-        <!-- Datenpunkte -->
         ${series.map((s, idx) => {
           const x = getX(idx);
           const y = getWeightY(s.weight);
@@ -750,7 +742,7 @@ function renderDashboard() {
   const days7 = getLast7Days();
 
   const sortedW = [...state.weightHistory].sort((a, b) => a.date.localeCompare(b.date));
-  const latestW = sortedW[sortedW.length - 1] || { weight: 74.0, bodyFat: 15.9, muscle: 59.4, date: getTodayStr() };
+  const latestW = sortedW[sortedW.length - 1] || { weight: 74.0, bodyFat: 15.9, muscle: 59.4, bioAge: 34, date: getTodayStr() };
   const prevW = sortedW.length > 1 ? sortedW[sortedW.length - 2] : latestW;
   const deltaW = Math.round((latestW.weight - prevW.weight) * 10) / 10;
 
@@ -933,7 +925,6 @@ function renderDashboard() {
         </button>
       </div>
 
-      <!-- Farblegende -->
       <div class="flex flex-wrap items-center gap-3 text-[11px] px-1">
         <span class="flex items-center gap-1.5 text-emerald-300">
           <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span> Clean
@@ -946,10 +937,8 @@ function renderDashboard() {
         </span>
       </div>
 
-      <!-- Alkohol -->
       ${renderConsumptionRow('alcohol', '🍷 Alkohol', '7-Tage-Übersicht')}
 
-      <!-- Nikotin Überbereich mit Zigaretten & Vape -->
       <div class="border border-border rounded-2xl p-3.5 bg-zinc-950/50 space-y-3">
         <div class="flex items-center justify-between">
           <span class="text-xs font-semibold uppercase tracking-wider text-zinc-300">💨 Nikotin</span>
@@ -971,18 +960,21 @@ function renderDashboard() {
           <h2 class="text-sm font-semibold text-white">Gewicht & Körperwerte (FitDays)</h2>
           <p class="text-[11px] text-zinc-400">Aktueller Stand & CSV-Sync</p>
         </div>
-        <div class="flex gap-1.5">
+       <div class="flex gap-1.5">
           <label class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 cursor-pointer">
             FitDays CSV
             <input type="file" accept=".csv" onchange="importFitDaysCsv(event)" class="hidden" />
           </label>
+          <button onclick="openBulkWeightModal()" class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 border border-border">
+            30T-Pflege
+          </button>
           <button onclick="openWeightModal()" class="px-2.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-xs font-medium">
             + Gewicht
           </button>
         </div>
       </div>
 
-      <div class="grid grid-cols-3 gap-2.5">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
         <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
           <div class="text-[11px] text-zinc-400">Aktuelles Gewicht</div>
           <div class="text-lg font-bold text-white mt-0.5">${latestW.weight.toFixed(1)} kg</div>
@@ -1000,9 +992,15 @@ function renderDashboard() {
           <div class="text-lg font-bold text-zinc-100 mt-0.5">${latestW.muscle ? latestW.muscle.toFixed(1) + ' kg' : '—'}</div>
           <div class="text-[11px] text-zinc-500">Stand ${latestW.date.slice(5)}</div>
         </div>
+        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
+          <div class="text-[11px] text-zinc-400">Bio-Alter</div>
+          <div class="text-lg font-bold text-emerald-400 mt-0.5">${latestW.bioAge ? latestW.bioAge + ' J.' : '—'}</div>
+          <div class="text-[11px] text-zinc-500">Stoffwechsel</div>
+        </div>
       </div>
-    ${renderWeightCalorieChart()}
-      </section>
+
+      ${renderWeightCalorieChart()}
+    </section>
   `;
 }
 
@@ -1042,7 +1040,6 @@ function renderRecipesTab() {
           </div>
         </div>
 
-        <!-- Zutatenliste -->
         <div class="space-y-2">
           <div class="text-xs font-semibold text-zinc-300">Zutaten (${editingRecipe.items.length})</div>
           ${editingRecipe.items.map((it, idx) => `
@@ -1064,7 +1061,6 @@ function renderRecipesTab() {
           `).join('')}
         </div>
 
-        <!-- Zutat per Live-Suche hinzufügen -->
         <div class="pt-2 border-t border-border space-y-2">
           <div class="text-xs font-semibold text-zinc-300">Zutat aus Live-Datenbank hinzufügen</div>
           <div class="flex gap-2">
@@ -1247,7 +1243,6 @@ function renderHabitsTab() {
 
   return `
     <div class="space-y-4">
-      <!-- 30-Tage-Heatmap -->
       <div id="sec-heatmap" class="bg-card border border-border rounded-3xl p-4 space-y-3.5">
         <div class="flex items-start justify-between gap-2">
           <div>
@@ -1262,7 +1257,6 @@ function renderHabitsTab() {
           </div>
         </div>
 
-        <!-- Kategorie-Filter auf einer Ebene (Alkohol | Nikotin | Sport) -->
         <div class="grid grid-cols-3 gap-1.5">
           ${metricTabs.map(t => `
             <button onclick="setHeatmapMetric('${t.id}')"
@@ -1276,12 +1270,10 @@ function renderHabitsTab() {
           `).join('')}
         </div>
 
-        <!-- Übergeordnetes 30-Tage-Raster -->
         <div class="pt-1">
           ${renderHeatmapGrid(selectedHeatmapMetric, false)}
         </div>
 
-        <!-- Zusätzliche 30-Tage-Unterpunkte für Zigaretten & Vape bei ausgewähltem Nikotin-Tab -->
         ${selectedHeatmapMetric === 'nicotine' ? `
           <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-3.5">
             <div class="flex items-center justify-between">
@@ -1289,7 +1281,6 @@ function renderHabitsTab() {
               <span class="text-[10px] text-zinc-500">✕ oben = Zigaretten oder Vape</span>
             </div>
 
-            <!-- Unterpunkt Zigaretten -->
             <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">🚬 Zigaretten</span>
@@ -1302,7 +1293,6 @@ function renderHabitsTab() {
               ${renderHeatmapGrid('cigarettes', true)}
             </div>
 
-            <!-- Unterpunkt Vape -->
             <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">💨 Vape</span>
@@ -1317,7 +1307,6 @@ function renderHabitsTab() {
           </div>
         ` : ''}
 
-        <!-- Kompakte Legende -->
         <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border text-[11px] text-zinc-400">
           <div class="flex items-center gap-3">
             <span class="flex items-center gap-1 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-500"></span> ${selectedHeatmapMetric === 'sport' ? 'Absolviert' : 'Clean'}</span>
@@ -1328,7 +1317,6 @@ function renderHabitsTab() {
         </div>
       </div>
 
-      <!-- Habit-Korrelations-Insights -->
       <div id="sec-insights" class="bg-card border border-border rounded-3xl p-4 space-y-3">
         <div>
           <h2 class="text-sm font-semibold text-white">Habit-Korrelations-Insights</h2>
@@ -1349,7 +1337,6 @@ function renderHabitsTab() {
         </div>
       </div>
 
-      <!-- Sport & Bewegung verwalten -->
       <div id="sec-sport" class="bg-card border border-border rounded-3xl p-4 space-y-3">
         <h2 class="text-sm font-semibold text-white">Sport & Bewegung verwalten</h2>
         <div class="flex gap-2">
@@ -1369,7 +1356,6 @@ function renderHabitsTab() {
         </div>
       </div>
 
-      <!-- Konsum & Verzicht Streaks -->
       <div id="sec-konsum" class="bg-card border border-border rounded-3xl p-4 space-y-3">
         <h2 class="text-sm font-semibold text-white">Konsum & Verzicht Übersicht</h2>
         <p class="text-xs text-zinc-400">Aktive Bereiche: <strong>Alkohol</strong> sowie <strong>Nikotin</strong> (gebündelt aus <strong>Zigaretten</strong> und <strong>Vape</strong>).</p>
@@ -1391,11 +1377,7 @@ function renderHabitsTab() {
 
 // ---------- RECIPE BUILDER ACTIONS ----------
 function startNewRecipe() {
-  editingRecipe = {
-    id: 'rec_' + Date.now(),
-    name: 'Neues Rezept',
-    items: []
-  };
+  editingRecipe = { id: 'rec_' + Date.now(), name: 'Neues Rezept', items: [] };
   render();
 }
 
@@ -1532,18 +1514,30 @@ function importFitDaysCsv(event) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = (e) => {
-    const lines = String(e.target.result || '').split(/\r?\n/).filter(Boolean);
+const lines = String(e.target.result || '').split(/\r?\n/).filter(Boolean);
+
+    if (lines.length < 2) return;
+    const headers = lines[0].split(/[,;]/).map(h => h.replace(/"/g, '').trim().toLowerCase());
+    const findIdx = (keywords) => headers.findIndex(h => keywords.some(k => h.includes(k)));
+
+    const idxDate = findIdx(['time', 'date', 'datum', 'zeit']);
+    const idxWeight = findIdx(['weight', 'gewicht']);
+    const idxBf = findIdx(['body fat', 'fat', 'körperfett', 'fett']);
+    const idxMuscle = findIdx(['muscle', 'muskel']);
+    const idxAge = findIdx(['age', 'alter', 'metabolic']);
+
     let imported = 0;
     lines.slice(1).forEach(line => {
       const cols = line.split(/[,;]/).map(c => c.replace(/"/g, '').trim());
-      const weightVal = cols.map(Number).find(n => n > 35 && n < 250);
-      const dateMatch = cols.find(c => /\d{4}-\d{2}-\d{2}/.test(c));
+      const weightVal = idxWeight >= 0 ? Number(cols[idxWeight]) : cols.map(Number).find(n => n > 35 && n < 250);
+      const dateRaw = idxDate >= 0 ? cols[idxDate] : cols.find(c => /\d{4}-\d{2}-\d{2}/.test(c));
       if (weightVal) {
         state.weightHistory.push({
-          date: dateMatch ? dateMatch.slice(0, 10) : getTodayStr(),
+          date: dateRaw && /\d{4}-\d{2}-\d{2}/.test(dateRaw) ? dateRaw.slice(0, 10) : getTodayStr(),
           weight: weightVal,
-          bodyFat: null,
-          muscle: null
+          bodyFat: idxBf >= 0 ? (Number(cols[idxBf]) || null) : null,
+          muscle: idxMuscle >= 0 ? (Number(cols[idxMuscle]) || null) : null,
+          bioAge: idxAge >= 0 ? (Number(cols[idxAge]) || null) : null
         });
         imported++;
       }
@@ -1620,39 +1614,185 @@ function submitQuickManualEntry() {
 }
 
 function openWeightModal() {
+  const sortedW = [...state.weightHistory].sort((a, b) => a.date.localeCompare(b.date));
+  const last = sortedW[sortedW.length - 1] || { weight: 74.0, bodyFat: '', muscle: '', bioAge: '' };
+  const existingToday = state.weightHistory.find(w => w.date === state.selectedDate);
+  const prefill = existingToday || last;
+
   openModal(`
-    <div class="space-y-4">
+    <form onsubmit="event.preventDefault(); saveWeightEntry();" class="space-y-4">
       <div class="flex items-center justify-between">
-        <h3 class="text-base font-semibold text-white">Gewicht eintragen</h3>
-        <button onclick="closeModal()" class="text-zinc-400 hover:text-white">✕</button>
+        <h3 class="text-base font-semibold text-white">Körperwerte eintragen</h3>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white">✕</button>
       </div>
-      <div class="grid grid-cols-3 gap-2">
+      <div>
+        <label class="text-[11px] text-zinc-400">Datum der Messung</label>
+        <input id="w-date" type="date" value="${state.selectedDate}" required
+          class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white focus:outline-none focus:border-emerald-500" />
+      </div>
+      <div class="grid grid-cols-2 gap-2.5">
         <div>
           <label class="text-[11px] text-zinc-400">Gewicht (kg)</label>
-          <input id="w-val" type="number" step="0.1" value="74.0" class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white" />
+          <input id="w-val" type="number" step="0.1" value="${prefill.weight || 74.0}" required
+            class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white focus:outline-none focus:border-emerald-500" />
         </div>
         <div>
           <label class="text-[11px] text-zinc-400">Körperfett (%)</label>
-          <input id="w-bf" type="number" step="0.1" placeholder="15.9" class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white" />
+          <input id="w-bf" type="number" step="0.1" value="${existingToday?.bodyFat || ''}" placeholder="${last.bodyFat || '15.9'}"
+            class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white focus:outline-none focus:border-emerald-500" />
         </div>
         <div>
-          <label class="text-[11px] text-zinc-400">Muskel (kg)</label>
-          <input id="w-mu" type="number" step="0.1" placeholder="59.4" class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white" />
+          <label class="text-[11px] text-zinc-400">Muskelmasse (kg)</label>
+          <input id="w-mu" type="number" step="0.1" value="${existingToday?.muscle || ''}" placeholder="${last.muscle || '59.4'}"
+            class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white focus:outline-none focus:border-emerald-500" />
+        </div>
+        <div>
+          <label class="text-[11px] text-zinc-400">Biologisches Alter (Jahre)</label>
+          <input id="w-age" type="number" step="1" min="10" max="110" value="${existingToday?.bioAge || ''}" placeholder="${last.bioAge || '34'}"
+            class="w-full mt-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-sm text-white focus:outline-none focus:border-emerald-500" />
         </div>
       </div>
-      <button onclick="saveWeightEntry()" class="w-full py-2.5 rounded-2xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
-        Speichern
+      <button type="submit" class="w-full py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+        Speichern (Enter)
       </button>
-    </div>
+    </form>
   `);
+
+  setTimeout(() => {
+    const inp = document.getElementById('w-val');
+    if (inp) { inp.focus(); inp.select(); }
+  }, 40);
 }
 
 function saveWeightEntry() {
-  const weight = Number(document.getElementById('w-val').value);
-  const bodyFat = Number(document.getElementById('w-bf').value) || null;
-  const muscle = Number(document.getElementById('w-mu').value) || null;
-  if (!weight) return;
-  state.weightHistory.push({ date: state.selectedDate, weight, bodyFat, muscle });
+  const dateVal = document.getElementById('w-date')?.value || state.selectedDate;
+  const weight = Number(String(document.getElementById('w-val').value).replace(',', '.'));
+  const bfRaw = String(document.getElementById('w-bf').value).replace(',', '.');
+  const muRaw = String(document.getElementById('w-mu').value).replace(',', '.');
+  const ageRaw = String(document.getElementById('w-age').value).trim();
+
+  const bodyFat = bfRaw !== '' ? Number(bfRaw) : null;
+  const muscle = muRaw !== '' ? Number(muRaw) : null;
+  const bioAge = ageRaw !== '' ? Number(ageRaw) : null;
+  if (!weight || isNaN(weight)) return;
+
+  // Alle evtl. vorhandenen Einträge für dieses Datum sauber ersetzen
+  state.weightHistory = state.weightHistory.filter(w => w.date !== dateVal);
+  state.weightHistory.push({ date: dateVal, weight, bodyFat, muscle, bioAge });
+
+  state.selectedDate = dateVal;
+  selectedChartDate = dateVal;
+  saveState();
+  closeModal();
+  render();
+}
+
+function openBulkWeightModal() {
+  const days30 = [...getLastNDays(30)].reverse(); // Heute oben, dann rückwärts
+  const weightMap = {};
+  state.weightHistory.forEach(w => { weightMap[w.date] = w; });
+
+  openModal(`
+    <form onsubmit="event.preventDefault(); saveBulkWeights();" class="space-y-3.5">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold text-white">30-Tage-Schnellpflege (FitDays)</h3>
+          <p class="text-[11px] text-zinc-400">Mit Tab von Feld zu Feld springen · Enter speichert alle Zeilen</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-1">✕</button>
+      </div>
+
+      <div class="grid grid-cols-12 gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 px-1.5">
+        <div class="col-span-3">Datum</div>
+        <div class="col-span-3 text-right">Gewicht</div>
+        <div class="col-span-2 text-right">Fett %</div>
+        <div class="col-span-2 text-right">Muskel</div>
+        <div class="col-span-2 text-right">Alter</div>
+      </div>
+
+      <div class="max-h-[54vh] overflow-y-auto space-y-1.5 pr-1">
+        ${days30.map((d, idx) => {
+          const ex = weightMap[d.dateStr] || {};
+          const hasVal = ex.weight !== undefined && ex.weight !== null;
+          return `
+            <div data-bulk-date="${d.dateStr}" class="bulk-weight-row grid grid-cols-12 gap-1.5 items-center rounded-xl px-2 py-1.5 border ${
+              hasVal ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-zinc-900/70 border-border'
+            }">
+              <div class="col-span-3 text-xs">
+                <div class="font-medium text-zinc-200">${d.dayNum}.${d.monthNum}.</div>
+                <div class="text-[10px] text-zinc-500">${idx === 0 ? 'Heute' : d.weekdayShort}</div>
+              </div>
+              <div class="col-span-3">
+                <input type="number" step="0.1" data-field="weight" value="${hasVal ? ex.weight : ''}" placeholder="74.0"
+                  class="w-full px-2 py-1 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-right text-white focus:outline-none focus:border-emerald-500" />
+              </div>
+              <div class="col-span-2">
+                <input type="number" step="0.1" data-field="bodyFat" value="${ex.bodyFat ?? ''}" placeholder="—"
+                  class="w-full px-1.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-right text-zinc-200 focus:outline-none focus:border-emerald-500" />
+              </div>
+              <div class="col-span-2">
+                <input type="number" step="0.1" data-field="muscle" value="${ex.muscle ?? ''}" placeholder="—"
+                  class="w-full px-1.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-right text-zinc-200 focus:outline-none focus:border-emerald-500" />
+              </div>
+              <div class="col-span-2">
+                <input type="number" step="1" min="10" max="110" data-field="bioAge" value="${ex.bioAge ?? ''}" placeholder="—"
+                  class="w-full px-1.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-right text-zinc-200 focus:outline-none focus:border-emerald-500" />
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="flex gap-2 pt-1">
+        <button type="submit" class="flex-1 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+          Alle 30 Tage speichern (Enter)
+        </button>
+        <button type="button" onclick="closeModal()" class="px-3.5 py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs">
+          Abbrechen
+        </button>
+      </div>
+    </form>
+  `);
+
+  setTimeout(() => {
+    const firstInput = document.querySelector('.bulk-weight-row input[data-field="weight"]');
+    if (firstInput) firstInput.focus();
+  }, 40);
+}
+
+function saveBulkWeights() {
+  const rows = document.querySelectorAll('.bulk-weight-row');
+  const editedDates = new Set();
+  const newEntries = [];
+
+  rows.forEach(row => {
+    const dateStr = row.dataset.bulkDate;
+    editedDates.add(dateStr);
+
+    const parseNum = (field) => {
+      const raw = String(row.querySelector(`input[data-field="${field}"]`).value || '').replace(',', '.').trim();
+      if (raw === '') return null;
+      const num = Number(raw);
+      return isNaN(num) ? null : num;
+    };
+
+    const weight = parseNum('weight');
+    if (weight && weight > 20 && weight < 300) {
+      newEntries.push({
+        date: dateStr,
+        weight,
+        bodyFat: parseNum('bodyFat'),
+        muscle: parseNum('muscle'),
+        bioAge: parseNum('bioAge')
+      });
+    }
+  });
+
+  // Einträge außerhalb der letzten 30 Tage behalten, die letzten 30 Tage sauber ersetzen
+  const olderEntries = state.weightHistory.filter(w => !editedDates.has(w.date));
+  state.weightHistory = [...olderEntries, ...newEntries].sort((a, b) => a.date.localeCompare(b.date));
+
+  chartRangeDays = 30; // Chart automatisch auf 30 Tage stellen, damit alle nachgepflegten Werte sichtbar sind
   saveState();
   closeModal();
   render();
