@@ -2489,8 +2489,7 @@ Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Br
     });
   }
 
- try {
-   const modelsToTry = ['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'];
+  const modelsToTry =['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'];
   const requestBody = JSON.stringify({
     contents: [{ parts }],
     generationConfig: {
@@ -2544,8 +2543,6 @@ Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Br
     }
 
     if (!res) throw new Error(lastError);
-
-    const result = await res.json();
 
     const result = await res.json();
     const rawJson = result.candidates?.[0]?.content?.parts?.[0]?.text;
