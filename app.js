@@ -287,13 +287,19 @@ function saveState() {
   }, 800);
 }
 
+function normalizeRoutineStatus(val) {
+  if (val === true || val === 'yes') return true;
+  if (val === false || val === 'no') return false;
+  return null;
+}
+
 function ensureDayLog(dateStr) {
   if (!state.logs[dateStr]) {
     state.logs[dateStr] = {
       entries: [],
       sportDone: [],
       badHabits: { cigarettes: null, vape: null, alcohol: null },
-      routines: { creatine: false, skincare: false }
+      routines: { creatine: null, skincare: null }
     };
   }
   if (!state.logs[dateStr].badHabits) {
@@ -303,16 +309,39 @@ function ensureDayLog(dateStr) {
     state.logs[dateStr].badHabits[k] = normalizeHabitStatus(state.logs[dateStr].badHabits[k]);
   });
   if (!state.logs[dateStr].routines) {
-    state.logs[dateStr].routines = { creatine: false, skincare: false };
+    state.logs[dateStr].routines = { creatine: null, skincare: null };
   }
-  state.logs[dateStr].routines.creatine = Boolean(state.logs[dateStr].routines.creatine);
-  state.logs[dateStr].routines.skincare = Boolean(state.logs[dateStr].routines.skincare);
+  state.logs[dateStr].routines.creatine = normalizeRoutineStatus(state.logs[dateStr].routines.creatine);
+  state.logs[dateStr].routines.skincare = normalizeRoutineStatus(state.logs[dateStr].routines.skincare);
   return state.logs[dateStr];
+}
+
+function nextRoutineState(current) {
+  if (current === null || current === undefined) return true;
+  if (current === true) return false;
+  return null;
 }
 
 function toggleRoutine(key) {
   const day = ensureDayLog(state.selectedDate);
-  day.routines[key] = !day.routines[key];
+  day.routines[key] = nextRoutineState(day.routines[key]);
+  saveState();
+  render();
+}
+
+function toggleHeatmapRoutineDay(key, dateStr) {
+  const day = ensureDayLog(dateStr);
+  if (key === 'routine') {
+    const c = day.routines.creatine;
+    const s = day.routines.skincare;
+    let nextVal = true;
+    if (c === true && s === true) nextVal = false;
+    else if (c === false && s === false) nextVal = null;
+    day.routines.creatine = nextVal;
+    day.routines.skincare = nextVal;
+  } else {
+    day.routines[key] = nextRoutineState(day.routines[key]);
+  }
   saveState();
   render();
 }
@@ -330,19 +359,6 @@ function getRoutineStreak(key) {
     }
   }
   return streak;
-}
-
-function toggleHeatmapRoutineDay(key, dateStr) {
-  const day = ensureDayLog(dateStr);
-  if (key === 'routine') {
-    const bothDone = day.routines.creatine && day.routines.skincare;
-    day.routines.creatine = !bothDone;
-    day.routines.skincare = !bothDone;
-  } else {
-    day.routines[key] = !day.routines[key];
-  }
-  saveState();
-  render();
 }
 
 // ---------- NAVIGATION & UI STATE ----------
@@ -1413,12 +1429,21 @@ function renderHabitsTab() {
   const creatineStreak = getRoutineStreak('creatine');
   const skincareStreak = getRoutineStreak('skincare');
 
- const metricTabs = [
+  const metricTabs = [
     { id: 'alcohol', label: '🍷 Alkohol' },
     { id: 'nicotine', label: '💨 Nikotin' },
     { id: 'sport', label: '⚡ Sport' },
     { id: 'routine', label: '✨ Routine' }
   ];
+
+  const getCombinedRoutineStatus = (log) => {
+    const c = normalizeRoutineStatus(log?.routines?.creatine);
+    const s = normalizeRoutineStatus(log?.routines?.skincare);
+    if (c === true && s === true) return 'yes';
+    if (c === false || s === false) return 'no';
+    if (c === true || s === true) return 'partial';
+    return null;
+  };
 
   const getCountsForMetric = (metricKey) => {
     let clean = 0, consumed = 0, open = 0;
@@ -1429,12 +1454,14 @@ function renderHabitsTab() {
         if (done) clean++;
         else open++;
       } else if (metricKey === 'routine') {
-        const c = Boolean(log?.routines?.creatine);
-        const s = Boolean(log?.routines?.skincare);
-        if (c && s) clean++;
+        const st = getCombinedRoutineStatus(log);
+        if (st === 'yes') clean++;
+        else if (st === 'no') consumed++;
         else open++;
       } else if (metricKey === 'creatine' || metricKey === 'skincare') {
-        if (log?.routines?.[metricKey]) clean++;
+        const val = normalizeRoutineStatus(log?.routines?.[metricKey]);
+        if (val === true) clean++;
+        else if (val === false) consumed++;
         else open++;
       } else if (metricKey === 'nicotine') {
         const st = getCombinedNicotineStatus(log);
@@ -1466,28 +1493,30 @@ function renderHabitsTab() {
           tileStyle = done
             ? 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30'
             : 'bg-amber-400/15 border-amber-400/40 text-amber-300 hover:bg-amber-400/25';
-          statusIcon = done ? '✓' : '○';
+          statusIcon = done ? '✓' : '?';
           clickHandler = `toggleHeatmapSportDay('${d.dateStr}')`;
         } else if (metricKey === 'routine') {
-          const c = Boolean(log?.routines?.creatine);
-          const s = Boolean(log?.routines?.skincare);
-          if (c && s) {
+          const st = getCombinedRoutineStatus(log);
+          if (st === 'yes') {
             tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
             statusIcon = '✓';
-          } else if (c || s) {
+          } else if (st === 'no') {
+            tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
+            statusIcon = '✕';
+          } else if (st === 'partial') {
             tileStyle = 'bg-amber-400/20 border-amber-400/50 text-amber-300 hover:bg-amber-400/30';
             statusIcon = '½';
-          } else {
-            tileStyle = 'bg-zinc-900 border-border text-zinc-500 hover:bg-zinc-800';
-            statusIcon = '○';
           }
           clickHandler = `toggleHeatmapRoutineDay('routine', '${d.dateStr}')`;
         } else if (metricKey === 'creatine' || metricKey === 'skincare') {
-          const done = Boolean(log?.routines?.[metricKey]);
-          tileStyle = done
-            ? 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30'
-            : 'bg-zinc-900 border-border text-zinc-500 hover:bg-zinc-800';
-          statusIcon = done ? '✓' : '○';
+          const val = normalizeRoutineStatus(log?.routines?.[metricKey]);
+          if (val === true) {
+            tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
+            statusIcon = '✓';
+          } else if (val === false) {
+            tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
+            statusIcon = '✕';
+          }
           clickHandler = `toggleHeatmapRoutineDay('${metricKey}', '${d.dateStr}')`;
         } else if (metricKey === 'nicotine') {
           const st = getCombinedNicotineStatus(log);
@@ -1525,6 +1554,65 @@ function renderHabitsTab() {
 
   const cigCounts = getCountsForMetric('cigarettes');
   const vapeCounts = getCountsForMetric('vape');
+  const creatineCounts = getCountsForMetric('creatine');
+  const skincareCounts = getCountsForMetric('skincare');
+
+  const renderLegend = () => {
+    if (selectedHeatmapMetric === 'routine') {
+      return `
+        <span class="flex items-center gap-1 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-500"></span> Ja</span>
+        <span class="flex items-center gap-1 text-rose-300"><span class="w-2 h-2 rounded-full bg-rose-500"></span> Nein</span>
+        <span class="flex items-center gap-1 text-amber-300"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Nicht erfasst</span>
+      `;
+    }
+    if (selectedHeatmapMetric === 'sport') {
+      return `
+        <span class="flex items-center gap-1 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-500"></span> Absolviert</span>
+        <span class="flex items-center gap-1 text-amber-300"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Nicht erfasst</span>
+      `;
+    }
+    return `
+      <span class="flex items-center gap-1 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-500"></span> Clean</span>
+      <span class="flex items-center gap-1 text-rose-300"><span class="w-2 h-2 rounded-full bg-rose-500"></span> Konsumiert</span>
+      <span class="flex items-center gap-1 text-amber-300"><span class="w-2 h-2 rounded-full bg-amber-400"></span> Nicht erfasst</span>
+    `;
+  };
+
+  const renderRoutineCardButton = (key, title, streak) => {
+    const val = todayLog.routines[key];
+    let cardStyle = 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800/80';
+    let subText = 'Nicht erfasst';
+    let subStyle = 'text-amber-300/80';
+    let badgeStyle = 'bg-amber-400/15 border-amber-400/40 text-amber-300';
+    let badgeIcon = '?';
+
+    if (val === true) {
+      cardStyle = 'bg-emerald-500/15 border-emerald-500/45 text-white';
+      subText = streak > 0 ? `Ja · ${streak}d Streak` : 'Ja';
+      subStyle = 'text-emerald-400';
+      badgeStyle = 'bg-emerald-500 text-zinc-950 border-emerald-400';
+      badgeIcon = '✓';
+    } else if (val === false) {
+      cardStyle = 'bg-rose-500/15 border-rose-500/45 text-white';
+      subText = 'Nein';
+      subStyle = 'text-rose-400';
+      badgeStyle = 'bg-rose-500 text-white border-rose-400';
+      badgeIcon = '✕';
+    }
+
+    return `
+      <button onclick="toggleRoutine('${key}')"
+        class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${cardStyle}">
+        <div class="min-w-0">
+          <div class="text-xs font-semibold truncate">${title}</div>
+          <div class="text-[11px] mt-0.5 ${subStyle}">${subText}</div>
+        </div>
+        <div class="w-7 h-7 rounded-xl flex items-center justify-center shrink-0 border text-xs font-bold ${badgeStyle}">
+          ${badgeIcon}
+        </div>
+      </button>
+    `;
+  };
 
   return `
     <div class="space-y-4">
@@ -1535,9 +1623,11 @@ function renderHabitsTab() {
             <p class="text-[11px] text-zinc-400">Tippe auf einen Tag zum Umschalten (Grün / Rot / Gelb)</p>
           </div>
           <div class="text-right text-[11px] text-zinc-400">
-            ${selectedHeatmapMetric === 'sport' || selectedHeatmapMetric === 'routine'
+            ${selectedHeatmapMetric === 'sport'
               ? `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span>/30 aktiv`
-              : `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> clean · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> kons. · <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen`
+              : selectedHeatmapMetric === 'routine'
+                ? `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> ja · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> nein · <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen`
+                : `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> clean · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> kons. · <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen`
             }
           </div>
         </div>
@@ -1602,7 +1692,9 @@ function renderHabitsTab() {
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">💊 Kreatin</span>
                 <span class="text-[11px] text-zinc-400">
-                  <span class="text-emerald-400 font-semibold">${getCountsForMetric('creatine').clean}</span>/30 Tage · ${creatineStreak}d Streak
+                  <span class="text-emerald-400 font-semibold">${creatineCounts.clean}</span> ja ·
+                  <span class="text-rose-400 font-semibold">${creatineCounts.consumed}</span> nein ·
+                  <span class="text-amber-300 font-semibold">${creatineCounts.open}</span> offen · ${creatineStreak}d Streak
                 </span>
               </div>
               ${renderHeatmapGrid('creatine', true)}
@@ -1612,7 +1704,9 @@ function renderHabitsTab() {
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">🧴 Skincare</span>
                 <span class="text-[11px] text-zinc-400">
-                  <span class="text-emerald-400 font-semibold">${getCountsForMetric('skincare').clean}</span>/30 Tage · ${skincareStreak}d Streak
+                  <span class="text-emerald-400 font-semibold">${skincareCounts.clean}</span> ja ·
+                  <span class="text-rose-400 font-semibold">${skincareCounts.consumed}</span> nein ·
+                  <span class="text-amber-300 font-semibold">${skincareCounts.open}</span> offen · ${skincareStreak}d Streak
                 </span>
               </div>
               ${renderHeatmapGrid('skincare', true)}
@@ -1622,25 +1716,12 @@ function renderHabitsTab() {
 
         <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border text-[11px] text-zinc-400">
           <div class="flex items-center gap-3">
-            <span class="flex items-center gap-1 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-500"></span> ${selectedHeatmapMetric === 'sport' ? 'Absolviert' : 'Clean'}</span>
-            ${selectedHeatmapMetric !== 'sport' ? `<span class="flex items-center gap-1 text-rose-300"><span class="w-2 h-2 rounded-full bg-rose-500"></span> Konsumiert</span>` : ''}
-            <span class="flex items-center gap-1 text-amber-300"><span class="w-2 h-2 rounded-full bg-amber-400"></span> ${selectedHeatmapMetric === 'sport' ? 'Ruhetag / Offen' : 'Nicht erfasst'}</span>
+            ${renderLegend()}
           </div>
           <span>Letzte 30 Tage</span>
         </div>
       </div>
 
-      <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border text-[11px] text-zinc-400">
-          <div class="flex items-center gap-3">
-            <span class="flex items-center gap-1 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-500"></span> ${selectedHeatmapMetric === 'sport' ? 'Absolviert' : 'Clean'}</span>
-            ${selectedHeatmapMetric !== 'sport' ? `<span class="flex items-center gap-1 text-rose-300"><span class="w-2 h-2 rounded-full bg-rose-500"></span> Konsumiert</span>` : ''}
-            <span class="flex items-center gap-1 text-amber-300"><span class="w-2 h-2 rounded-full bg-amber-400"></span> ${selectedHeatmapMetric === 'sport' ? 'Ruhetag / Offen' : 'Nicht erfasst'}</span>
-          </div>
-          <span>Letzte 30 Tage</span>
-        </div>
-      </div>
-
-      <!-- <-- HIER DIE NEUE KARTE EINFÜGEN: -->
       <div id="sec-routines" class="bg-card border border-border rounded-3xl p-4 space-y-3">
         <div class="flex items-center justify-between">
           <div>
@@ -1648,56 +1729,13 @@ function renderHabitsTab() {
             <p class="text-[11px] text-zinc-400">Tägliche Basics für ${state.selectedDate}</p>
           </div>
           <span class="text-[11px] text-zinc-400">
-            ${(todayLog.routines.creatine ? 1 : 0) + (todayLog.routines.skincare ? 1 : 0)}/2 erledigt
+            ${(todayLog.routines.creatine === true ? 1 : 0) + (todayLog.routines.skincare === true ? 1 : 0)}/2 erledigt
           </span>
         </div>
 
         <div class="grid grid-cols-2 gap-2.5">
-          <button onclick="toggleRoutine('creatine')"
-            class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
-              todayLog.routines.creatine
-                ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
-                : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800/80'
-            }">
-            <div class="min-w-0">
-              <div class="text-xs font-semibold truncate">Kreatin</div>
-              <div class="text-[11px] mt-0.5 ${todayLog.routines.creatine ? 'text-emerald-400' : 'text-zinc-500'}">
-                ${creatineStreak > 0 ? `${creatineStreak}d Streak` : 'Heute offen'}
-              </div>
-            </div>
-            <div class="w-7 h-7 rounded-xl flex items-center justify-center shrink-0 border ${
-              todayLog.routines.creatine
-                ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
-                : 'bg-zinc-950/60 border-border text-zinc-500'
-            }">
-              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 6 9 17l-5-5"/>
-              </svg>
-            </div>
-          </button>
-
-          <button onclick="toggleRoutine('skincare')"
-            class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
-              todayLog.routines.skincare
-                ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
-                : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800/80'
-            }">
-            <div class="min-w-0">
-              <div class="text-xs font-semibold truncate">Skincare</div>
-              <div class="text-[11px] mt-0.5 ${todayLog.routines.skincare ? 'text-emerald-400' : 'text-zinc-500'}">
-                ${skincareStreak > 0 ? `${skincareStreak}d Streak` : 'Heute offen'}
-              </div>
-            </div>
-            <div class="w-7 h-7 rounded-xl flex items-center justify-center shrink-0 border ${
-              todayLog.routines.skincare
-                ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
-                : 'bg-zinc-950/60 border-border text-zinc-500'
-            }">
-              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 6 9 17l-5-5"/>
-              </svg>
-            </div>
-          </button>
+          ${renderRoutineCardButton('creatine', 'Kreatin', creatineStreak)}
+          ${renderRoutineCardButton('skincare', 'Skincare', skincareStreak)}
         </div>
       </div>
 
