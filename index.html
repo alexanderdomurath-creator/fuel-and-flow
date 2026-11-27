@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Fuel & Flow — Kalorien, Rezepte & Habits</title>
   <meta name="theme-color" content="#09090b" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Fuel & Flow" />
-  <link id="apple-icon" rel="apple-touch-icon" />
-  <link id="manifest-link" rel="manifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+  <link id="apple-icon" rel="apple-touch-icon" href="./icon-192.png" />
+  <link id="manifest-link" rel="manifest" href="./manifest.webmanifest" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -98,8 +100,8 @@
 
   <!-- Ausgelagerte Anwendungslogik -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-  <script src="app.js?v=20261127-7"></script>
-  <script src="sport.js?v=20261127-7"></script>
+  <script src="app.js?v=20261127-8"></script>
+  <script src="sport.js?v=20261127-8"></script>
 
 <!-- Barcode & Schnell-Portionierung Modal -->
   <div id="barcodeModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-3">

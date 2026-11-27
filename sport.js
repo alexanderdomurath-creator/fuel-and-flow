@@ -1256,6 +1256,8 @@ function renderSportTab() {
 
     ${renderPerformanceKpis()}
 
+    ${renderMuscleAnatomyCard(workouts)}
+
     ${renderSportProgress()}
 
     <!-- Verlauf -->
@@ -1277,6 +1279,221 @@ function renderSportTab() {
           Mehr laden (${filtered.length - shown.length} weitere)
         </button>
       ` : ''}
+    </section>
+  `;
+}
+
+// ---------- ANATOMISCHE MUSKEL-FOKUS-KARTE ----------
+let sportAnatomyTarget = 'latest'; // 'latest' | '7d' | '30d' | workoutId
+
+function setSportAnatomyTarget(val) {
+  sportAnatomyTarget = val;
+  render();
+}
+
+function showWorkoutInAnatomy(workoutId) {
+  sportAnatomyTarget = workoutId;
+  render();
+  setTimeout(() => {
+    const el = document.getElementById('sec-sport-anatomy');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 40);
+}
+
+function computeMuscleSetCounts(workoutList) {
+  const counts = { Back: 0, Chest: 0, Legs: 0, Shoulders: 0, Triceps: 0, Biceps: 0, Abs: 0 };
+  (workoutList || []).forEach(w => {
+    (w.exercises || []).forEach(ex => {
+      const g = normalizeMuscleGroup(ex.category);
+      const n = (ex.sets || []).length;
+      if (n > 0 && counts[g] !== undefined) counts[g] += n;
+    });
+  });
+  return counts;
+}
+
+function muscleHeatFill(count, maxVal) {
+  if (!count || count <= 0 || !maxVal) return { fill: '#27272a', stroke: '#3f3f46', opacity: '0.85' };
+  const ratio = count / maxVal;
+  if (ratio >= 0.72) return { fill: '#f43f5e', stroke: '#fb7185', opacity: '0.95' }; // Top-Fokus
+  if (ratio >= 0.38) return { fill: '#f59e0b', stroke: '#fbbf24', opacity: '0.88' }; // Mittel
+  return { fill: '#10b981', stroke: '#34d399', opacity: '0.72' }; // Leicht
+}
+
+function renderAnatomicalBodySvg(counts) {
+  const vals = Object.values(counts).filter(v => v > 0);
+  const maxVal = vals.length ? Math.max(...vals) : 0;
+  const st = (g) => {
+    const c = muscleHeatFill(counts[g] || 0, maxVal);
+    return `fill="${c.fill}" stroke="${c.stroke}" stroke-width="0.9" fill-opacity="${c.opacity}"`;
+  };
+  const bodyBase = 'fill="#18181d" stroke="#3f3f46" stroke-width="1.1"';
+
+  return `
+    <svg viewBox="0 0 280 230" class="w-full max-w-[300px] mx-auto h-52 select-none">
+      <!-- ===== VORDERSEITE (x: 0..140, center 70) ===== -->
+      <text x="70" y="13" text-anchor="middle" font-size="9" fill="#71717a" font-weight="600">VORDERSEITE</text>
+      <!-- Kopf & Hals -->
+      <circle cx="70" cy="31" r="11" ${bodyBase} />
+      <rect x="65" y="42" width="10" height="7" rx="3" ${bodyBase} />
+      <!-- Rumpf-Silhouette -->
+      <path d="M50 51 Q70 47 90 51 L87 109 Q70 116 53 109 Z" ${bodyBase} />
+      <!-- Unterarme & Hände -->
+      <path d="M40 82 L33 114 L39 116 L46 84 Z" ${bodyBase} />
+      <path d="M100 82 L107 114 L101 116 L94 84 Z" ${bodyBase} />
+      <!-- Füße -->
+      <ellipse cx="58" cy="216" rx="7" ry="4" ${bodyBase} />
+      <ellipse cx="82" cy="216" rx="7" ry="4" ${bodyBase} />
+
+      <!-- Schultern (Front Delts) -->
+      <ellipse cx="45" cy="59" rx="7.5" ry="9" ${st('Shoulders')}><title>Schultern: ${counts.Shoulders || 0} Sätze</title></ellipse>
+      <ellipse cx="95" cy="59" rx="7.5" ry="9" ${st('Shoulders')}><title>Schultern: ${counts.Shoulders || 0} Sätze</title></ellipse>
+      <!-- Brust (Pecs) -->
+      <path d="M52 54 Q61 52 69 57 L69 73 Q58 76 52 69 Z" ${st('Chest')}><title>Brust: ${counts.Chest || 0} Sätze</title></path>
+      <path d="M88 54 Q79 52 71 57 L71 73 Q82 76 88 69 Z" ${st('Chest')}><title>Brust: ${counts.Chest || 0} Sätze</title></path>
+      <!-- Bizeps -->
+      <ellipse cx="43" cy="77" rx="5.5" ry="12" transform="rotate(8 43 77)" ${st('Biceps')}><title>Bizeps: ${counts.Biceps || 0} Sätze</title></ellipse>
+      <ellipse cx="97" cy="77" rx="5.5" ry="12" transform="rotate(-8 97 77)" ${st('Biceps')}><title>Bizeps: ${counts.Biceps || 0} Sätze</title></ellipse>
+      <!-- Bauch / Core (6-Pack) -->
+      <rect x="60" y="76" width="8.5" height="8" rx="2.5" ${st('Abs')}><title>Bauch/Core: ${counts.Abs || 0} Sätze</title></rect>
+      <rect x="71.5" y="76" width="8.5" height="8" rx="2.5" ${st('Abs')}><title>Bauch/Core: ${counts.Abs || 0} Sätze</title></rect>
+      <rect x="60" y="86" width="8.5" height="8" rx="2.5" ${st('Abs')}><title>Bauch/Core: ${counts.Abs || 0} Sätze</title></rect>
+      <rect x="71.5" y="86" width="8.5" height="8" rx="2.5" ${st('Abs')}><title>Bauch/Core: ${counts.Abs || 0} Sätze</title></rect>
+      <rect x="61" y="96" width="7.5" height="9" rx="2.5" ${st('Abs')}><title>Bauch/Core: ${counts.Abs || 0} Sätze</title></rect>
+      <rect x="71.5" y="96" width="7.5" height="9" rx="2.5" ${st('Abs')}><title>Bauch/Core: ${counts.Abs || 0} Sätze</title></rect>
+      <!-- Beine vorn (Quads & Waden) -->
+      <path d="M53 114 L67 116 L65 162 L54 162 Z" rx="6" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></path>
+      <path d="M87 114 L73 116 L75 162 L86 162 Z" rx="6" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></path>
+      <path d="M55 167 L64 167 L62 210 L55 210 Z" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></path>
+      <path d="M85 167 L76 167 L78 210 L85 210 Z" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></path>
+
+      <!-- ===== RÜCKSEITE (x: 140..280, center 210) ===== -->
+      <text x="210" y="13" text-anchor="middle" font-size="9" fill="#71717a" font-weight="600">RÜCKSEITE</text>
+      <!-- Kopf & Hals -->
+      <circle cx="210" cy="31" r="11" ${bodyBase} />
+      <rect x="205" y="42" width="10" height="7" rx="3" ${bodyBase} />
+      <!-- Rumpf-Silhouette -->
+      <path d="M190 51 Q210 47 230 51 L227 109 Q210 116 193 109 Z" ${bodyBase} />
+      <!-- Unterarme & Hände -->
+      <path d="M180 82 L173 114 L179 116 L186 84 Z" ${bodyBase} />
+      <path d="M240 82 L247 114 L241 116 L234 84 Z" ${bodyBase} />
+      <!-- Füße -->
+      <ellipse cx="198" cy="216" rx="7" ry="4" ${bodyBase} />
+      <ellipse cx="222" cy="216" rx="7" ry="4" ${bodyBase} />
+
+      <!-- Hintere Schultern -->
+      <ellipse cx="185" cy="59" rx="7.5" ry="9" ${st('Shoulders')}><title>Schultern: ${counts.Shoulders || 0} Sätze</title></ellipse>
+      <ellipse cx="235" cy="59" rx="7.5" ry="9" ${st('Shoulders')}><title>Schultern: ${counts.Shoulders || 0} Sätze</title></ellipse>
+      <!-- Rücken (Trapez, Lats & unterer Rücken) -->
+      <path d="M198 50 L210 46 L222 50 L216 68 L204 68 Z" ${st('Back')}><title>Rücken: ${counts.Back || 0} Sätze</title></path>
+      <path d="M191 58 L208 69 L206 96 L194 90 Z" ${st('Back')}><title>Rücken: ${counts.Back || 0} Sätze</title></path>
+      <path d="M229 58 L212 69 L214 96 L226 90 Z" ${st('Back')}><title>Rücken: ${counts.Back || 0} Sätze</title></path>
+      <rect x="201" y="94" width="18" height="14" rx="4" ${st('Back')}><title>Rücken: ${counts.Back || 0} Sätze</title></rect>
+      <!-- Trizeps -->
+      <ellipse cx="183" cy="77" rx="5.5" ry="12" transform="rotate(8 183 77)" ${st('Triceps')}><title>Trizeps: ${counts.Triceps || 0} Sätze</title></ellipse>
+      <ellipse cx="237" cy="77" rx="5.5" ry="12" transform="rotate(-8 237 77)" ${st('Triceps')}><title>Trizeps: ${counts.Triceps || 0} Sätze</title></ellipse>
+      <!-- Beine hinten (Glutes, Hamstrings & Waden) -->
+      <ellipse cx="201" cy="119" rx="9" ry="10" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></ellipse>
+      <ellipse cx="219" cy="119" rx="9" ry="10" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></ellipse>
+      <path d="M193 130 L207 130 L205 164 L194 164 Z" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></path>
+      <path d="M227 130 L213 130 L215 164 L226 164 Z" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></path>
+      <path d="M195 168 L205 168 L202 210 L195 210 Z" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></path>
+      <path d="M225 168 L215 168 L218 210 L225 210 Z" ${st('Legs')}><title>Beine: ${counts.Legs || 0} Sätze</title></path>
+    </svg>
+  `;
+}
+
+function renderMuscleAnatomyCard(workouts) {
+  const strengthWorkouts = (workouts || []).filter(w => w.type === 'strength' && (w.exercises || []).length > 0);
+  if (!strengthWorkouts.length) return '';
+
+  let selectedList = [];
+  let subtitle = '';
+  if (sportAnatomyTarget === '7d') {
+    const cut = getPastDateStr(6);
+    selectedList = strengthWorkouts.filter(w => w.date >= cut);
+    subtitle = `Letzte 7 Tage (${selectedList.length} Einheiten)`;
+  } else if (sportAnatomyTarget === '30d') {
+    const cut = getPastDateStr(29);
+    selectedList = strengthWorkouts.filter(w => w.date >= cut);
+    subtitle = `Letzte 30 Tage (${selectedList.length} Einheiten)`;
+  } else {
+    const w = sportAnatomyTarget === 'latest'
+      ? strengthWorkouts[0]
+      : (strengthWorkouts.find(x => x.id === sportAnatomyTarget) || strengthWorkouts[0]);
+    selectedList = w ? [w] : [];
+    subtitle = w ? `${w.title || getActivityName(w.activityId)} · ${formatDisplayDate(w.date)}` : '';
+  }
+
+  const counts = computeMuscleSetCounts(selectedList);
+  const ranked = Object.entries(counts)
+    .filter(([, cnt]) => cnt > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const maxVal = ranked.length ? ranked[0][1] : 0;
+
+  return `
+    <section id="sec-sport-anatomy" class="bg-card border border-border rounded-3xl p-4 space-y-3">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <h2 class="text-sm font-semibold text-white">Muskel-Fokus</h2>
+          <p class="text-[11px] text-zinc-400 truncate">${sportEsc(subtitle)}</p>
+        </div>
+        <div class="flex gap-1 shrink-0">
+          <button onclick="setSportAnatomyTarget('latest')"
+            class="px-2 py-1 rounded-lg text-[11px] font-medium border transition ${
+              sportAnatomyTarget !== '7d' && sportAnatomyTarget !== '30d'
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                : 'bg-zinc-900 text-zinc-400 border-border'
+            }">Einheit</button>
+          <button onclick="setSportAnatomyTarget('7d')"
+            class="px-2 py-1 rounded-lg text-[11px] font-medium border transition ${
+              sportAnatomyTarget === '7d'
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                : 'bg-zinc-900 text-zinc-400 border-border'
+            }">7T</button>
+          <button onclick="setSportAnatomyTarget('30d')"
+            class="px-2 py-1 rounded-lg text-[11px] font-medium border transition ${
+              sportAnatomyTarget === '30d'
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                : 'bg-zinc-900 text-zinc-400 border-border'
+            }">30T</button>
+        </div>
+      </div>
+
+      ${sportAnatomyTarget !== '7d' && sportAnatomyTarget !== '30d' ? `
+        <select onchange="setSportAnatomyTarget(this.value)" class="${SPORT_INPUT}">
+          ${strengthWorkouts.slice(0, 30).map((w, idx) => {
+            const val = idx === 0 && sportAnatomyTarget === 'latest' ? 'latest' : w.id;
+            const isSel = (sportAnatomyTarget === 'latest' && idx === 0) || sportAnatomyTarget === w.id;
+            return `<option value="${val}" ${isSel ? 'selected' : ''}>${sportEsc(w.title || getActivityName(w.activityId))} · ${formatDisplayDate(w.date)} (${workoutSetCount(w)} Sätze)</option>`;
+          }).join('')}
+        </select>
+      ` : ''}
+
+      <div class="bg-zinc-950/70 border border-border rounded-2xl p-3 space-y-2.5">
+        ${renderAnatomicalBodySvg(counts)}
+        <div class="flex items-center justify-center gap-3 text-[10px] text-zinc-400">
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Leicht</span>
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400"></span>Mittel</span>
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-rose-500"></span>Top-Fokus</span>
+        </div>
+      </div>
+
+      ${ranked.length > 0 ? `
+        <div class="flex flex-wrap gap-1.5">
+          ${ranked.map(([g, cnt]) => {
+            const info = muscleGroupInfo(g);
+            const heat = muscleHeatFill(cnt, maxVal);
+            return `
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-zinc-900 border border-border text-zinc-200">
+                <span class="w-2 h-2 rounded-full" style="background:${heat.fill}"></span>
+                <span>${info.label}</span>
+                <span class="text-zinc-400">${cnt} S.</span>
+              </span>
+            `;
+          }).join('')}
+        </div>
+      ` : '<p class="text-[11px] text-zinc-500 text-center">Keine Kraftsätze in diesem Zeitraum.</p>'}
     </section>
   `;
 }
@@ -1369,6 +1586,7 @@ function renderWorkoutCard(w) {
           <div class="text-[11px] text-zinc-400 mt-0.5">${summary}</div>
         </div>
         <div class="flex items-center gap-1 shrink-0">
+          ${w.type === 'strength' ? `<button onclick="showWorkoutInAnatomy('${w.id}')" title="Muskel-Fokus dieser Einheit anzeigen" aria-label="Muskel-Fokus" class="${SPORT_ICON_BTN} text-xs">🧍</button>` : ''}
           <button onclick="startWorkoutFromTemplate('${w.id}')" title="Als Vorlage für neues Training nutzen" aria-label="Als Vorlage nutzen"
             class="w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-400 transition">${ICON_COPY}</button>
           <button onclick="openWorkoutModal('${w.id}')" title="Bearbeiten" aria-label="Bearbeiten" class="${SPORT_ICON_BTN}">${ICON_EDIT}</button>
@@ -1429,9 +1647,26 @@ function showSportChartPoint(idx) {
   });
 }
 
+let sportChartGeom = { W: 320, pl: 34, pr: 8 };
+
+function scrubSportChart(ev, svg) {
+  if (!sportChartPointsMeta.length || !svg) return;
+  const touch = ev.touches && ev.touches[0];
+  const clientX = touch ? touch.clientX : ev.clientX;
+  if (typeof clientX !== 'number') return;
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width) return;
+  const svgX = ((clientX - rect.left) / rect.width) * sportChartGeom.W;
+  const plotW = sportChartGeom.W - sportChartGeom.pl - sportChartGeom.pr;
+  const ratio = Math.max(0, Math.min(1, (svgX - sportChartGeom.pl) / Math.max(1, plotW)));
+  const idx = Math.round(ratio * (sportChartPointsMeta.length - 1));
+  showSportChartPoint(idx);
+}
+
 function sportLineChart(series, labels, tooltips, independentScales = false) {
   const hasRightAxis = independentScales && series.length > 1;
   const W = 320, H = 140, pl = 34, pr = hasRightAxis ? 34 : 8, pt = 10, pb = 18;
+  sportChartGeom = { W, pl, pr };
   const allYs = series.flatMap(s => s.points.map(p => p.y));
   if (allYs.length === 0) return '';
 
@@ -1462,12 +1697,11 @@ function sportLineChart(series, labels, tooltips, independentScales = false) {
 
   const lastIdx = labels.length - 1;
   const lastMeta = sportChartPointsMeta[lastIdx];
-  const stepW = labels.length > 1 ? (W - pl - pr) / (labels.length - 1) : (W - pl - pr);
 
   const leftScale = scales[0];
   const fmtAxis = v => v >= 1000 ? `${fmtNum(v / 1000, 1)}k` : String(Math.round(v));
 
-  let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full h-36 select-none overflow-visible">`;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full h-36 select-none overflow-visible" style="touch-action:pan-y" onpointerdown="scrubSportChart(event, this)" onpointermove="if(event.buttons===1||event.pointerType==='mouse') scrubSportChart(event, this)" ontouchstart="scrubSportChart(event, this)" ontouchmove="scrubSportChart(event, this)">`;
   [leftScale.min, (leftScale.min + leftScale.max) / 2, leftScale.max].forEach(v => {
     const y = leftScale.Y(v);
     svg += `<line x1="${pl}" x2="${W - pr}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#24242b" stroke-width="1"/>`;
@@ -1498,13 +1732,6 @@ function sportLineChart(series, labels, tooltips, independentScales = false) {
   series.forEach((s, sIdx) => {
     const ly = lastMeta.dots[sIdx]?.y ?? pt;
     svg += `<circle id="sport-chart-dot-${sIdx}" cx="${lastMeta.x.toFixed(1)}" cy="${ly.toFixed(1)}" r="4" fill="${s.color}" stroke="#09090b" stroke-width="1.5" opacity="1"/>`;
-  });
-
-  labels.forEach((_, i) => {
-    const cx = X(i);
-    const rx = Math.max(pl, cx - stepW / 2);
-    const rw = Math.max(6, stepW);
-    svg += `<rect x="${rx.toFixed(1)}" y="${pt}" width="${rw.toFixed(1)}" height="${H - pt - pb}" fill="transparent" class="cursor-pointer" onmouseenter="showSportChartPoint(${i})" onclick="showSportChartPoint(${i})"/>`;
   });
 
   svg += `<text x="${pl}" y="${H - 4}" font-size="9" fill="#71717a">${sportEsc(labels[0])}</text>`;

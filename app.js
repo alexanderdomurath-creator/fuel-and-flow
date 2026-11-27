@@ -47,23 +47,9 @@ function generateAppIconDataUrl(size) {
 
 (function initPwaMetadata() {
   try {
-    const icon192 = generateAppIconDataUrl(192);
-    const icon512 = generateAppIconDataUrl(512);
-    document.getElementById('apple-icon').href = icon192;
-    const manifest = {
-      name: 'Fuel & Flow — Kalorien, Rezepte & Habits',
-      short_name: 'Fuel & Flow',
-      start_url: '.',
-      display: 'standalone',
-      background_color: '#09090b',
-      theme_color: '#09090b',
-      icons: [
-        { src: icon192, sizes: '192x192', type: 'image/png' },
-        { src: icon512, sizes: '512x512', type: 'image/png' }
-      ]
-    };
-    const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
-    document.getElementById('manifest-link').href = URL.createObjectURL(blob);
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    }
   } catch (e) {}
 })();
 
@@ -503,19 +489,17 @@ let chartRangeDays = 14; // 7 | 14 | 30
 let selectedChartDate = null;
 
 let editingSportId = null;
-let foodSubTab = 'search'; // 'search' | 'recipes'
+let foodSubTab = 'recipes';
 
 function switchTab(tab, pushHistory = true) {
-  // Legacy-Tabs auf Food-Sub-Tabs mappen
   if (tab === 'recipes' || tab === 'search') {
-    foodSubTab = tab;
     tab = 'food';
   }
   if (pushHistory && currentTab !== tab) {
     navHistory.push(tab);
   }
   currentTab = tab;
-  if (tab !== 'food' || foodSubTab !== 'recipes') editingRecipe = null;
+  if (tab !== 'food') editingRecipe = null;
   render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1169,6 +1153,23 @@ function computeHabitInsights() {
   return insights;
 }
 
+let appToastTimer = null;
+function showToast(message) {
+  let el = document.getElementById('app-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'app-toast';
+    el.className = 'fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl bg-emerald-500 text-zinc-950 font-semibold text-xs shadow-2xl shadow-emerald-500/30 transition-opacity duration-200 max-w-[90vw] text-center pointer-events-none';
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.style.opacity = '1';
+  clearTimeout(appToastTimer);
+  appToastTimer = setTimeout(() => {
+    el.style.opacity = '0';
+  }, 2400);
+}
+
 function logRecipeToDay(recipeId, multiplier = 1) {
   const rec = state.recipes.find(r => r.id === recipeId);
   if (!rec) return;
@@ -1185,6 +1186,7 @@ function logRecipeToDay(recipeId, multiplier = 1) {
   saveState();
   closeModal();
   render();
+  showToast(`✓ „${rec.name}“ auf der Startseite hinzugefügt`);
 }
 
 function deleteDayEntry(entryId) {
@@ -1461,7 +1463,9 @@ function renderWeightCalorieChart() {
   const getKcalH = (k) => (k / maxKcal) * (plotH * 0.75);
   const goalY = padT + plotH - getKcalH(chartBaseGoal);
 
-  const activePoint = series.find(s => s.dateStr === selectedChartDate) || series[series.length - 1];
+  const activeIdx = Math.max(0, series.findIndex(s => s.dateStr === selectedChartDate));
+  const initialIdx = selectedChartDate && series.some(s => s.dateStr === selectedChartDate) ? activeIdx : (series.length - 1);
+  const activePoint = series[initialIdx] || series[series.length - 1];
   const labelInterval = Math.max(1, Math.ceil(series.length / 7));
 
   const rangeOptions = [
@@ -1477,6 +1481,40 @@ function renderWeightCalorieChart() {
     if (val === null || val === undefined || Number.isNaN(val)) return '–';
     return `${Number(val).toFixed(m.decimals)}${m.unit ? ' ' + m.unit : ''}`;
   };
+
+  const buildPointReadoutHtml = (pt) => `
+    <span class="font-semibold text-white">${pt.fullLabel}:</span>
+    ${activeMetrics.map(m => {
+      const val = pt.values[m.key];
+      const isExact = pt.exactFlags[m.key];
+      return `
+        <span class="inline-flex items-center gap-1">
+          <span class="w-2 h-2 rounded-full inline-block" style="background:${m.color}"></span>
+          <span class="text-zinc-400">${m.label}:</span>
+          <span class="font-semibold" style="color:${m.color}">${formatMetricVal(m, val)}</span>
+          ${!isExact && val !== null ? '<span class="text-[10px] text-zinc-500">(fortg.)</span>' : ''}
+        </span>
+      `;
+    }).join('')}
+    ${showKcalBars ? `
+      <span class="inline-flex items-center gap-1">
+        <span class="text-zinc-600">·</span>
+        <span class="text-sky-400 font-semibold">${Math.round(pt.kcal)} kcal</span>
+      </span>
+    ` : ''}
+  `;
+
+  window._dashChartMeta = {
+    W, padL, padR,
+    points: series.map((pt, idx) => ({
+      dateStr: pt.dateStr,
+      x: getX(idx),
+      html: buildPointReadoutHtml(pt),
+      dots: activeMetrics.map(m => ({ y: getMetricY(m.key, pt.values[m.key]), color: m.color }))
+    }))
+  };
+
+  const initMeta = window._dashChartMeta.points[initialIdx] || window._dashChartMeta.points[0];
 
   const legendHtml = `
     <div class="flex items-center gap-1.5 pt-1.5 border-t border-zinc-900">
@@ -1505,26 +1543,8 @@ function renderWeightCalorieChart() {
   return `
     <div class="bg-zinc-950/70 border border-border rounded-2xl p-3 space-y-2.5">
       <div class="flex flex-wrap items-start justify-between gap-2">
-        <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-zinc-300">
-          <span class="font-semibold text-white">${activePoint.fullLabel}:</span>
-          ${activeMetrics.map(m => {
-            const val = activePoint.values[m.key];
-            const isExact = activePoint.exactFlags[m.key];
-            return `
-              <span class="inline-flex items-center gap-1">
-                <span class="w-2 h-2 rounded-full inline-block" style="background:${m.color}"></span>
-                <span class="text-zinc-400">${m.label}:</span>
-                <span class="font-semibold" style="color:${m.color}">${formatMetricVal(m, val)}</span>
-                ${!isExact && val !== null ? '<span class="text-[10px] text-zinc-500">(fortg.)</span>' : ''}
-              </span>
-            `;
-          }).join('')}
-          ${showKcalBars ? `
-            <span class="inline-flex items-center gap-1">
-              <span class="text-zinc-600">·</span>
-              <span class="text-sky-400 font-semibold">${Math.round(activePoint.kcal)} kcal</span>
-            </span>
-          ` : ''}
+        <div id="dash-chart-readout" class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-zinc-300">
+          ${initMeta ? initMeta.html : ''}
         </div>
 
         <div class="flex flex-wrap gap-1 shrink-0">
@@ -1541,7 +1561,11 @@ function renderWeightCalorieChart() {
         </div>
       </div>
 
-      <svg viewBox="0 0 ${W} ${H}" class="w-full h-44 overflow-visible select-none">
+      <svg viewBox="0 0 ${W} ${H}" class="w-full h-44 overflow-visible select-none" style="touch-action:pan-y"
+        onpointerdown="scrubDashChart(event, this)"
+        onpointermove="if(event.buttons===1||event.pointerType==='mouse') scrubDashChart(event, this)"
+        ontouchstart="scrubDashChart(event, this)"
+        ontouchmove="scrubDashChart(event, this)">
         <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#27272a" stroke-dasharray="3 3" />
         <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="#27272a" />
         ${primaryScale && primaryScale.hasData ? `
@@ -1550,16 +1574,17 @@ function renderWeightCalorieChart() {
         ` : ''}
         ${showKcalBars ? `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" stroke="#0ea5e9" stroke-opacity="0.35" stroke-dasharray="4 4" />` : ''}
 
+        ${initMeta ? `<line id="dash-chart-cursor" x1="${initMeta.x.toFixed(1)}" x2="${initMeta.x.toFixed(1)}" y1="${padT}" y2="${padT + plotH}" stroke="#71717a" stroke-dasharray="3 3" stroke-width="1" opacity="0.85" />` : ''}
+
         ${series.map((s, idx) => {
           const x = getX(idx);
           const bh = showKcalBars ? getKcalH(s.kcal) : 0;
           const by = padT + plotH - bh;
-          const isSelected = s.dateStr === activePoint.dateStr;
           return `
-            <g class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')">
+            <g>
               ${showKcalBars ? `
                 <rect x="${(x - barW / 2).toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, bh).toFixed(1)}"
-                  rx="2" fill="${isSelected ? '#38bdf8' : '#0284c7'}" fill-opacity="${isSelected ? '0.65' : '0.3'}" />
+                  rx="2" fill="#0284c7" fill-opacity="0.32" />
               ` : ''}
               ${idx % labelInterval === 0 ? `
                 <text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="#71717a" font-size="9">${s.shortLabel}</text>
@@ -1568,7 +1593,7 @@ function renderWeightCalorieChart() {
           `;
         }).join('')}
 
-        ${activeMetrics.map(m => {
+        ${activeMetrics.map((m, mIdx) => {
           const sc = metricScales[m.key];
           if (!sc || !sc.hasData) return '';
           const pts = series
@@ -1579,6 +1604,7 @@ function renderWeightCalorieChart() {
             .filter(Boolean)
             .join(' ');
           if (!pts) return '';
+          const initDotY = initMeta && initMeta.dots[mIdx] ? initMeta.dots[mIdx].y : null;
 
           return `
             <g>
@@ -1586,27 +1612,19 @@ function renderWeightCalorieChart() {
                 stroke-opacity="${m.key === 'weight' ? '1' : '0.88'}" stroke-linecap="round" stroke-linejoin="round" points="${pts}" />
               ${series.map((s, idx) => {
                 const y = getMetricY(m.key, s.values[m.key]);
-                if (y === null) return '';
+                if (y === null || !s.exactFlags[m.key]) return '';
                 const x = getX(idx);
-                const isSelected = s.dateStr === activePoint.dateStr;
-                const hasMeasurement = s.exactFlags[m.key];
-                if (!hasMeasurement && !isSelected) return '';
                 return `
                   <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}"
-                    r="${isSelected ? 4.2 : (chartRangeDays > 90 ? 2.0 : 2.6)}"
-                    fill="${m.color}" stroke="#09090b" stroke-width="1.1"
-                    class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')" />
+                    r="${chartRangeDays > 90 ? 1.8 : 2.4}"
+                    fill="${m.color}" stroke="#09090b" stroke-width="1" />
                 `;
               }).join('')}
+              ${initDotY !== null ? `
+                <circle id="dash-chart-dot-${mIdx}" cx="${initMeta.x.toFixed(1)}" cy="${initDotY.toFixed(1)}"
+                  r="4.5" fill="${m.color}" stroke="#09090b" stroke-width="1.5" />
+              ` : ''}
             </g>
-          `;
-        }).join('')}
-
-        ${series.map((s, idx) => {
-          const x = getX(idx);
-          return `
-            <rect x="${(x - stepX / 2).toFixed(1)}" y="${padT}" width="${Math.max(8, stepX).toFixed(1)}" height="${plotH}"
-              fill="transparent" class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')" />
           `;
         }).join('')}
       </svg>
@@ -1614,6 +1632,46 @@ function renderWeightCalorieChart() {
       ${legendHtml}
     </div>
   `;
+}
+
+function showDashChartPoint(idx) {
+  const meta = window._dashChartMeta;
+  if (!meta || !meta.points || !meta.points[idx]) return;
+  const pt = meta.points[idx];
+  selectedChartDate = pt.dateStr;
+  const readout = document.getElementById('dash-chart-readout');
+  if (readout) readout.innerHTML = pt.html;
+  const cursor = document.getElementById('dash-chart-cursor');
+  if (cursor) {
+    cursor.setAttribute('x1', pt.x.toFixed(1));
+    cursor.setAttribute('x2', pt.x.toFixed(1));
+  }
+  (pt.dots || []).forEach((d, mIdx) => {
+    const dot = document.getElementById(`dash-chart-dot-${mIdx}`);
+    if (!dot) return;
+    if (d.y === null || d.y === undefined) {
+      dot.setAttribute('opacity', '0');
+    } else {
+      dot.setAttribute('cx', pt.x.toFixed(1));
+      dot.setAttribute('cy', d.y.toFixed(1));
+      dot.setAttribute('opacity', '1');
+    }
+  });
+}
+
+function scrubDashChart(ev, svg) {
+  const meta = window._dashChartMeta;
+  if (!meta || !meta.points || !meta.points.length || !svg) return;
+  const touch = ev.touches && ev.touches[0];
+  const clientX = touch ? touch.clientX : ev.clientX;
+  if (typeof clientX !== 'number') return;
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width) return;
+  const svgX = ((clientX - rect.left) / rect.width) * meta.W;
+  const plotW = meta.W - meta.padL - meta.padR;
+  const ratio = Math.max(0, Math.min(1, (svgX - meta.padL) / Math.max(1, plotW)));
+  const idx = Math.round(ratio * (meta.points.length - 1));
+  showDashChartPoint(idx);
 }
 
 // ---------- RENDERING ----------
@@ -1938,7 +1996,7 @@ function renderDashboard() {
     <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
       <div class="flex items-center justify-between">
         <div>
-          <h2 class="text-sm font-semibold text-white">Gewicht & Körperwerte (FitDays)</h2>
+          <h2 class="text-sm font-semibold text-white">Gewicht & Körperwerte</h2>
           <p class="text-[11px] text-zinc-400">Aktueller Stand & CSV-Sync</p>
         </div>
        <div class="flex gap-1.5">
@@ -2189,17 +2247,19 @@ function renderRecipesTab() {
                   🗑
                 </button>
               </div>
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-1.5">
                 <button type="button" onclick="updateRecipeItemGrams(${idx}, Math.max(1, ${(Number(it.grams) || 0) - step}))"
-                  class="px-3 py-2 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">−${step}</button>
+                  class="px-2.5 py-2 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">−${step}</button>
                 <div class="flex-1 flex items-center gap-1.5 bg-zinc-950 border border-zinc-700 focus-within:border-emerald-500 rounded-xl px-3 py-1.5">
-                  <input type="number" inputmode="decimal" value="${it.grams}" min="1"
-                    onchange="updateRecipeItemGrams(${idx}, this.value)"
+                  <input id="rec-ing-grams-${idx}" type="number" inputmode="decimal" value="${it.grams}" min="1"
+                    onkeydown="if(event.key==='Enter'){event.preventDefault(); confirmRecipeItemGrams(${idx});}"
                     class="w-full bg-transparent text-sm font-semibold text-white text-center focus:outline-none" />
                   <span class="text-xs font-medium text-zinc-400 shrink-0">g</span>
                 </div>
                 <button type="button" onclick="updateRecipeItemGrams(${idx}, ${(Number(it.grams) || 0) + step})"
-                  class="px-3 py-2 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">+${step}</button>
+                  class="px-2.5 py-2 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">+${step}</button>
+                <button type="button" onclick="confirmRecipeItemGrams(${idx})" title="Gramm-Angabe übernehmen" aria-label="Übernehmen"
+                  class="px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold shrink-0 transition">✓</button>
               </div>
             </div>
           `;
@@ -2307,24 +2367,13 @@ function setFoodSubTab(sub) {
 }
 
 function renderFoodTab() {
-  const actionCls = 'flex-1 px-3 py-2.5 rounded-2xl text-xs font-semibold transition flex items-center justify-center gap-1.5 border';
-  const subCls = (id) => `flex-1 py-2 rounded-xl text-xs font-medium transition ${
-    foodSubTab === id ? 'bg-emerald-500/15 text-emerald-400' : 'text-zinc-400 hover:text-zinc-200'
-  }`;
   return `
     <div class="flex gap-2">
-      <button onclick="openBarcodeModal()" class="${actionCls} bg-sky-500/15 hover:bg-sky-500/25 border-sky-500/30 text-sky-300">
-        <span>📷</span><span>Scan</span>
-      </button>
-      <button onclick="openAiMealModal()" class="${actionCls} bg-violet-500/15 hover:bg-violet-500/25 border-violet-500/30 text-violet-300">
+      <button onclick="openAiMealModal()" class="flex-1 px-3 py-2.5 rounded-2xl text-xs font-semibold transition flex items-center justify-center gap-1.5 border bg-violet-500/15 hover:bg-violet-500/25 border-violet-500/30 text-violet-300">
         <span>✨</span><span>KI-Analyse</span>
       </button>
     </div>
-    <div class="flex gap-1 bg-card border border-border rounded-2xl p-1">
-      <button onclick="setFoodSubTab('search')" class="${subCls('search')}">🔍 Food-Suche</button>
-      <button onclick="setFoodSubTab('recipes')" class="${subCls('recipes')}">🥣 Rezepte</button>
-    </div>
-    ${foodSubTab === 'recipes' ? renderRecipesTab() : renderSearchTab()}
+    ${renderRecipesTab()}
   `;
 }
 
@@ -2812,6 +2861,13 @@ function updateRecipeItemGrams(idx, val) {
   if (!editingRecipe) return;
   editingRecipe.items[idx].grams = Math.max(1, Number(val) || 100);
   render();
+}
+
+function confirmRecipeItemGrams(idx) {
+  const inp = document.getElementById(`rec-ing-grams-${idx}`);
+  if (!inp) return;
+  updateRecipeItemGrams(idx, inp.value);
+  showToast('✓ Menge übernommen');
 }
 
 function removeRecipeItem(idx) {
