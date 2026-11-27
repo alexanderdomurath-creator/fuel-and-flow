@@ -184,6 +184,18 @@ let state = (() => {
 const SYNC_CFG_KEY = 'fuel_and_flow_sync_cfg';
 let syncTimer = null;
 let lastRemoteTimestamp = null;
+let hasPendingLocalPush = false;
+let isSyncInFlight = false;
+
+function normalizeLoadedState(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  obj.recipes = Array.isArray(obj.recipes) ? obj.recipes : [];
+  obj.sportHabits = Array.isArray(obj.sportHabits) ? obj.sportHabits : [];
+  obj.workouts = Array.isArray(obj.workouts) ? obj.workouts : [];
+  obj.weightHistory = Array.isArray(obj.weightHistory) ? obj.weightHistory : [];
+  obj.logs = obj.logs && typeof obj.logs === 'object' ? obj.logs : {};
+  return obj;
+}
 
 function getSyncConfig() {
   try {
@@ -212,14 +224,16 @@ function buildSyncHeaders(cfg, extra = {}) {
   return headers;
 }
 
-async function pushStateToCloud() {
+async function pushStateToCloud(useKeepalive = false) {
   const cfg = getSyncConfig();
   if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) return;
 
-  const updatedAt = new Date().toISOString();
+  const updatedAt = state._updatedAt || new Date().toISOString();
+  state._updatedAt = updatedAt;
   try {
     const res = await fetch(`${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync`, {
       method: 'POST',
+      keepalive: Boolean(useKeepalive),
       headers: buildSyncHeaders(cfg, {
         'Content-Type': 'application/json',
         'Prefer': 'resolution=merge-duplicates'
@@ -234,6 +248,7 @@ async function pushStateToCloud() {
       const errBody = await res.json().catch(() => ({}));
       throw new Error(errBody.message || `HTTP ${res.status}`);
     }
+    hasPendingLocalPush = false;
     lastRemoteTimestamp = updatedAt;
     setSyncStatusText(`Synchronisiert (${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
   } catch (err) {
@@ -244,7 +259,16 @@ async function pushStateToCloud() {
 async function pullStateFromCloud(forceOverwrite = false) {
   const cfg = getSyncConfig();
   if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) return;
+  if (isSyncInFlight && !forceOverwrite) return;
 
+  // Wenn lokale Änderungen noch nicht hochgeladen wurden, zuerst pushen statt überschreiben
+  if (!forceOverwrite && hasPendingLocalPush) {
+    clearTimeout(syncTimer);
+    await pushStateToCloud();
+    return;
+  }
+
+  isSyncInFlight = true;
   try {
     const url = `${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync?sync_key=eq.${encodeURIComponent(cfg.syncKey)}&select=payload,updated_at`;
     const res = await fetch(url, {
@@ -263,21 +287,40 @@ async function pullStateFromCloud(forceOverwrite = false) {
     }
 
     const remote = rows[0];
-    if (forceOverwrite || !lastRemoteTimestamp || remote.updated_at > lastRemoteTimestamp) {
+    const remoteTs = remote.updated_at || remote.payload?._updatedAt || '';
+    const localTs = state._updatedAt || '';
+
+    if (forceOverwrite || (!localTs && remoteTs) || (remoteTs && remoteTs > localTs)) {
       if (remote.payload && typeof remote.payload === 'object') {
-        state = remote.payload;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-        lastRemoteTimestamp = remote.updated_at;
-        render();
+        // Laufende Eingabe im Rezept- oder Live-Workout-Editor bei stillem Hintergrund-Pull nicht abbrechen
+        const isEditingNow = !forceOverwrite && (
+          Boolean(editingRecipe) ||
+          (typeof sportLiveOpen !== 'undefined' && sportLiveOpen)
+        );
+        if (!isEditingNow) {
+          state = normalizeLoadedState(remote.payload);
+          if (remoteTs) state._updatedAt = remoteTs;
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+          lastRemoteTimestamp = remoteTs;
+          render();
+        }
       }
+    } else if (!forceOverwrite && localTs && remoteTs && localTs > remoteTs) {
+      await pushStateToCloud();
+    } else if (remoteTs) {
+      lastRemoteTimestamp = remoteTs;
     }
     setSyncStatusText(`Cloud aktuell (${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
   } catch (err) {
     setSyncStatusText(`Pull-Fehler: ${err.message}`, true);
+  } finally {
+    isSyncInFlight = false;
   }
 }
 
 function saveState() {
+  state._updatedAt = new Date().toISOString();
+  hasPendingLocalPush = true;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {}
@@ -285,7 +328,7 @@ function saveState() {
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     pushStateToCloud();
-  }, 800);
+  }, 600);
 }
 
 function normalizeRoutineStatus(val) {
@@ -422,46 +465,295 @@ function setHeatmapMetric(metric) {
 
 // ---------- FOOD API (OPEN FOOD FACTS + USDA) ----------
 const DE_TO_EN = {
-  'apfel': 'apple raw',
-  'banane': 'banana raw',
-  'haferflocken': 'oats rolled',
-  'tofu': 'tofu firm',
-  'räuchertofu': 'smoked tofu',
-  'reis': 'rice white raw',
+  // Gemüse & Kräuter
+  'rote zwiebel': 'red onion raw',
+  'rote zwiebeln': 'red onion raw',
+  'zwiebel': 'onion raw',
+  'zwiebeln': 'onion raw',
+  'frühlingszwiebel': 'scallion green onion raw',
+  'frühlingszwiebeln': 'scallion green onion raw',
+  'lauchzwiebel': 'scallion green onion raw',
+  'schalotte': 'shallot raw',
+  'schalotten': 'shallot raw',
+  'knoblauch': 'garlic raw',
+  'knoblauchzehe': 'garlic raw',
+  'ingwer': 'ginger root raw',
+  'tomate': 'tomato raw',
+  'tomaten': 'tomato raw',
+  'kirschtomaten': 'cherry tomatoes raw',
+  'cherrytomaten': 'cherry tomatoes raw',
+  'passierte tomaten': 'tomato puree',
+  'gehackte tomaten': 'canned crushed tomatoes',
+  'tomatenmark': 'tomato paste',
+  'paprika': 'bell pepper raw',
+  'rote paprika': 'red bell pepper raw',
+  'gelbe paprika': 'yellow bell pepper raw',
+  'grüne paprika': 'green bell pepper raw',
+  'gurke': 'cucumber raw',
+  'salatgurke': 'cucumber raw',
+  'zucchini': 'zucchini raw',
+  'aubergine': 'eggplant raw',
   'brokkoli': 'broccoli raw',
-  'magerquark': 'quark low fat',
-  'hähnchen': 'chicken breast',
-  'lachs': 'salmon raw',
-  'ei': 'egg whole raw',
-  'eier': 'egg whole raw',
+  'blumenkohl': 'cauliflower raw',
+  'spinat': 'spinach raw',
+  'babyspinat': 'spinach raw',
+  'karotte': 'carrot raw',
+  'karotten': 'carrot raw',
+  'möhre': 'carrot raw',
+  'möhren': 'carrot raw',
   'kartoffel': 'potato raw',
   'kartoffeln': 'potato raw',
   'süßkartoffel': 'sweet potato raw',
+  'süßkartoffeln': 'sweet potato raw',
+  'champignons': 'mushrooms raw',
+  'pilze': 'mushrooms raw',
+  'lauch': 'leek raw',
+  'porree': 'leek raw',
+  'sellerie': 'celery raw',
+  'spargel': 'asparagus raw',
+  'rotkohl': 'red cabbage raw',
+  'weißkohl': 'cabbage raw',
+  'rucola': 'arugula raw',
+  'feldsalat': 'lambs lettuce raw',
+  'eisbergsalat': 'iceberg lettuce raw',
+  'salat': 'lettuce raw',
+  'mais': 'sweet corn',
+  'erbsen': 'green peas',
+  'grüne bohnen': 'green beans',
+  'kidneybohnen': 'kidney beans cooked',
+  'schwarze bohnen': 'black beans cooked',
+  'kichererbsen': 'chickpeas cooked',
   'linsen': 'lentils dry',
-  'mandeln': 'almonds',
-  'walnüsse': 'walnuts',
-  'avocado': 'avocado',
+  'rote linsen': 'red lentils dry',
+  'edamame': 'edamame',
+  'avocado': 'avocado raw',
+  'oliven': 'olives',
+  'chili': 'chili pepper raw',
+  'petersilie': 'parsley fresh',
+  'basilikum': 'basil fresh',
+  'koriander': 'coriander fresh',
+
+  // Obst
+  'apfel': 'apple raw',
+  'äpfel': 'apple raw',
+  'banane': 'banana raw',
+  'bananen': 'banana raw',
+  'beeren': 'mixed berries',
+  'blaubeeren': 'blueberries raw',
+  'heidelbeeren': 'blueberries raw',
+  'himbeeren': 'raspberries raw',
+  'erdbeeren': 'strawberries raw',
+  'mango': 'mango raw',
+  'orange': 'orange raw',
+  'zitrone': 'lemon raw',
+  'zitronensaft': 'lemon juice',
+  'limette': 'lime raw',
+  'trauben': 'grapes raw',
+  'birne': 'pear raw',
+  'kiwi': 'kiwi raw',
+  'ananas': 'pineapple raw',
+  'wassermelone': 'watermelon raw',
+  'datteln': 'dates medjool',
+
+  // Öle, Fette, Soßen & Gewürze
+  'olivenöl': 'olive oil',
+  'rapsöl': 'canola oil',
+  'sonnenblumenöl': 'sunflower oil',
+  'kokosöl': 'coconut oil',
+  'leinöl': 'flaxseed oil',
+  'sesamöl': 'sesame oil',
+  'butter': 'butter',
+  'ghee': 'ghee clarified butter',
+  'sojasoße': 'soy sauce',
+  'sojasauce': 'soy sauce',
+  'balsamico': 'balsamic vinegar',
+  'essig': 'vinegar',
+  'senf': 'mustard',
+  'pesto': 'basil pesto',
+  'honig': 'honey',
+  'ahornsirup': 'maple syrup',
+  'ketchup': 'tomato ketchup',
+  'mayonnaise': 'mayonnaise',
+  'hummus': 'hummus',
+  'tahini': 'tahini sesame paste',
+  'erdnussbutter': 'peanut butter',
+  'erdnussmus': 'peanut butter',
+  'mandelmus': 'almond butter',
+  'kokosmilch': 'coconut milk canned',
+
+  // Protein, Fleisch, Fisch, Eier, Milchprodukte
+  'hähnchen': 'chicken breast raw',
+  'hähnchenbrust': 'chicken breast raw',
+  'hühnchen': 'chicken breast raw',
+  'pute': 'turkey breast raw',
+  'putenbrust': 'turkey breast raw',
+  'rindfleisch': 'beef lean raw',
+  'rinderhack': 'ground beef lean',
+  'hackfleisch': 'ground beef lean',
+  'schweinefleisch': 'pork loin raw',
+  'lachs': 'salmon raw',
+  'räucherlachs': 'smoked salmon',
+  'thunfisch': 'tuna canned in water',
+  'garnelen': 'shrimp raw',
+  'kabeljau': 'cod raw',
+  'forelle': 'trout raw',
+  'ei': 'egg whole raw',
+  'eier': 'egg whole raw',
+  'tofu': 'tofu firm',
+  'räuchertofu': 'smoked tofu',
+  'tempeh': 'tempeh',
+  'seitan': 'seitan',
+  'magerquark': 'quark low fat',
+  'quark': 'quark cheese',
+  'skyr': 'skyr icelandic yogurt',
+  'joghurt': 'greek yogurt plain',
+  'naturjoghurt': 'plain yogurt',
+  'griechischer joghurt': 'greek yogurt',
+  'körniger frischkäse': 'cottage cheese',
+  'hüttenkäse': 'cottage cheese',
+  'frischkäse': 'cream cheese',
+  'mozzarella': 'mozzarella cheese',
+  'feta': 'feta cheese',
+  'parmesan': 'parmesan cheese',
+  'gouda': 'gouda cheese',
+  'käse': 'cheese cheddar',
+  'milch': 'milk 1.5%',
+  'vollmilch': 'whole milk',
+  'sahne': 'heavy cream',
+  'schlagsahne': 'heavy cream',
+  'schmand': 'sour cream',
   'sojamilch': 'soy milk unsweetened',
   'hafermilch': 'oat milk',
-  'käse': 'cheese',
-  'brot': 'sourdough bread'
+  'mandelmilch': 'almond milk unsweetened',
+  'whey': 'whey protein powder',
+  'proteinpulver': 'whey protein powder',
+
+  // Getreide, Backwaren, Nüsse & Samen
+  'haferflocken': 'oats rolled',
+  'reis': 'rice white raw',
+  'basmatireis': 'basmati rice raw',
+  'vollkornreis': 'brown rice raw',
+  'nudeln': 'pasta dry',
+  'vollkornnudeln': 'whole wheat pasta dry',
+  'spaghetti': 'spaghetti dry',
+  'quinoa': 'quinoa dry',
+  'couscous': 'couscous dry',
+  'bulgur': 'bulgur dry',
+  'brot': 'sourdough bread',
+  'vollkornbrot': 'whole wheat bread',
+  'brötchen': 'bread roll',
+  'toast': 'toast bread',
+  'wrap': 'tortilla wrap',
+  'mehl': 'wheat flour',
+  'mandeln': 'almonds',
+  'walnüsse': 'walnuts',
+  'cashews': 'cashew nuts',
+  'erdnüsse': 'peanuts',
+  'haselnüsse': 'hazelnuts',
+  'pistazien': 'pistachios',
+  'kürbiskerne': 'pumpkin seeds',
+  'sonnenblumenkerne': 'sunflower seeds',
+  'chiasamen': 'chia seeds',
+  'leinsamen': 'flaxseed',
+  'sesam': 'sesame seeds',
+  'dunkle schokolade': 'dark chocolate 70%',
+  'schokolade': 'chocolate'
 };
+
+const DE_WORD_MAP = {
+  'rot': 'red', 'rote': 'red', 'roter': 'red', 'rotes': 'red',
+  'grün': 'green', 'grüne': 'green', 'gelb': 'yellow', 'gelbe': 'yellow',
+  'weiß': 'white', 'weiße': 'white', 'schwarz': 'black', 'schwarze': 'black',
+  'frisch': 'fresh', 'frische': 'fresh', 'roh': 'raw', 'rohe': 'raw',
+  'gekocht': 'cooked', 'gekochte': 'cooked', 'gebraten': 'fried',
+  'getrocknet': 'dried', 'getrocknete': 'dried', 'geräuchert': 'smoked',
+  'vollkorn': 'whole wheat', 'fettarm': 'low fat', 'mager': 'lean',
+  'ungesüßt': 'unsweetened', 'bio': ''
+};
+
+function translateFoodQueryDeToEn(rawQuery) {
+  const clean = String(rawQuery || '').trim().toLowerCase();
+  if (!clean) return '';
+  if (DE_TO_EN[clean]) return DE_TO_EN[clean];
+
+  // Teilphrasen & Wort-für-Wort übersetzen (z. B. "rote zwiebeln", "getrocknete tomaten")
+  const tokens = clean.split(/\s+/).filter(Boolean);
+  let translatedAny = false;
+  const out = tokens.map(tok => {
+    if (DE_TO_EN[tok]) { translatedAny = true; return DE_TO_EN[tok]; }
+    if (DE_WORD_MAP[tok] !== undefined) { translatedAny = true; return DE_WORD_MAP[tok]; }
+    // Einfache Plural-Endungen abbauen (z. B. zwiebeln -> zwiebel, tomaten -> tomate)
+    for (const suf of ['en', 'n', 'e', 's']) {
+      if (tok.length > 4 && tok.endsWith(suf)) {
+        const stem = tok.slice(0, -suf.length);
+        if (DE_TO_EN[stem]) { translatedAny = true; return DE_TO_EN[stem]; }
+      }
+    }
+    return tok;
+  }).filter(Boolean);
+
+  return translatedAny ? out.join(' ') : clean;
+}
+
+function suggestDefaultGrams(foodName) {
+  const n = String(foodName || '').toLowerCase();
+  // Öle, Knoblauch, Gewürze, Kräuter: 5 g
+  if (/(öl\b|\boil\b|olive oil|canola|sunflower oil|coconut oil|flaxseed oil|sesame oil|knoblauch|garlic|ingwer|ginger|gewürz|spice|pfeffer|pepper\b|salz|salt\b|chili|petersilie|basilikum|koriander|parsley|basil|zimt|cinnamon|curry|kurkuma)/.test(n)) {
+    return 5;
+  }
+  // Essig, Sojasoße, Senf, Zitronensaft, Samen: 10 g
+  if (/(essig|vinegar|balsamico|sojasoße|sojasauce|soy sauce|senf|mustard|zitronensaft|lemon juice|chia|leinsamen|flaxseed|sesam\b|tomatenmark|tomato paste|hefe)/.test(n)) {
+    return 10;
+  }
+  // Aufstriche, Butter, Honig, Sirup, Pesto, Parmesan, Soßen: 15 g
+  if (/(butter|ghee|honig|honey|sirup|syrup|pesto|parmesan|marmelade|jam\b|mayo|ketchup|tahini|erdnussbutter|erdnussmus|peanut butter|mandelmus|almond butter|frischkäse|cream cheese|hummus)/.test(n)) {
+    return 15;
+  }
+  // Nüsse, Kerne, Schokolade, Käse, Proteinpulver: 30 g
+  if (/(mandel|almond|walnuss|walnüsse|walnut|cashew|erdnuss|erdnüsse|peanut|haselnuss|pistazi|kern|seed|schokolade|chocolate|käse|cheese|feta|gouda|whey|proteinpulver|protein powder|dattel|date)/.test(n)) {
+    return 30;
+  }
+  // Zwiebeln, Schalotten, Frühlingszwiebeln, Oliven: 50 g
+  if (/(zwiebel|onion|schalott|shallot|scallion|olive)/.test(n)) {
+    return 50;
+  }
+  // Eier, Brot, Haferflocken, trockenes Getreide/Nudeln/Reis: 60–75 g
+  if (/(\bei\b|eier|\begg|eggs|brot|bread|brötchen|toast|wrap|tortilla)/.test(n)) {
+    return 60;
+  }
+  if (/(haferflocken|oats|reis|rice|nudel|pasta|spaghetti|quinoa|couscous|bulgur|linsen|lentil|mehl|flour)/.test(n)) {
+    return 75;
+  }
+  // Fleisch, Fisch, Tofu, Quark, Skyr, Joghurt, Kartoffeln, Gemüse, Obst: 150 g
+  if (/(hähnchen|chicken|pute|turkey|rind|beef|lachs|salmon|thunfisch|tuna|tofu|tempeh|quark|skyr|joghurt|yogurt|kartoffel|potato|brokkoli|broccoli|tomate|tomato|paprika|bell pepper|gurke|cucumber|zucchini|apfel|apple|banane|banana|beeren|berries)/.test(n)) {
+    return 150;
+  }
+  // Milch & Pflanzendrinks: 200 g
+  if (/(milch|milk)/.test(n)) {
+    return 200;
+  }
+  return 100;
+}
 
 async function searchFoodsLive(query) {
   const q = (query || '').trim();
   if (q.length < 2) return [];
-  const results = [];
+  const offResults = [];
+  const usdaResults = [];
 
-  const offPromise = fetch(`https://de.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=12`)
+  const offPromise = fetch(`https://de.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&lc=de&cc=de&page_size=12&fields=product_name,product_name_de,brands,nutriments`)
     .then(r => r.json())
     .then(data => {
       (data.products || []).forEach(p => {
         const n = p.nutriments || {};
         const kcal = Number(n['energy-kcal_100g'] || n['energy-kcal'] || 0);
-        if (!p.product_name || kcal <= 0) return;
-        results.push({
-          name: p.brands ? `${p.product_name} (${p.brands.split(',')[0]})` : p.product_name,
+        const rawName = (p.product_name_de || p.product_name || '').trim();
+        if (!rawName || kcal <= 0) return;
+        const fullName = p.brands ? `${rawName} (${p.brands.split(',')[0].trim()})` : rawName;
+        offResults.push({
+          name: fullName,
           source: 'Open Food Facts',
+          defaultGrams: suggestDefaultGrams(`${q} ${fullName}`),
           kcal100: Math.round(kcal),
           p100: Math.round((Number(n.proteins_100g) || 0) * 10) / 10,
           c100: Math.round((Number(n.carbohydrates_100g) || 0) * 10) / 10,
@@ -471,7 +763,8 @@ async function searchFoodsLive(query) {
     })
     .catch(() => {});
 
-  const enQuery = DE_TO_EN[q.toLowerCase()] || q;
+  const enQuery = translateFoodQueryDeToEn(q);
+  const wasTranslated = enQuery.toLowerCase() !== q.toLowerCase();
   const usdaPromise = fetch(`https://api.nal.usda.gov/fdc/v1/foods/search?api_key=DEMO_KEY&query=${encodeURIComponent(enQuery)}&pageSize=8`)
     .then(r => r.json())
     .then(data => {
@@ -482,9 +775,11 @@ async function searchFoodsLive(query) {
         };
         const kcal = getNut('208') || getNut('1008');
         if (!f.description || kcal <= 0) return;
-        results.push({
-          name: f.description,
+        const displayName = wasTranslated ? `${q} (${f.description})` : f.description;
+        usdaResults.push({
+          name: displayName,
           source: 'USDA FoodData',
+          defaultGrams: suggestDefaultGrams(`${q} ${f.description}`),
           kcal100: Math.round(kcal),
           p100: Math.round((getNut('203') || getNut('1003')) * 10) / 10,
           c100: Math.round((getNut('205') || getNut('1005')) * 10) / 10,
@@ -495,7 +790,11 @@ async function searchFoodsLive(query) {
     .catch(() => {});
 
   await Promise.all([offPromise, usdaPromise]);
-  searchResultsCache = results.slice(0, 18);
+  // Bei übersetzten deutschen Grundzutaten USDA-Grundlebensmittel ganz oben mit einmischen
+  const merged = wasTranslated
+    ? [...usdaResults.slice(0, 4), ...offResults, ...usdaResults.slice(4)]
+    : [...offResults, ...usdaResults];
+  searchResultsCache = merged.slice(0, 18);
   return searchResultsCache;
 }
 
@@ -1223,11 +1522,88 @@ function getDynamicCalorieTarget(dateStr = state.selectedDate) {
 
   return {
     total,
+    bmr: Math.round(bmr),
+    heightCm,
+    age,
+    activityFactor: 1.35,
     baseTdee,
     sportBonus,
+    sportDetails: doneIds.map(id => {
+      const habit = state.sportHabits.find(h => h.id === id);
+      const name = habit ? habit.name : 'Sport';
+      return { name, kcal: getSportActivityKcal(name, weightKg) };
+    }),
     offset,
     weightKg
   };
+}
+
+function openCalorieInfoModal() {
+  const t = getDynamicCalorieTarget(state.selectedDate);
+  const sportRows = t.sportDetails.length
+    ? t.sportDetails.map(s => `
+        <div class="flex items-center justify-between text-xs py-1">
+          <span class="text-zinc-300">Sport-Bonus: ${s.name}</span>
+          <span class="font-semibold text-emerald-400">+${s.kcal} kcal</span>
+        </div>`).join('')
+    : `<div class="flex items-center justify-between text-xs py-1">
+         <span class="text-zinc-500">Sport-Bonus (${formatDisplayDate(state.selectedDate)})</span>
+         <span class="text-zinc-500">+0 kcal</span>
+       </div>`;
+
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold text-white">Berechnung Tagesbedarf</h3>
+          <p class="text-[11px] text-zinc-400">Dynamische Formel für ${formatDisplayDate(state.selectedDate)}</p>
+        </div>
+        <button onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+
+      <div class="bg-zinc-900/80 border border-border rounded-2xl p-3.5 space-y-1.5">
+        <div class="flex items-center justify-between text-xs py-1">
+          <div>
+            <div class="text-zinc-200 font-medium">Grundumsatz (BMR)</div>
+            <div class="text-[10px] text-zinc-500">Mifflin-St Jeor: 10×${t.weightKg.toFixed(1)}kg + 6,25×${t.heightCm}cm − 5×${t.age} + 5</div>
+          </div>
+          <span class="font-semibold text-white shrink-0">${t.bmr} kcal</span>
+        </div>
+
+        <div class="flex items-center justify-between text-xs py-1 border-t border-zinc-800/80">
+          <div>
+            <div class="text-zinc-200 font-medium">Alltagsbedarf (Basis)</div>
+            <div class="text-[10px] text-zinc-500">Grundumsatz × ${String(t.activityFactor).replace('.', ',')} (Büro / Alltag ohne Sport)</div>
+          </div>
+          <span class="font-semibold text-sky-300 shrink-0">${t.baseTdee} kcal</span>
+        </div>
+
+        <div class="border-t border-zinc-800/80 pt-1">
+          ${sportRows}
+        </div>
+
+        ${t.offset !== 0 ? `
+          <div class="flex items-center justify-between text-xs py-1 border-t border-zinc-800/80">
+            <span class="text-zinc-300">Ziel-Offset (Defizit / Überschuss)</span>
+            <span class="font-semibold ${t.offset < 0 ? 'text-amber-300' : 'text-emerald-300'}">${t.offset > 0 ? '+' : ''}${t.offset} kcal</span>
+          </div>
+        ` : ''}
+
+        <div class="flex items-center justify-between text-sm font-bold pt-2 mt-1 border-t border-zinc-700">
+          <span class="text-white">Tagesbedarf gesamt</span>
+          <span class="text-emerald-400">${t.total} kcal</span>
+        </div>
+      </div>
+
+      <p class="text-[11px] text-zinc-400 leading-relaxed">
+        Dein Gewicht (${t.weightKg.toFixed(1)} kg) wird automatisch aus dem letzten Messwert übernommen. Abgehakte Sport-Einheiten addieren ihren geschätzten Kalorienverbrauch automatisch oben drauf.
+      </p>
+
+      <button onclick="closeModal()" class="w-full py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+        Verstanden
+      </button>
+    </div>
+  `);
 }
 
 function renderDashboard() {
@@ -1341,7 +1717,11 @@ function renderDashboard() {
     <section class="bg-card border border-border rounded-3xl p-4 space-y-4">
       <div class="flex items-start justify-between">
         <div>
-          <h2 class="text-xs uppercase tracking-wider text-zinc-400 font-semibold">Tagesbilanz</h2>
+          <div class="flex items-center gap-1.5">
+            <h2 class="text-xs uppercase tracking-wider text-zinc-400 font-semibold">Tagesbilanz</h2>
+            <button onclick="openCalorieInfoModal()" title="Berechnung des Tagesbedarfs anzeigen" aria-label="Info zur Berechnung des Tagesbedarfs"
+              class="w-4 h-4 rounded-full bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 hover:text-white text-[10px] font-bold inline-flex items-center justify-center transition">i</button>
+          </div>
           <div class="mt-1 flex items-baseline gap-2">
             <span class="text-2xl font-bold text-white">${Math.round(totals.kcal)}</span>
             <span class="text-xs text-zinc-400">/ ${effectiveCalorieGoal} kcal</span>
@@ -1634,38 +2014,55 @@ function renderRecipesTab() {
           </div>
         </div>
 
-        <div class="space-y-2">
+        <div class="space-y-2.5">
           <div class="text-xs font-semibold text-zinc-300">Zutaten (${editingRecipe.items.length})</div>
-          ${editingRecipe.items.map((it, idx) => `
-            <div class="flex items-center justify-between gap-2 bg-zinc-900 border border-border rounded-2xl px-3 py-2">
-              <div class="min-w-0 flex-1">
-                <div class="text-xs font-medium text-white truncate">${it.name}</div>
-                <div class="text-[10px] text-zinc-400">${Math.round(it.kcal100 * it.grams / 100)} kcal · P ${Math.round(it.p100 * it.grams / 100)}g</div>
-              </div>
-              <div class="flex items-center gap-1.5">
-                <input type="number" value="${it.grams}" min="1"
-                  onchange="updateRecipeItemGrams(${idx}, this.value)"
-                  class="w-16 px-2 py-1 rounded-xl bg-zinc-800 border border-zinc-700 text-xs text-right text-white" />
-                <span class="text-[11px] text-zinc-400">g</span>
-                <button onclick="removeRecipeItem(${idx})" class="p-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 text-xs" title="Entfernen">
+          ${editingRecipe.items.map((it, idx) => {
+            const step = Number(it.grams) <= 25 ? 5 : 10;
+            return `
+            <div class="bg-zinc-900 border border-border rounded-2xl p-3 space-y-2">
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0 flex-1">
+                  <div class="text-xs font-semibold text-white leading-snug">${it.name}</div>
+                  <div class="text-[11px] text-zinc-400 mt-0.5">${Math.round(it.kcal100 * it.grams / 100)} kcal · P ${Math.round(it.p100 * it.grams / 100)}g · C ${Math.round(it.c100 * it.grams / 100)}g · F ${Math.round(it.f100 * it.grams / 100)}g</div>
+                </div>
+                <button onclick="removeRecipeItem(${idx})" class="w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 text-xs" title="Entfernen">
                   🗑
                 </button>
               </div>
+              <div class="flex items-center gap-2">
+                <button type="button" onclick="updateRecipeItemGrams(${idx}, Math.max(1, ${(Number(it.grams) || 0) - step}))"
+                  class="px-3 py-2 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">−${step}</button>
+                <div class="flex-1 flex items-center gap-1.5 bg-zinc-950 border border-zinc-700 focus-within:border-emerald-500 rounded-xl px-3 py-1.5">
+                  <input type="number" inputmode="decimal" value="${it.grams}" min="1"
+                    onchange="updateRecipeItemGrams(${idx}, this.value)"
+                    class="w-full bg-transparent text-sm font-semibold text-white text-center focus:outline-none" />
+                  <span class="text-xs font-medium text-zinc-400 shrink-0">g</span>
+                </div>
+                <button type="button" onclick="updateRecipeItemGrams(${idx}, ${(Number(it.grams) || 0) + step})"
+                  class="px-3 py-2 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">+${step}</button>
+              </div>
             </div>
-          `).join('')}
+          `;
+          }).join('')}
         </div>
 
-        <div class="pt-2 border-t border-border space-y-2">
-          <div class="text-xs font-semibold text-zinc-300">Zutat aus Live-Datenbank hinzufügen</div>
+        <div class="pt-2 border-t border-border space-y-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <div class="text-xs font-semibold text-zinc-300">Zutat hinzufügen</div>
+            <button type="button" onclick="openBarcodeModal()"
+              class="px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 text-xs font-semibold flex items-center gap-1.5 transition">
+              <span>📷</span><span>Barcode scannen</span>
+            </button>
+          </div>
           <div class="flex gap-2">
-            <input id="builder-search-input" type="text" placeholder="z. B. Apfel, Banane, Haferflocken, Tofu..."
+            <input id="builder-search-input" type="text" placeholder="Deutsch suchen (z. B. rote Zwiebeln, Olivenöl, Tofu…)"
               onkeydown="if(event.key==='Enter') runBuilderSearch()"
-              class="flex-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white" />
-            <button onclick="runBuilderSearch()" class="px-3 py-2 rounded-xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
+              class="flex-1 px-3 py-2.5 rounded-xl bg-zinc-900 border border-border text-xs text-white" />
+            <button onclick="runBuilderSearch()" class="px-3.5 py-2.5 rounded-xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
               Suchen
             </button>
           </div>
-          <div id="builder-search-results" class="space-y-1.5 max-h-48 overflow-y-auto"></div>
+          <div id="builder-search-results" class="space-y-1.5 max-h-60 overflow-y-auto"></div>
         </div>
 
         <div class="flex gap-2 pt-2">
@@ -2269,26 +2666,30 @@ async function runBuilderSearch() {
     box.innerHTML = `<div class="text-xs text-zinc-500 py-2">Keine Treffer gefunden.</div>`;
     return;
   }
-  box.innerHTML = items.map((it, idx) => `
-    <div class="flex items-center justify-between bg-zinc-900/90 border border-border rounded-xl px-3 py-2 text-xs">
-      <div class="min-w-0 pr-2">
+  box.innerHTML = items.map((it, idx) => {
+    const defG = it.defaultGrams || suggestDefaultGrams(it.name);
+    return `
+    <div class="flex items-center justify-between bg-zinc-900/90 border border-border rounded-xl px-3 py-2.5 text-xs gap-2">
+      <div class="min-w-0 flex-1">
         <div class="font-medium text-zinc-200 truncate">${it.name}</div>
-        <div class="text-[10px] text-zinc-400">${it.kcal100} kcal · P ${it.p100}g · ${it.source}</div>
+        <div class="text-[10px] text-zinc-400">${it.kcal100} kcal/100g · P ${it.p100}g · ${it.source}</div>
       </div>
-      <button onclick="addCachedFoodToRecipe(${idx})" class="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
-        + 100g
+      <button onclick="addCachedFoodToRecipe(${idx})" class="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/35 shrink-0 font-semibold">
+        + ${defG}g
       </button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function addCachedFoodToRecipe(idx) {
   const food = searchResultsCache[idx];
   if (!food || !editingRecipe) return;
+  const grams = food.defaultGrams || suggestDefaultGrams(food.name);
   editingRecipe.items.push({
     id: 'it_' + Date.now(),
     name: food.name,
-    grams: 100,
+    grams,
     kcal100: food.kcal100,
     p100: food.p100,
     c100: food.c100,
@@ -2332,30 +2733,35 @@ async function runGlobalFoodSearch() {
     box.innerHTML = `<div class="text-xs text-zinc-500 py-2">Keine Treffer gefunden.</div>`;
     return;
   }
-  box.innerHTML = items.map((it, idx) => `
-    <div class="flex items-center justify-between bg-zinc-900 border border-border rounded-2xl p-3 text-xs">
-      <div class="min-w-0 pr-2">
+  box.innerHTML = items.map((it, idx) => {
+    const defG = it.defaultGrams || suggestDefaultGrams(it.name);
+    return `
+    <div class="flex items-center justify-between bg-zinc-900 border border-border rounded-2xl p-3 text-xs gap-2">
+      <div class="min-w-0 flex-1">
         <div class="font-medium text-white truncate">${it.name}</div>
-        <div class="text-[11px] text-zinc-400 mt-0.5">${it.kcal100} kcal · P ${it.p100}g · C ${it.c100}g · F ${it.f100}g · <span class="text-emerald-400">${it.source}</span></div>
+        <div class="text-[11px] text-zinc-400 mt-0.5">${it.kcal100} kcal/100g · P ${it.p100}g · C ${it.c100}g · F ${it.f100}g · <span class="text-emerald-400">${it.source}</span></div>
       </div>
-      <button onclick="logCachedFoodToday(${idx})" class="px-3 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0 font-medium">
-        + 100g loggen
+      <button onclick="logCachedFoodToday(${idx})" class="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/35 shrink-0 font-semibold">
+        + ${defG}g
       </button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function logCachedFoodToday(idx) {
   const food = searchResultsCache[idx];
   if (!food) return;
+  const g = food.defaultGrams || suggestDefaultGrams(food.name);
+  const f = g / 100;
   const log = ensureDayLog(state.selectedDate);
   log.entries.push({
     id: 'ent_' + Date.now(),
-    name: `${food.name} (100g)`,
-    kcal: food.kcal100,
-    p: food.p100,
-    c: food.c100,
-    f: food.f100
+    name: `${food.name} (${g}g)`,
+    kcal: Math.round(food.kcal100 * f),
+    p: Math.round(food.p100 * f * 10) / 10,
+    c: Math.round(food.c100 * f * 10) / 10,
+    f: Math.round(food.f100 * f * 10) / 10
   });
   saveState();
   switchTab('dashboard');
@@ -3749,5 +4155,24 @@ render();
 
 pullStateFromCloud();
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') pullStateFromCloud();
+  if (document.visibilityState === 'visible') {
+    pullStateFromCloud();
+  } else if (hasPendingLocalPush) {
+    clearTimeout(syncTimer);
+    pushStateToCloud(true);
+  }
 });
+window.addEventListener('focus', () => pullStateFromCloud());
+window.addEventListener('online', () => {
+  if (hasPendingLocalPush) pushStateToCloud();
+  else pullStateFromCloud();
+});
+window.addEventListener('pagehide', () => {
+  if (hasPendingLocalPush) {
+    clearTimeout(syncTimer);
+    pushStateToCloud(true);
+  }
+});
+setInterval(() => {
+  if (document.visibilityState === 'visible') pullStateFromCloud();
+}, 30000);
