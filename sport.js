@@ -295,15 +295,25 @@ const EXERCISE_ALIASES = {
 };
 
 const SPORT_DRAFT_KEY = 'fuel_and_flow_workout_draft';
+const DEFAULT_PINNED_EXERCISES = [
+  'Dips',
+  'Klimmzüge',
+  'Kurzhantel-Bankdrücken',
+  'Bankdrücken',
+  'Kurzhantel-Schulterdrücken',
+  'Kniebeugen'
+];
 
 let sportDraft = null;
-let sportPickerState = null; // { targetIndex: number | 'add', query: '', group: 'ALL' }
+let sportLiveOpen = false;
+let sportPickerState = null; // { targetIndex: number | 'add' | 'pin', query: '', group: 'ALL' }
+let sportTemplatePickerQuery = '';
 let sportRestEndMs = 0;
 let sportRestInterval = null;
+let sportClockInterval = null;
 let sportProgressEx = null;
 let sportProgressGroup = 'ALL';
 let sportProgressRange = 'ALL'; // '90' | '365' | 'ALL'
-let sportSummaryDays = 30; // 7 | 30 | 365 | 0 (Gesamt)
 let sportHistoryQuery = '';
 let sportHistoryLimit = 25;
 
@@ -585,7 +595,62 @@ function clearSportDraftLocal() {
   try { localStorage.removeItem(SPORT_DRAFT_KEY); } catch (e) {}
 }
 
-// ---------- PAUSEN-TIMER ----------
+// ---------- LIVE-STOPPUHR & PAUSEN-TIMER ----------
+function getDraftElapsedMs(d) {
+  if (!d) return 0;
+  let ms = Number(d.elapsedMs) || 0;
+  if (d.timerRunning && d.timerStartedAt) {
+    ms += Math.max(0, Date.now() - Number(d.timerStartedAt));
+  }
+  return ms;
+}
+
+function fmtClockMs(ms) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function ensureSportClockTicker() {
+  if (sportClockInterval) return;
+  sportClockInterval = setInterval(() => {
+    const active = sportDraft || loadSportDraftLocal();
+    const clockEl = document.getElementById('sport-live-clock');
+    const bannerEl = document.getElementById('sport-banner-clock');
+    if (!active || (!clockEl && !bannerEl)) {
+      if (!active) {
+        clearInterval(sportClockInterval);
+        sportClockInterval = null;
+      }
+      return;
+    }
+    const txt = fmtClockMs(getDraftElapsedMs(active));
+    if (clockEl) clockEl.textContent = txt;
+    if (bannerEl) bannerEl.textContent = txt;
+  }, 1000);
+}
+
+function toggleSportWorkoutTimer() {
+  if (!sportDraft) return;
+  const now = Date.now();
+  if (sportDraft.timerRunning) {
+    sportDraft.elapsedMs = getDraftElapsedMs(sportDraft);
+    sportDraft.timerRunning = false;
+    sportDraft.timerStartedAt = null;
+  } else {
+    if (!sportDraft.firstStartedAt) sportDraft.firstStartedAt = now;
+    sportDraft.timerRunning = true;
+    sportDraft.timerStartedAt = now;
+    ensureSportClockTicker();
+  }
+  saveSportDraftLocal();
+  render();
+}
+
 function startSportRestTimer(seconds) {
   sportRestEndMs = Date.now() + seconds * 1000;
   if (sportRestInterval) clearInterval(sportRestInterval);
@@ -606,23 +671,23 @@ function updateSportRestTimerDom() {
   const el = document.getElementById('sport-rest-display');
   if (!el) return;
   if (!sportRestEndMs) {
-    el.textContent = 'Pause';
-    el.className = 'text-[11px] font-medium text-zinc-400 tabular-nums';
+    el.textContent = 'Pausen-Timer';
+    el.className = 'text-xs font-medium text-zinc-400 tabular-nums';
     return;
   }
   const rem = Math.ceil((sportRestEndMs - Date.now()) / 1000);
   if (rem <= 0) {
     sportRestEndMs = 0;
     if (sportRestInterval) { clearInterval(sportRestInterval); sportRestInterval = null; }
-    el.textContent = 'Los!';
-    el.className = 'text-[11px] font-bold text-emerald-400 animate-pulse';
+    el.textContent = 'Pause vorbei!';
+    el.className = 'text-xs font-bold text-emerald-400 animate-pulse';
     try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch (e) {}
     return;
   }
   const m = Math.floor(rem / 60);
   const s = rem % 60;
-  el.textContent = `${m}:${String(s).padStart(2, '0')}`;
-  el.className = 'text-[11px] font-bold text-amber-300 tabular-nums';
+  el.textContent = `Pause ${m}:${String(s).padStart(2, '0')}`;
+  el.className = 'text-xs font-bold text-amber-300 tabular-nums';
 }
 
 // ---------- REPCOUNT CSV PARSER & IMPORT ----------
@@ -870,7 +935,6 @@ async function handleRepCountCsvImport(event) {
     });
 
     state.workouts = [...map.values()].sort((a, b) => a.date.localeCompare(b.date) || String(a.id).localeCompare(String(b.id)));
-    sportSummaryDays = 0;
     saveState();
     closeModal();
     render();
@@ -883,10 +947,177 @@ async function handleRepCountCsvImport(event) {
   }
 }
 
-// ---------- TAB-RENDERING ----------
-function setSportSummaryDays(days) {
-  sportSummaryDays = days;
+// ---------- PINNED KPI-ÜBUNGEN & TAB-RENDERING ----------
+function getPinnedExercises() {
+  if (!Array.isArray(state.pinnedExercises) || state.pinnedExercises.length === 0) {
+    const trained = getExerciseMetaMap();
+    const defaults = DEFAULT_PINNED_EXERCISES.filter(n => trained.has(n));
+    if (defaults.length >= 3) return defaults.slice(0, 6);
+    const top = [...trained.values()].sort((a, b) => b.count - a.count).map(x => x.name);
+    const merged = [...new Set([...defaults, ...top, ...DEFAULT_PINNED_EXERCISES])];
+    return merged.slice(0, 6);
+  }
+  return state.pinnedExercises;
+}
+
+function togglePinnedExercise(name) {
+  const cur = [...getPinnedExercises()];
+  const idx = cur.indexOf(name);
+  if (idx >= 0) {
+    if (cur.length <= 1) return;
+    cur.splice(idx, 1);
+  } else {
+    cur.push(name);
+  }
+  state.pinnedExercises = cur;
+  saveState();
+  openPinnedExercisesModal();
   render();
+}
+
+function openPinnedExercisesModal() {
+  const pinned = getPinnedExercises();
+  const all = getAllCatalogExercises().filter(x => x.count > 0 || pinned.includes(x.name));
+  const list = all.length ? all : getAllCatalogExercises().slice(0, 30);
+  openModal(`
+    <div class="space-y-3.5">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold text-white">KPI-Übungen wählen</h3>
+          <p class="text-[11px] text-zinc-400">Welche Übungen sollen in deiner Leistungsübersicht stehen?</p>
+        </div>
+        <button onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+      <div class="flex flex-wrap gap-1.5 max-h-[55vh] overflow-y-auto pr-0.5">
+        ${list.map(item => {
+          const isOn = pinned.includes(item.name);
+          const info = muscleGroupInfo(item.category);
+          const safe = item.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+          return `
+            <button onclick="togglePinnedExercise('${safe}')"
+              class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium border transition ${
+                isOn ? 'bg-emerald-500/20 text-white border-emerald-500/50' : 'bg-zinc-950 text-zinc-400 border-border hover:text-zinc-200'
+              }">
+              <span class="w-2 h-2 rounded-full" style="background:${info.color}"></span>
+              <span>${sportEsc(item.name)}</span>
+              ${item.count > 0 ? `<span class="text-[10px] text-zinc-500">${item.count}</span>` : ''}
+            </button>`;
+        }).join('')}
+      </div>
+      <button onclick="closeModal()" class="w-full py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">Fertig</button>
+    </div>
+  `);
+}
+
+function getExerciseKpiStats(exName) {
+  const key = canonicalizeExercise(exName, 'Other').name.toLowerCase();
+  const sorted = [...getWorkouts()].sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
+  let latest = null;
+  let prKg = 0;
+  let prKgReps = 0;
+  let prReps = 0;
+  let prSec = 0;
+  let category = canonicalizeExercise(exName, 'Other').category;
+
+  for (const w of sorted) {
+    const ex = (w.exercises || []).find(e => canonicalizeExercise(e.name, e.category).name.toLowerCase() === key);
+    if (!ex || !(ex.sets || []).length) continue;
+    if (category === 'Other' && ex.category) category = normalizeMuscleGroup(ex.category);
+    if (!latest) {
+      latest = { date: w.date, sets: ex.sets };
+    }
+    ex.sets.forEach(s => {
+      const kg = Number(s.kg) || 0;
+      const reps = Number(s.reps) || 0;
+      const sec = Number(s.sec) || 0;
+      if (kg > prKg || (kg === prKg && reps > prKgReps)) {
+        prKg = kg;
+        prKgReps = reps;
+      }
+      if (reps > prReps) prReps = reps;
+      if (sec > prSec) prSec = sec;
+    });
+  }
+  return { name: exName, category, latest, prKg, prKgReps, prReps, prSec };
+}
+
+function selectProgressExerciseFromKpi(exName) {
+  sportProgressGroup = 'ALL';
+  sportProgressEx = exName;
+  render();
+  setTimeout(() => {
+    const el = document.getElementById('sec-sport-progress');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 40);
+}
+
+function renderPerformanceKpis() {
+  const pinned = getPinnedExercises();
+  const cards = pinned.map(getExerciseKpiStats);
+  const hasAny = cards.some(c => c.latest);
+
+  return `
+    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-semibold text-white">Aktuelle Leistungen</h2>
+          <p class="text-[11px] text-zinc-400">Letzte Sätze &amp; Bestleistung deiner Kernübungen</p>
+        </div>
+        <button onclick="openPinnedExercisesModal()" title="KPI-Übungen anpassen"
+          class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-300 text-xs font-medium transition">
+          ⚙ Auswahl
+        </button>
+      </div>
+
+      ${!hasAny
+        ? '<p class="text-xs text-zinc-500">Noch keine Kraft-Einheiten vorhanden. Importiere deine RepCount-CSV oder starte ein Training.</p>'
+        : `
+          <div class="grid grid-cols-2 gap-2">
+            ${cards.map(c => {
+              const info = muscleGroupInfo(c.category);
+              const safe = c.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+              let headline = '—';
+              let subline = 'Noch nicht trainiert';
+              let prLine = '';
+
+              if (c.latest) {
+                const sets = c.latest.sets;
+                const timed = sets.some(s => Number(s.sec) > 0) && sets.every(s => !(Number(s.reps) > 0));
+                if (timed) {
+                  const maxS = Math.max(...sets.map(s => Number(s.sec) || 0));
+                  headline = `${maxS} s`;
+                  subline = `${sets.length}× · ${sets.map(s => `${Math.round(Number(s.sec) || 0)}s`).join(' / ')}`;
+                  prLine = `🏆 PR ${c.prSec} s`;
+                } else {
+                  const topKg = Math.max(...sets.map(s => Number(s.kg) || 0));
+                  const topSets = sets.filter(s => (Number(s.kg) || 0) === topKg);
+                  const repsStr = topSets.map(s => Number(s.reps) || 0).join(' / ');
+                  headline = topKg > 0 ? `${fmtNum(topKg, 1)} kg` : 'Bodyweight';
+                  subline = `${topSets.length} Sätze: ${repsStr} Wdh.`;
+                  prLine = c.prKg > 0 ? `🏆 ${fmtNum(c.prKg, 1)} kg × ${c.prKgReps}` : `🏆 ${c.prReps} Wdh.`;
+                }
+              }
+
+              return `
+                <button onclick="selectProgressExerciseFromKpi('${safe}')"
+                  class="text-left bg-zinc-900/80 hover:bg-zinc-800/80 border border-border hover:border-emerald-500/35 rounded-2xl p-3 space-y-1 transition">
+                  <div class="flex items-center justify-between gap-1">
+                    <span class="flex items-center gap-1.5 min-w-0">
+                      <span class="w-2 h-2 rounded-full shrink-0" style="background:${info.color}"></span>
+                      <span class="text-xs font-semibold text-white truncate">${sportEsc(c.name)}</span>
+                    </span>
+                    ${c.latest ? `<span class="text-[10px] text-zinc-500 shrink-0">${formatDisplayDate(c.latest.date)}</span>` : ''}
+                  </div>
+                  <div class="text-sm font-bold text-emerald-400 leading-tight">${headline}</div>
+                  <div class="text-[11px] text-zinc-300 truncate">${subline}</div>
+                  ${prLine ? `<div class="text-[10px] text-amber-300/90 pt-0.5">${prLine}</div>` : ''}
+                </button>
+              `;
+            }).join('')}
+          </div>
+        `}
+    </section>
+  `;
 }
 
 function setSportHistoryQuery(val) {
@@ -904,41 +1135,37 @@ function resumeSavedWorkoutDraft() {
   const saved = loadSportDraftLocal();
   if (!saved) return;
   sportDraft = saved;
+  sportLiveOpen = true;
   sportPickerState = null;
-  renderWorkoutModal();
+  if (sportDraft.timerRunning) ensureSportClockTicker();
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function discardSavedWorkoutDraft() {
-  if (!confirm('Ungespeichertes Training verwerfen?')) return;
+  if (!confirm('Laufendes Training wirklich verwerfen?')) return;
+  stopSportRestTimer();
   clearSportDraftLocal();
   sportDraft = null;
+  sportLiveOpen = false;
   render();
 }
 
 function renderSportTab() {
+  if (sportLiveOpen && sportDraft) {
+    if (sportDraft.timerRunning) ensureSportClockTicker();
+    setTimeout(() => {
+      updateSportRestTimerDom();
+      if (sportDraft && sportDraft.type === 'cardio') updateSportLivePace();
+    }, 0);
+    return renderLiveWorkoutView();
+  }
+
   const workouts = [...getWorkouts()].sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
-  const cutoff = sportSummaryDays > 0 ? getPastDateStr(sportSummaryDays - 1) : '';
-  const period = cutoff ? workouts.filter(w => w.date >= cutoff) : workouts;
-  const periodVol = period.reduce((a, w) => a + workoutVolume(w), 0);
-  const periodSets = period.reduce((a, w) => a + workoutSetCount(w), 0);
-  const periodKm = period.reduce((a, w) => a + (w.type === 'cardio' ? Number(w.distance) || 0 : 0), 0);
-  const periodMin = period.reduce((a, w) => a + (Number(w.duration) || 0), 0);
   const templates = getRecentWorkoutTemplates(6);
-  const savedDraft = loadSportDraftLocal();
+  const savedDraft = sportDraft && !sportDraft.id ? sportDraft : loadSportDraftLocal();
+  if (savedDraft && savedDraft.timerRunning) ensureSportClockTicker();
   const unconsolidated = countUnconsolidatedExercises();
-
-  const rangeBtns = [
-    { d: 7, label: '7T' },
-    { d: 30, label: '30T' },
-    { d: 365, label: '1J' },
-    { d: 0, label: 'Alle' }
-  ];
-
-  const stat = (label, value, color) => `
-    <div class="bg-zinc-900/80 border border-border rounded-2xl p-2.5 text-center">
-      <div class="text-[10px] text-zinc-400">${label}</div>
-      <div class="text-sm font-bold ${color} mt-0.5 truncate">${value}</div>
-    </div>`;
 
   const q = sportHistoryQuery.trim().toLowerCase();
   const filtered = q
@@ -954,14 +1181,17 @@ function renderSportTab() {
 
   return `
     ${savedDraft ? `
-      <section class="bg-emerald-500/15 border border-emerald-500/40 rounded-3xl p-3.5 flex items-center justify-between gap-2">
+      <section class="bg-emerald-500/15 border border-emerald-500/45 rounded-3xl p-3.5 flex items-center justify-between gap-2">
         <div class="min-w-0">
-          <div class="text-xs font-semibold text-emerald-300 truncate">🏋️ Laufendes Training: ${sportEsc(savedDraft.title || 'Krafttraining')}</div>
-          <div class="text-[11px] text-zinc-300">${(savedDraft.exercises || []).length} Übungen · zwischengespeichert</div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-semibold text-emerald-300 truncate">🏋️ ${sportEsc(savedDraft.title || 'Laufendes Training')}</span>
+            <span id="sport-banner-clock" class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 text-[11px] font-bold tabular-nums">${fmtClockMs(getDraftElapsedMs(savedDraft))}</span>
+          </div>
+          <div class="text-[11px] text-zinc-300 mt-0.5">${(savedDraft.exercises || []).length} Übungen · ${savedDraft.timerRunning ? 'Zeit läuft' : 'pausiert / bereit'}</div>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
           <button onclick="discardSavedWorkoutDraft()" title="Verwerfen" class="px-2.5 py-1.5 rounded-xl bg-zinc-900 text-zinc-400 hover:text-rose-400 text-xs border border-border transition">✕</button>
-          <button onclick="resumeSavedWorkoutDraft()" class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-semibold transition">Fortsetzen</button>
+          <button onclick="resumeSavedWorkoutDraft()" class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-semibold transition">Öffnen</button>
         </div>
       </section>
     ` : ''}
@@ -976,12 +1206,12 @@ function renderSportTab() {
       </section>
     ` : ''}
 
-    <!-- Schnellstart & Vorlagen -->
+    <!-- Training starten & Vorlagen -->
     <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
       <div class="flex items-center justify-between gap-2">
         <div>
           <h2 class="text-sm font-semibold text-white">Training starten</h2>
-          <p class="text-[11px] text-zinc-400">Frei starten oder letztes Workout als Vorlage nehmen</p>
+          <p class="text-[11px] text-zinc-400">Aus bisherigem Workout starten oder frei anlegen</p>
         </div>
         <div class="flex items-center gap-1.5">
           <button onclick="openRepCountImportModal()" title="RepCount CSV importieren" aria-label="RepCount CSV importieren"
@@ -996,12 +1226,15 @@ function renderSportTab() {
       </div>
 
       ${templates.length > 0 ? `
-        <div class="space-y-1.5">
-          <div class="text-[11px] text-zinc-400">Schnellstart aus letzten Workouts (Vorlagen)</div>
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] text-zinc-400">Auf Basis bisheriger Einheiten (vorbefüllt)</span>
+            <button onclick="openTemplatePickerModal()" class="text-[11px] font-medium text-emerald-400 hover:text-emerald-300">Alle wählen →</button>
+          </div>
           <div class="flex gap-1.5 overflow-x-auto pb-1">
             ${templates.map(t => `
               <button onclick="startWorkoutFromTemplate('${t.workout.id}')"
-                class="shrink-0 text-left px-3 py-2 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border hover:border-emerald-500/40 transition min-w-[125px]">
+                class="shrink-0 text-left px-3 py-2 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border hover:border-emerald-500/40 transition min-w-[130px]">
                 <div class="text-xs font-semibold text-white truncate">🏋️ ${sportEsc(t.label)}</div>
                 <div class="text-[10px] text-zinc-400 mt-0.5">${t.workout.exercises.length} Übungen · ${workoutSetCount(t.workout)} Sätze</div>
               </button>
@@ -1011,36 +1244,7 @@ function renderSportTab() {
       ` : ''}
     </section>
 
-    <!-- Übersicht -->
-    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
-      <div class="flex items-center justify-between gap-2">
-        <div>
-          <h2 class="text-sm font-semibold text-white">Trainingsübersicht</h2>
-          <p class="text-[11px] text-zinc-400">${sportSummaryDays > 0 ? `Letzte ${sportSummaryDays} Tage` : 'Gesamter Verlauf'}</p>
-        </div>
-        <div class="flex gap-1">
-          ${rangeBtns.map(r => `
-            <button onclick="setSportSummaryDays(${r.d})"
-              class="px-2 py-1 rounded-lg text-[11px] font-medium transition border ${
-                sportSummaryDays === r.d
-                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
-                  : 'bg-zinc-900 text-zinc-400 border-border hover:text-zinc-200'
-              }">${r.label}</button>
-          `).join('')}
-        </div>
-      </div>
-
-      <div class="grid grid-cols-4 gap-2">
-        ${stat('Einheiten', period.length, 'text-white')}
-        ${stat('Sätze', periodSets, 'text-purple-400')}
-        ${stat('Volumen', periodVol >= 1000 ? fmtNum(periodVol / 1000, 1) + ' t' : Math.round(periodVol) + ' kg', 'text-sky-400')}
-        ${periodKm > 0
-          ? stat('Distanz', fmtNum(periodKm, 1) + ' km', 'text-amber-400')
-          : stat('Zeit', fmtDuration(periodMin), 'text-emerald-400')}
-      </div>
-
-      ${renderMuscleGroupBreakdown(period)}
-    </section>
+    ${renderPerformanceKpis()}
 
     ${renderSportProgress()}
 
@@ -1166,8 +1370,31 @@ function renderWorkoutCard(w) {
 }
 
 // ---------- FORTSCHRITT ----------
-function sportLineChart(series, labels) {
-  const W = 320, H = 135, pl = 32, pr = 8, pt = 10, pb = 18;
+let sportChartPointsMeta = [];
+
+function showSportChartPoint(idx) {
+  const meta = sportChartPointsMeta[idx];
+  if (!meta) return;
+  const box = document.getElementById('sport-chart-tooltip');
+  if (box) box.innerHTML = meta.html;
+  const cursor = document.getElementById('sport-chart-cursor');
+  if (cursor) {
+    cursor.setAttribute('x1', meta.x.toFixed(1));
+    cursor.setAttribute('x2', meta.x.toFixed(1));
+    cursor.setAttribute('opacity', '1');
+  }
+  (meta.dots || []).forEach((d, sIdx) => {
+    const dot = document.getElementById(`sport-chart-dot-${sIdx}`);
+    if (dot) {
+      dot.setAttribute('cx', meta.x.toFixed(1));
+      dot.setAttribute('cy', d.y.toFixed(1));
+      dot.setAttribute('opacity', '1');
+    }
+  });
+}
+
+function sportLineChart(series, labels, tooltips) {
+  const W = 320, H = 140, pl = 32, pr = 8, pt = 10, pb = 18;
   const ys = series.flatMap(s => s.points.map(p => p.y));
   if (ys.length === 0) return '';
   let min = Math.min(...ys), max = Math.max(...ys);
@@ -1178,11 +1405,25 @@ function sportLineChart(series, labels) {
   const Y = v => pt + (1 - (v - min) / (max - min)) * (H - pt - pb);
   const showDots = labels.length <= 45;
 
-  let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full h-36">`;
+  sportChartPointsMeta = labels.map((lbl, i) => ({
+    x: X(i),
+    html: tooltips[i] || '',
+    dots: series.map(s => ({ y: Y(s.points[i]?.y ?? min), color: s.color }))
+  }));
+
+  const lastIdx = labels.length - 1;
+  const lastMeta = sportChartPointsMeta[lastIdx];
+  const stepW = labels.length > 1 ? (W - pl - pr) / (labels.length - 1) : (W - pl - pr);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full h-36 select-none overflow-visible">`;
   [min + pad, (min + max) / 2, max - pad].forEach(v => {
     svg += `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="#24242b" stroke-width="1"/>`;
     svg += `<text x="${pl - 4}" y="${Y(v) + 3}" text-anchor="end" font-size="9" fill="#71717a">${Math.round(v)}</text>`;
   });
+
+  // Vertikale Hover-/Auswahl-Linie
+  svg += `<line id="sport-chart-cursor" x1="${lastMeta.x.toFixed(1)}" x2="${lastMeta.x.toFixed(1)}" y1="${pt}" y2="${H - pb}" stroke="#52525b" stroke-dasharray="3 3" stroke-width="1" opacity="0.8"/>`;
+
   series.forEach(s => {
     const pts = s.points.map(p => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ');
     svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
@@ -1190,9 +1431,31 @@ function sportLineChart(series, labels) {
       s.points.forEach(p => { svg += `<circle cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="2.2" fill="${s.color}"/>`; });
     }
   });
+
+  // Aktiver Punkt-Marker pro Serie
+  series.forEach((s, sIdx) => {
+    const ly = lastMeta.dots[sIdx]?.y ?? pt;
+    svg += `<circle id="sport-chart-dot-${sIdx}" cx="${lastMeta.x.toFixed(1)}" cy="${ly.toFixed(1)}" r="4" fill="${s.color}" stroke="#09090b" stroke-width="1.5" opacity="1"/>`;
+  });
+
+  // Unsichtbare Hit-Zonen für flüssiges Mouseover (Desktop) & Tippen (Handy)
+  labels.forEach((_, i) => {
+    const cx = X(i);
+    const rx = Math.max(pl, cx - stepW / 2);
+    const rw = Math.max(6, stepW);
+    svg += `<rect x="${rx.toFixed(1)}" y="${pt}" width="${rw.toFixed(1)}" height="${H - pt - pb}" fill="transparent" class="cursor-pointer" onmouseenter="showSportChartPoint(${i})" onclick="showSportChartPoint(${i})"/>`;
+  });
+
   svg += `<text x="${pl}" y="${H - 4}" font-size="9" fill="#71717a">${sportEsc(labels[0])}</text>`;
   if (labels.length > 1) svg += `<text x="${W - pr}" y="${H - 4}" text-anchor="end" font-size="9" fill="#71717a">${sportEsc(labels[labels.length - 1])}</text>`;
-  return svg + '</svg>';
+  svg += '</svg>';
+
+  return `
+    <div id="sport-chart-tooltip" class="bg-zinc-950/80 border border-border rounded-xl px-2.5 py-1.5 text-[11px] text-zinc-300 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+      ${lastMeta.html}
+    </div>
+    ${svg}
+  `;
 }
 
 function setSportProgressGroup(grp) {
@@ -1234,7 +1497,7 @@ function renderSportProgress() {
           prSec = Math.max(prSec, sec);
         });
         if (cutoff && w.date < cutoff) return;
-        const d = perDay[w.date] || (perDay[w.date] = { maxKg: 0, rm: 0, maxReps: 0, maxSec: 0 });
+        const d = perDay[w.date] || (perDay[w.date] = { maxKg: 0, rm: 0, maxReps: 0, maxSec: 0, sets: [] });
         (ex.sets || []).forEach(s => {
           const kg = Number(s.kg) || 0;
           const reps = Number(s.reps) || 0;
@@ -1243,6 +1506,7 @@ function renderSportProgress() {
           d.rm = Math.max(d.rm, epley1RM(kg, reps));
           d.maxReps = Math.max(d.maxReps, reps);
           d.maxSec = Math.max(d.maxSec, sec);
+          d.sets.push(s);
         });
       });
     });
@@ -1253,6 +1517,19 @@ function renderSportProgress() {
 
     let series = [];
     let legendLine = '';
+    const tooltips = dates.map(dt => {
+      const p = perDay[dt];
+      const dLbl = dt.split('-').reverse().join('.');
+      const setsTxt = p.sets.map(fmtSetCompact).join(' · ');
+      if (isTimed) {
+        return `<span class="font-semibold text-white">${dLbl}:</span> <span class="text-teal-300 font-semibold">${p.maxSec} s</span> <span class="text-zinc-500">(${setsTxt})</span>`;
+      }
+      if (isBodyweightOnly) {
+        return `<span class="font-semibold text-white">${dLbl}:</span> <span class="text-emerald-300 font-semibold">${p.maxReps} Wdh.</span> <span class="text-zinc-500">(${setsTxt})</span>`;
+      }
+      return `<span class="font-semibold text-white">${dLbl}:</span> <span class="text-sky-300 font-semibold">${fmtNum(p.maxKg, 1)} kg</span> · <span class="text-emerald-300">1RM ${fmtNum(p.rm, 1)} kg</span> <span class="text-zinc-500">(${setsTxt})</span>`;
+    });
+
     if (isTimed) {
       series = [{ color: '#14b8a6', points: dates.map((d, i) => ({ x: i, y: perDay[d].maxSec })) }];
       legendLine = `
@@ -1309,7 +1586,7 @@ function renderSportProgress() {
 
         <div class="flex items-center gap-3 text-[11px]">${legendLine}</div>
         ${dates.length > 0
-          ? sportLineChart(series, dates.map(fmtDateLbl))
+          ? sportLineChart(series, dates.map(fmtDateLbl), tooltips)
           : '<p class="text-[11px] text-zinc-500 py-3 text-center">Keine Einträge in diesem Zeitraum.</p>'}
       </div>`;
   }
@@ -1339,20 +1616,89 @@ function renderSportProgress() {
   }
 
   return `
-    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
+    <section id="sec-sport-progress" class="bg-card border border-border rounded-3xl p-4 space-y-3">
       <h2 class="text-sm font-semibold text-white">Fortschritt &amp; Bestleistungen</h2>
       ${strengthHtml}${cardioHtml}
     </section>`;
 }
 
-// ---------- FLEXIBLE EINHEIT ERFASSEN / VORLAGE / BEARBEITEN ----------
+// ---------- VORLAGEN-PICKER (AUS VERLAUF WÄHLEN) ----------
+function openTemplatePickerModal() {
+  sportTemplatePickerQuery = '';
+  renderTemplatePickerModal();
+  setTimeout(() => {
+    const inp = document.getElementById('sport-tmpl-search');
+    if (inp) inp.focus();
+  }, 40);
+}
+
+function updateTemplatePickerQuery(val) {
+  sportTemplatePickerQuery = val;
+  const listEl = document.getElementById('sport-tmpl-list');
+  if (listEl) listEl.innerHTML = renderTemplatePickerListHtml();
+}
+
+function renderTemplatePickerListHtml() {
+  const q = sportTemplatePickerQuery.trim().toLowerCase();
+  const list = [...getWorkouts()]
+    .filter(w => w.type === 'strength' && (w.exercises || []).length > 0)
+    .sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)))
+    .filter(w => {
+      if (!q) return true;
+      const title = (w.title || getActivityName(w.activityId) || '').toLowerCase();
+      const exMatch = (w.exercises || []).some(e => String(e.name || '').toLowerCase().includes(q));
+      return title.includes(q) || exMatch || w.date.includes(q);
+    });
+
+  if (!list.length) {
+    return '<p class="text-xs text-zinc-500 text-center py-4">Keine passenden Workouts im Verlauf gefunden.</p>';
+  }
+  return list.slice(0, 40).map(w => `
+    <button onclick="closeModal(); startWorkoutFromTemplate('${w.id}')"
+      class="w-full text-left p-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border hover:border-emerald-500/40 space-y-1 transition">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-xs font-semibold text-white truncate">🏋️ ${sportEsc(w.title || getActivityName(w.activityId))}</span>
+        <span class="text-[10px] text-zinc-500 shrink-0">${formatDisplayDate(w.date)}</span>
+      </div>
+      <div class="text-[11px] text-zinc-400 truncate">
+        ${(w.exercises || []).map(e => sportEsc(e.name)).join(' · ')}
+      </div>
+    </button>
+  `).join('');
+}
+
+function renderTemplatePickerModal() {
+  openModal(`
+    <div class="space-y-3.5">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold text-white">Vorlage aus Verlauf wählen</h3>
+          <p class="text-[11px] text-zinc-400">Alle Übungen, Sätze &amp; Gewichte werden direkt vorbefüllt</p>
+        </div>
+        <button onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+      <input id="sport-tmpl-search" type="search" value="${sportEsc(sportTemplatePickerQuery)}"
+        placeholder="Suche nach Training oder Übung (z. B. Hygia, Dips…)"
+        oninput="updateTemplatePickerQuery(this.value)" class="${SPORT_INPUT}" />
+      <div id="sport-tmpl-list" class="space-y-2 max-h-[56vh] overflow-y-auto pr-0.5">
+        ${renderTemplatePickerListHtml()}
+      </div>
+    </div>
+  `);
+}
+
+// ---------- FLEXIBLE LIVE-TRAININGSANSICHT (VOLLBILD IM SPORT-TAB) ----------
 function startWorkoutFromTemplate(sourceId) {
   const src = getWorkouts().find(w => w.id === sourceId);
   if (!src) return;
+  const now = Date.now();
   sportDraft = {
     id: null,
     date: state.selectedDate,
-    startedAt: Date.now(),
+    firstStartedAt: now,
+    timerRunning: true,
+    timerStartedAt: now,
+    elapsedMs: 0,
     title: src.title || getActivityName(src.activityId) || '',
     activityId: src.activityId || getDefaultStrengthActivityId(),
     type: src.type || 'strength',
@@ -1378,9 +1724,12 @@ function startWorkoutFromTemplate(sourceId) {
       };
     })
   };
+  sportLiveOpen = true;
   sportPickerState = null;
   saveSportDraftLocal();
-  renderWorkoutModal();
+  ensureSportClockTicker();
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function openWorkoutModal(id) {
@@ -1389,6 +1738,9 @@ function openWorkoutModal(id) {
     const found = getWorkouts().find(w => w.id === id);
     if (!found) return;
     sportDraft = JSON.parse(JSON.stringify(found));
+    sportDraft.timerRunning = false;
+    sportDraft.timerStartedAt = null;
+    sportDraft.elapsedMs = (Number(found.duration) || 0) * 60000;
     sportDraft.exercises = (sportDraft.exercises || []).map(ex => {
       const c = canonicalizeExercise(ex.name, ex.category);
       return {
@@ -1410,7 +1762,10 @@ function openWorkoutModal(id) {
     sportDraft = {
       id: null,
       date: state.selectedDate,
-      startedAt: Date.now(),
+      firstStartedAt: null,
+      timerRunning: false,
+      timerStartedAt: null,
+      elapsedMs: 0,
       title: '',
       activityId: defAct,
       type: defAct ? sportKindFromName(getActivityName(defAct)) : 'strength',
@@ -1423,11 +1778,15 @@ function openWorkoutModal(id) {
     };
     saveSportDraftLocal();
   }
-  renderWorkoutModal();
+  sportLiveOpen = true;
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function closeWorkoutModalKeepDraft() {
-  saveSportDraftLocal();
+  if (sportDraft && !sportDraft.id) saveSportDraftLocal();
+  else sportDraft = null;
+  sportLiveOpen = false;
   sportPickerState = null;
   closeModal();
   render();
@@ -1450,13 +1809,13 @@ function sportSetActivity(id) {
   sportDraft.activityId = id;
   sportDraft.type = sportKindFromName(getActivityName(id));
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportSetType(type) {
   sportDraft.type = type;
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportMoveExercise(i, delta) {
@@ -1465,20 +1824,20 @@ function sportMoveExercise(i, delta) {
   const arr = sportDraft.exercises;
   [arr[i], arr[j]] = [arr[j], arr[i]];
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportRemoveExercise(i) {
   sportDraft.exercises.splice(i, 1);
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportToggleExTimed(i) {
   const ex = sportDraft.exercises[i];
   ex.timed = !ex.timed;
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportSetExCategory(i, val) {
@@ -1490,14 +1849,21 @@ function sportCycleSetType(i, j) {
   const s = sportDraft.exercises[i].sets[j];
   s.t = s.t === '' ? 'w' : (s.t === 'w' ? 'd' : '');
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportToggleSetDone(i, j) {
   const s = sportDraft.exercises[i].sets[j];
   s.done = !s.done;
+  if (s.done && !sportDraft.id && !sportDraft.timerRunning && !sportDraft.firstStartedAt) {
+    const now = Date.now();
+    sportDraft.firstStartedAt = now;
+    sportDraft.timerRunning = true;
+    sportDraft.timerStartedAt = now;
+    ensureSportClockTicker();
+  }
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportAddSet(i) {
@@ -1507,13 +1873,13 @@ function sportAddSet(i) {
     ? { kg: last.kg, reps: last.reps, sec: last.sec || '', t: '', done: false }
     : { kg: '', reps: '', sec: '', t: '', done: false });
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportRemoveSet(i, j) {
   sportDraft.exercises[i].sets.splice(j, 1);
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function sportSetField(i, j, field, val) {
@@ -1521,7 +1887,7 @@ function sportSetField(i, j, field, val) {
   saveSportDraftLocal();
 }
 
-// ---------- ÜBUNGS-PICKER (HINZUFÜGEN & AUSTAUSCHEN) ----------
+// ---------- ÜBUNGS-PICKER (SCHICKES MODAL ZUM HINZUFÜGEN & AUSTAUSCHEN) ----------
 function openSportExercisePicker(targetIndex) {
   const existingGroup = typeof targetIndex === 'number' && sportDraft.exercises[targetIndex]
     ? sportDraft.exercises[targetIndex].category
@@ -1531,7 +1897,7 @@ function openSportExercisePicker(targetIndex) {
     query: '',
     group: existingGroup && existingGroup !== 'Other' ? existingGroup : 'ALL'
   };
-  renderWorkoutModal(false);
+  renderSportExercisePickerModal();
   setTimeout(() => {
     const inp = document.getElementById('sport-picker-search');
     if (inp) inp.focus();
@@ -1540,13 +1906,13 @@ function openSportExercisePicker(targetIndex) {
 
 function closeSportExercisePicker() {
   sportPickerState = null;
-  renderWorkoutModal(true);
+  closeModal();
 }
 
 function setSportPickerGroup(grp) {
   if (!sportPickerState) return;
   sportPickerState.group = grp;
-  renderWorkoutModal(false);
+  renderSportExercisePickerModal();
 }
 
 function updateSportPickerQuery(val) {
@@ -1584,8 +1950,9 @@ function pickSportExercise(name, category, timedHint) {
     };
   }
   sportPickerState = null;
+  closeModal();
   saveSportDraftLocal();
-  renderWorkoutModal(true);
+  render();
 }
 
 function pickCustomSportExercise() {
@@ -1615,14 +1982,14 @@ function renderSportPickerListHtml() {
     </button>
   ` : '';
 
-  const rows = filtered.slice(0, 60).map(item => {
+  const rows = filtered.slice(0, 80).map(item => {
     const info = muscleGroupInfo(item.category);
     const safeName = item.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     return `
       <button onclick="pickSportExercise('${safeName}', '${item.category}', ${item.timed ? 'true' : 'false'})"
-        class="w-full text-left px-3 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-border flex items-center justify-between gap-2 transition">
+        class="w-full text-left px-3 py-2.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-border flex items-center justify-between gap-2 transition">
         <div class="min-w-0 flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full shrink-0" style="background:${info.color}"></span>
+          <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${info.color}"></span>
           <span class="text-xs font-medium text-white truncate">${sportEsc(item.name)}</span>
         </div>
         <div class="flex items-center gap-1.5 shrink-0 text-[10px] text-zinc-400">
@@ -1636,114 +2003,122 @@ function renderSportPickerListHtml() {
   return `${customBtn}${rows || '<p class="text-xs text-zinc-500 text-center py-4">Keine Übung gefunden – gib einfach einen eigenen Namen ein.</p>'}`;
 }
 
-function renderWorkoutModal(preserveScroll = false) {
-  const modalBox = document.getElementById('modal-box');
-  const prevScroll = preserveScroll && modalBox ? modalBox.scrollTop : 0;
-
-  if (sportPickerState) {
-    const isSwap = typeof sportPickerState.targetIndex === 'number';
-    openModal(`
-      <div class="space-y-3.5">
-        <div class="flex items-center justify-between gap-2">
-          <div>
-            <h3 class="text-base font-semibold text-white">${isSwap ? 'Übung austauschen' : 'Übung hinzufügen'}</h3>
-            <p class="text-[11px] text-zinc-400">Aus deinem konsolidierten Katalog wählen oder neu tippen</p>
-          </div>
-          <button onclick="closeSportExercisePicker()" class="px-2.5 py-1 rounded-xl bg-zinc-900 border border-border text-xs text-zinc-300 hover:text-white">← Zurück</button>
+function renderSportExercisePickerModal() {
+  const isSwap = typeof sportPickerState.targetIndex === 'number';
+  openModal(`
+    <div class="space-y-3.5">
+      <div class="flex items-center justify-between gap-2">
+        <div>
+          <h3 class="text-base font-semibold text-white">${isSwap ? 'Übung austauschen' : 'Übung wählen'}</h3>
+          <p class="text-[11px] text-zinc-400">Nach Muskelgruppe filtern, suchen oder neu anlegen</p>
         </div>
-
-        <input id="sport-picker-search" type="search" value="${sportEsc(sportPickerState.query)}"
-          placeholder="Übung suchen oder neu eingeben…"
-          oninput="updateSportPickerQuery(this.value)"
-          class="${SPORT_INPUT}" />
-
-        <div class="flex gap-1 overflow-x-auto pb-0.5">
-          <button onclick="setSportPickerGroup('ALL')"
-            class="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium border transition ${
-              sportPickerState.group === 'ALL' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-zinc-900 text-zinc-400 border-border'
-            }">Alle</button>
-          ${MUSCLE_GROUPS.map(g => `
-            <button onclick="setSportPickerGroup('${g.id}')"
-              class="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium border transition ${
-                sportPickerState.group === g.id ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-zinc-900 text-zinc-400 border-border'
-              }">${g.label}</button>
-          `).join('')}
-        </div>
-
-        <div id="sport-picker-list" class="space-y-1.5 max-h-[52vh] overflow-y-auto pr-0.5">
-          ${renderSportPickerListHtml()}
-        </div>
+        <button onclick="closeSportExercisePicker()" class="px-2.5 py-1 rounded-xl bg-zinc-900 border border-border text-xs text-zinc-300 hover:text-white">✕</button>
       </div>
-    `);
-    return;
-  }
 
+      <input id="sport-picker-search" type="search" value="${sportEsc(sportPickerState.query)}"
+        placeholder="Übung suchen oder neuen Namen tippen…"
+        oninput="updateSportPickerQuery(this.value)"
+        class="${SPORT_INPUT}" />
+
+      <div class="flex gap-1 overflow-x-auto pb-0.5">
+        <button onclick="setSportPickerGroup('ALL')"
+          class="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium border transition ${
+            sportPickerState.group === 'ALL' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-zinc-900 text-zinc-400 border-border'
+          }">Alle</button>
+        ${MUSCLE_GROUPS.map(g => `
+          <button onclick="setSportPickerGroup('${g.id}')"
+            class="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium border transition ${
+              sportPickerState.group === g.id ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-zinc-900 text-zinc-400 border-border'
+            }">${g.label}</button>
+        `).join('')}
+      </div>
+
+      <div id="sport-picker-list" class="space-y-1.5 max-h-[55vh] overflow-y-auto pr-0.5">
+        ${renderSportPickerListHtml()}
+      </div>
+    </div>
+  `);
+}
+
+function renderLiveWorkoutView() {
   const d = sportDraft;
+  const isEdit = Boolean(d.id);
   const typeBtn = (t, icon, label) => `
     <button onclick="sportSetType('${t}')" title="${label}" aria-label="${label}"
-      class="flex-1 py-2 rounded-xl text-base transition ${d.type === t ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40' : 'bg-zinc-900 border border-border text-zinc-400 hover:text-zinc-200'}">${icon}</button>`;
+      class="flex-1 py-2 rounded-xl text-xs font-medium flex items-center justify-center gap-1.5 transition ${d.type === t ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40' : 'bg-zinc-900 border border-border text-zinc-400 hover:text-zinc-200'}">${icon}<span>${label}</span></button>`;
 
   const totalSets = (d.exercises || []).reduce((a, e) => a + (e.sets || []).length, 0);
   const doneSets = (d.exercises || []).reduce((a, e) => a + (e.sets || []).filter(s => s.done).length, 0);
+  const elapsedMs = getDraftElapsedMs(d);
+  const startClockStr = d.firstStartedAt
+    ? new Date(d.firstStartedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
+    : null;
 
   let body = '';
   if (d.type === 'strength') {
     body = `
-      <div class="flex items-center justify-between gap-2 bg-zinc-900/70 border border-border rounded-2xl px-3 py-2">
-        <div class="flex items-center gap-2">
-          <span id="sport-rest-display" class="text-[11px] font-medium text-zinc-400 tabular-nums">Pause</span>
-          ${totalSets > 0 ? `<span class="text-[11px] text-zinc-500">· ${doneSets}/${totalSets} Sätze ✓</span>` : ''}
+      <!-- Pausen-Timer -->
+      <section class="bg-card border border-border rounded-3xl p-3.5 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="text-sm">⏱</span>
+          <span id="sport-rest-display" class="text-xs font-medium text-zinc-400 tabular-nums">Pausen-Timer</span>
+          ${totalSets > 0 ? `<span class="text-[11px] text-zinc-500">· ${doneSets}/${totalSets} ✓</span>` : ''}
         </div>
-        <div class="flex items-center gap-1">
-          <button type="button" onclick="startSportRestTimer(60)" class="px-2 py-0.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[10px] text-zinc-300">60s</button>
-          <button type="button" onclick="startSportRestTimer(90)" class="px-2 py-0.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[10px] text-zinc-300">90s</button>
-          <button type="button" onclick="startSportRestTimer(120)" class="px-2 py-0.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[10px] text-zinc-300">2m</button>
-          ${sportRestEndMs ? '<button type="button" onclick="stopSportRestTimer()" class="px-1.5 py-0.5 rounded-lg bg-rose-500/15 text-rose-300 text-[10px]">✕</button>' : ''}
+        <div class="flex items-center gap-1 shrink-0">
+          <button type="button" onclick="startSportRestTimer(60)" class="px-2 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-[11px] text-zinc-200">60s</button>
+          <button type="button" onclick="startSportRestTimer(90)" class="px-2 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-[11px] text-zinc-200">90s</button>
+          <button type="button" onclick="startSportRestTimer(120)" class="px-2 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-[11px] text-zinc-200">2m</button>
+          <button type="button" onclick="startSportRestTimer(180)" class="px-2 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-[11px] text-zinc-200">3m</button>
+          ${sportRestEndMs ? '<button type="button" onclick="stopSportRestTimer()" class="px-2 py-1 rounded-xl bg-rose-500/15 text-rose-300 text-[11px]">✕</button>' : ''}
         </div>
-      </div>
+      </section>
 
-      <div>
-        <label class="text-[11px] text-zinc-400">Trainingsname / Vorlage (optional)</label>
-        <input type="text" value="${sportEsc(d.title)}" placeholder="z. B. Hygia, Calisthenics, Push…" oninput="sportDraftSet('title', this.value)" class="${SPORT_INPUT} mt-1" />
-      </div>
-
+      <!-- Übungs-Liste -->
       <div class="space-y-3">
-        ${d.exercises.map((ex, i) => {
+        ${d.exercises.length === 0 ? `
+          <div class="bg-card border border-dashed border-border rounded-3xl p-5 text-center space-y-2.5">
+            <p class="text-xs text-zinc-400">Noch keine Übungen im Training. Füge Übungen hinzu oder lade eine bisherige Einheit als Vorlage.</p>
+            <button type="button" onclick="openTemplatePickerModal()"
+              class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-xs font-medium text-emerald-300 transition">
+              📋 Bisheriges Training als Vorlage laden
+            </button>
+          </div>
+        ` : d.exercises.map((ex, i) => {
           const prev = ex.name ? lastSetsFor(ex.name, d.id) : null;
           const catInfo = muscleGroupInfo(ex.category);
           const timed = Boolean(ex.timed);
           return `
-          <div class="bg-zinc-900/80 border border-border rounded-2xl p-2.5 space-y-2">
+          <section class="bg-card border border-border rounded-3xl p-3.5 space-y-2.5">
             <div class="flex items-center justify-between gap-1.5">
-              <div class="min-w-0 flex items-center gap-1.5 flex-1">
-                <span class="w-2 h-2 rounded-full shrink-0" style="background:${catInfo.color}"></span>
-                <span class="text-xs font-semibold text-white truncate">${sportEsc(ex.name || 'Übung wählen')}</span>
+              <div class="min-w-0 flex items-center gap-2 flex-1">
+                <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${catInfo.color}"></span>
+                <span class="text-sm font-semibold text-white truncate">${sportEsc(ex.name || 'Übung wählen')}</span>
               </div>
               <div class="flex items-center gap-1 shrink-0">
-                <button type="button" onclick="sportMoveExercise(${i}, -1)" ${i === 0 ? 'disabled' : ''} title="Nach oben"
-                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-950 border border-border text-[11px] ${i === 0 ? 'text-zinc-700' : 'text-zinc-300 hover:text-white'}">↑</button>
-                <button type="button" onclick="sportMoveExercise(${i}, 1)" ${i === d.exercises.length - 1 ? 'disabled' : ''} title="Nach unten"
-                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-950 border border-border text-[11px] ${i === d.exercises.length - 1 ? 'text-zinc-700' : 'text-zinc-300 hover:text-white'}">↓</button>
-                <button type="button" onclick="openSportExercisePicker(${i})" title="Übung austauschen" aria-label="Übung austauschen"
-                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-sky-400 transition">${ICON_SWAP}</button>
-                <button type="button" onclick="sportRemoveExercise(${i})" title="Übung entfernen" aria-label="Übung entfernen"
-                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-950 hover:bg-rose-500/15 border border-border text-zinc-400 hover:text-rose-400 transition">${ICON_TRASH}</button>
+                <button type="button" onclick="sportMoveExercise(${i}, -1)" ${i === 0 ? 'disabled' : ''} title="Nach oben verschieben"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-900 border border-border text-xs ${i === 0 ? 'text-zinc-700' : 'text-zinc-200 hover:bg-zinc-800'}">↑</button>
+                <button type="button" onclick="sportMoveExercise(${i}, 1)" ${i === d.exercises.length - 1 ? 'disabled' : ''} title="Nach unten verschieben"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-900 border border-border text-xs ${i === d.exercises.length - 1 ? 'text-zinc-700' : 'text-zinc-200 hover:bg-zinc-800'}">↓</button>
+                <button type="button" onclick="openSportExercisePicker(${i})" title="Übung austauschen"
+                  class="px-2 h-7 flex items-center gap-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 text-[11px] font-medium transition">${ICON_SWAP}<span>Tauschen</span></button>
+                <button type="button" onclick="sportRemoveExercise(${i})" title="Übung entfernen"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-900 hover:bg-rose-500/15 border border-border text-zinc-400 hover:text-rose-400 transition">${ICON_TRASH}</button>
               </div>
             </div>
 
             <div class="flex items-center justify-between gap-2">
-              <select onchange="sportSetExCategory(${i}, this.value)" class="px-2 py-1 rounded-lg bg-zinc-950 border border-border text-[10px] text-zinc-300 focus:outline-none">
+              <select onchange="sportSetExCategory(${i}, this.value)" class="px-2 py-1 rounded-lg bg-zinc-950 border border-border text-[11px] text-zinc-300 focus:outline-none">
                 ${MUSCLE_GROUPS.map(g => `<option value="${g.id}" ${g.id === ex.category ? 'selected' : ''}>${g.label}</option>`).join('')}
               </select>
               <button type="button" onclick="sportToggleExTimed(${i})"
-                class="px-2 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[10px] text-zinc-300 transition">
-                Modus: ${timed ? '⏱ Sek.' : '🔢 Wdh.'}
+                class="px-2.5 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[11px] text-zinc-300 transition">
+                ${timed ? '⏱ Zeit (Sek.)' : '🔢 Gewicht × Wdh.'}
               </button>
             </div>
 
-            ${prev ? `<div class="text-[10px] text-zinc-500 px-0.5 truncate">Vorher: ${prev.sets.map(fmtSetCompact).join(' · ')}</div>` : ''}
+            ${prev ? `<div class="text-[11px] text-zinc-400 bg-zinc-950/70 rounded-xl px-2.5 py-1.5 truncate">Letztes Mal: ${prev.sets.map(fmtSetCompact).join(' · ')}</div>` : ''}
 
-            <div class="grid grid-cols-[1.85rem_1fr_1fr_2rem_1.75rem] gap-1 text-[10px] text-zinc-500 px-0.5">
+            <div class="grid grid-cols-[2rem_1fr_1fr_2.25rem_1.75rem] gap-1.5 text-[10px] text-zinc-500 px-0.5">
               <span class="text-center">Satz</span>
               <span>Gewicht (kg)</span>
               <span>${timed ? 'Zeit (s)' : 'Wdh.'}</span>
@@ -1757,122 +2132,171 @@ function renderWorkoutModal(preserveScroll = false) {
                 ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
                 : (s.t === 'd' ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-zinc-950 text-zinc-400 border-border');
               return `
-              <div class="grid grid-cols-[1.85rem_1fr_1fr_2rem_1.75rem] gap-1 items-center ${s.done ? 'opacity-90' : ''}">
+              <div class="grid grid-cols-[2rem_1fr_1fr_2.25rem_1.75rem] gap-1.5 items-center ${s.done ? 'opacity-90' : ''}">
                 <button type="button" onclick="sportCycleSetType(${i}, ${j})" title="Satz-Typ wechseln (Normal / Warm-up / Dropset)"
-                  class="h-8 rounded-lg border text-[11px] font-semibold transition ${badgeCls}">${badgeLbl}</button>
+                  class="h-9 rounded-xl border text-xs font-semibold transition ${badgeCls}">${badgeLbl}</button>
                 <input type="number" inputmode="decimal" step="0.5" min="0" value="${s.kg}" placeholder="0 = BW"
-                  oninput="sportSetField(${i}, ${j}, 'kg', this.value)" class="${SPORT_INPUT}" />
+                  oninput="sportSetField(${i}, ${j}, 'kg', this.value)" class="${SPORT_INPUT} h-9" />
                 ${timed
                   ? `<input type="number" inputmode="numeric" step="1" min="0" value="${s.sec}" placeholder="Sek."
-                      oninput="sportSetField(${i}, ${j}, 'sec', this.value)" class="${SPORT_INPUT}" />`
+                      oninput="sportSetField(${i}, ${j}, 'sec', this.value)" class="${SPORT_INPUT} h-9" />`
                   : `<input type="number" inputmode="numeric" step="1" min="0" value="${s.reps}" placeholder="Wdh."
-                      oninput="sportSetField(${i}, ${j}, 'reps', this.value)" class="${SPORT_INPUT}" />`}
+                      oninput="sportSetField(${i}, ${j}, 'reps', this.value)" class="${SPORT_INPUT} h-9" />`}
                 <button type="button" onclick="sportToggleSetDone(${i}, ${j})" title="Satz abhaken"
-                  class="h-8 rounded-lg border flex items-center justify-center transition ${
+                  class="h-9 rounded-xl border flex items-center justify-center transition ${
                     s.done
                       ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
                       : 'bg-zinc-950 text-zinc-500 border-border hover:text-zinc-200'
                   }">${ICON_CHECK}</button>
-                <button type="button" onclick="sportRemoveSet(${i}, ${j})" title="Satz entfernen" aria-label="Satz entfernen"
-                  class="h-8 flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 transition">${ICON_X}</button>
+                <button type="button" onclick="sportRemoveSet(${i}, ${j})" title="Satz entfernen"
+                  class="h-9 flex items-center justify-center rounded-xl text-zinc-500 hover:text-rose-400 transition">${ICON_X}</button>
               </div>`;
             }).join('')}
 
-            <button type="button" onclick="sportAddSet(${i})" title="Satz hinzufügen (kopiert letzten Satz)" aria-label="Satz hinzufügen"
-              class="w-full py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-dashed border-border text-zinc-400 hover:text-emerald-400 flex items-center justify-center gap-1 text-[11px] transition">${ICON_PLUS} Satz</button>
-          </div>`;
+            <button type="button" onclick="sportAddSet(${i})"
+              class="w-full py-2 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-dashed border-border text-zinc-300 hover:text-emerald-400 flex items-center justify-center gap-1 text-xs font-medium transition">${ICON_PLUS} Satz hinzufügen</button>
+          </section>`;
         }).join('')}
 
         <button type="button" onclick="openSportExercisePicker('add')"
-          class="w-full py-2.5 rounded-2xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 flex items-center justify-center gap-1.5 text-xs font-semibold transition">
+          class="w-full py-3 rounded-2xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 flex items-center justify-center gap-1.5 text-xs font-semibold transition">
           ${ICON_PLUS} Übung hinzufügen
         </button>
-      </div>
-
-      <div>
-        <label class="text-[11px] text-zinc-400">Dauer (min, leer = automatisch aus Startzeit)</label>
-        <input type="number" inputmode="numeric" min="0" value="${d.duration}" oninput="sportDraftSet('duration', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
       </div>`;
   } else if (d.type === 'cardio') {
     body = `
-      <div class="grid grid-cols-2 gap-2.5">
-        <div>
-          <label class="text-[11px] text-zinc-400">Distanz (km)</label>
-          <input type="number" inputmode="decimal" step="0.01" min="0" value="${d.distance}" oninput="sportDraftSet('distance', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
+      <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
+        <div class="grid grid-cols-2 gap-2.5">
+          <div>
+            <label class="text-[11px] text-zinc-400">Distanz (km)</label>
+            <input type="number" inputmode="decimal" step="0.01" min="0" value="${d.distance}" oninput="sportDraftSet('distance', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
+          </div>
+          <div>
+            <label class="text-[11px] text-zinc-400">Zeit (min)</label>
+            <input type="number" inputmode="decimal" step="0.1" min="0" value="${d.duration}" oninput="sportDraftSet('duration', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
+          </div>
+          <div>
+            <label class="text-[11px] text-zinc-400">Ø Puls (optional)</label>
+            <input type="number" inputmode="numeric" min="0" value="${d.hr}" oninput="sportDraftSet('hr', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
+          </div>
+          <div>
+            <label class="text-[11px] text-zinc-400">Höhenmeter (optional)</label>
+            <input type="number" inputmode="numeric" min="0" value="${d.elev}" oninput="sportDraftSet('elev', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
+          </div>
         </div>
-        <div>
-          <label class="text-[11px] text-zinc-400">Zeit (min)</label>
-          <input type="number" inputmode="decimal" step="0.1" min="0" value="${d.duration}" oninput="sportDraftSet('duration', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
+        <div class="bg-zinc-900/80 border border-border rounded-2xl px-3 py-2 flex items-center justify-between">
+          <span class="text-[11px] text-zinc-400">Pace · Tempo</span>
+          <span id="sport-live-pace" class="text-xs font-semibold text-emerald-400">—</span>
         </div>
-        <div>
-          <label class="text-[11px] text-zinc-400">Ø Puls (optional)</label>
-          <input type="number" inputmode="numeric" min="0" value="${d.hr}" oninput="sportDraftSet('hr', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
-        </div>
-        <div>
-          <label class="text-[11px] text-zinc-400">Höhenmeter (optional)</label>
-          <input type="number" inputmode="numeric" min="0" value="${d.elev}" oninput="sportDraftSet('elev', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
-        </div>
-      </div>
-      <div class="bg-zinc-900/80 border border-border rounded-2xl px-3 py-2 flex items-center justify-between">
-        <span class="text-[11px] text-zinc-400">Pace · Tempo</span>
-        <span id="sport-live-pace" class="text-xs font-semibold text-emerald-400">—</span>
-      </div>`;
+      </section>`;
   } else {
     body = `
-      <div>
+      <section class="bg-card border border-border rounded-3xl p-4">
         <label class="text-[11px] text-zinc-400">Dauer (min)</label>
         <input type="number" inputmode="numeric" min="0" value="${d.duration}" oninput="sportDraftSet('duration', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
-      </div>`;
+      </section>`;
   }
 
-  openModal(`
-    <div class="space-y-4">
-      <div class="flex items-center justify-between">
-        <h3 class="text-base font-semibold text-white">${d.id ? 'Einheit bearbeiten' : 'Training erfassen'}</h3>
-        <button onclick="${d.id ? 'closeModal()' : 'closeWorkoutModalKeepDraft()'}" title="${d.id ? 'Schließen' : 'Zwischenspeichern & schließen'}" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+  return `
+    <!-- Live-Trainings-Kopf mit Start/Pause & Stoppuhr -->
+    <section class="bg-card border ${d.timerRunning ? 'border-emerald-500/50' : 'border-border'} rounded-3xl p-4 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <button onclick="closeWorkoutModalKeepDraft()" class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-xs text-zinc-300">
+          ← ${isEdit ? 'Abbrechen' : 'Übersicht'}
+        </button>
+        ${!isEdit ? `
+          <button onclick="openTemplatePickerModal()" class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-xs text-emerald-300 font-medium">
+            📋 Vorlage
+          </button>
+        ` : '<span class="text-xs font-semibold text-zinc-300">Einheit bearbeiten</span>'}
       </div>
-      <div class="grid grid-cols-2 gap-2.5">
+
+      ${!isEdit ? `
+        <div class="bg-zinc-950/80 border border-border rounded-2xl p-3 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-[10px] uppercase tracking-wider text-zinc-500">
+              ${d.timerRunning ? '● Training läuft' : (elapsedMs > 0 ? 'Pausiert' : 'Bereit zum Start')}
+              ${startClockStr ? ` · Start ${startClockStr}` : ''}
+            </div>
+            <div id="sport-live-clock" class="text-2xl font-bold text-white tabular-nums mt-0.5">${fmtClockMs(elapsedMs)}</div>
+          </div>
+          <button type="button" onclick="toggleSportWorkoutTimer()"
+            class="px-4 py-2.5 rounded-2xl text-xs font-semibold transition ${
+              d.timerRunning
+                ? 'bg-amber-400/20 hover:bg-amber-400/30 border border-amber-400/45 text-amber-300'
+                : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950'
+            }">
+            ${d.timerRunning ? '⏸ Pause' : (elapsedMs > 0 ? '▶ Weiter' : '▶ Start')}
+          </button>
+        </div>
+      ` : ''}
+
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[11px] text-zinc-400">Trainingsname</label>
+          <input type="text" value="${sportEsc(d.title)}" placeholder="z. B. Hygia, Push…" oninput="sportDraftSet('title', this.value)" class="${SPORT_INPUT} mt-1" />
+        </div>
         <div>
           <label class="text-[11px] text-zinc-400">Datum</label>
           <input type="date" value="${d.date}" onchange="sportDraftSet('date', this.value)" class="${SPORT_INPUT} mt-1" />
         </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
         <div>
-          <label class="text-[11px] text-zinc-400">Aktivität</label>
+          <label class="text-[11px] text-zinc-400">Aktivität (Kalorienbonus)</label>
           <select onchange="sportSetActivity(this.value)" class="${SPORT_INPUT} mt-1">
             ${(state.sportHabits || []).map(sp => `<option value="${sp.id}" ${sp.id === d.activityId ? 'selected' : ''}>${sportEsc(sp.name)}</option>`).join('')}
           </select>
         </div>
+        <div>
+          <label class="text-[11px] text-zinc-400">Dauer manuell (min, optional)</label>
+          <input type="number" inputmode="numeric" min="0" value="${d.duration}" placeholder="Auto aus Timer"
+            oninput="sportDraftSet('duration', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
+        </div>
       </div>
-      <div class="flex gap-2">
+
+      <div class="flex gap-1.5">
         ${typeBtn('strength', '🏋️', 'Kraft')}${typeBtn('cardio', '🏃', 'Ausdauer')}${typeBtn('other', '⚡', 'Sonstiges')}
       </div>
-      ${body}
+    </section>
+
+    ${body}
+
+    <!-- Notiz & Beenden -->
+    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
       <div>
-        <label class="text-[11px] text-zinc-400">Notiz (optional)</label>
-        <input type="text" value="${sportEsc(d.notes)}" oninput="sportDraftSet('notes', this.value)" class="${SPORT_INPUT} mt-1" />
+        <label class="text-[11px] text-zinc-400">Notiz zum Training (optional)</label>
+        <input type="text" value="${sportEsc(d.notes)}" placeholder="Gefühl, Energie, Hinweise…" oninput="sportDraftSet('notes', this.value)" class="${SPORT_INPUT} mt-1" />
       </div>
+
       <div class="flex gap-2">
-        <button onclick="${d.id ? 'closeModal()' : 'closeWorkoutModalKeepDraft()'}" title="${d.id ? 'Abbrechen' : 'Später fortsetzen'}"
-          class="px-3.5 h-11 flex items-center justify-center rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-300 text-xs font-medium transition">${d.id ? 'Abbrechen' : 'Parken'}</button>
-        <button onclick="saveWorkout()" title="Training abschließen & speichern" aria-label="Speichern"
-          class="flex-1 h-11 flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">${ICON_CHECK} Speichern</button>
+        ${!isEdit ? `
+          <button onclick="discardSavedWorkoutDraft()" class="px-3.5 py-3 rounded-2xl bg-zinc-900 hover:bg-rose-500/15 border border-border text-zinc-400 hover:text-rose-400 text-xs font-medium transition">Verwerfen</button>
+        ` : `
+          <button onclick="closeWorkoutModalKeepDraft()" class="px-3.5 py-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-300 text-xs font-medium transition">Abbrechen</button>
+        `}
+        <button onclick="saveWorkout()"
+          class="flex-1 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs flex items-center justify-center gap-1.5 transition">
+          ${ICON_CHECK} ${isEdit ? 'Änderungen speichern' : '🏁 Training beendet & speichern'}
+        </button>
       </div>
-    </div>
-  `);
-  if (d.type === 'cardio') updateSportLivePace();
-  if (d.type === 'strength') updateSportRestTimerDom();
-  if (preserveScroll && modalBox) modalBox.scrollTop = prevScroll;
+    </section>
+  `;
 }
 
 function saveWorkout() {
   const d = sportDraft;
+  if (!d) return;
   if (!d.date) return alert('Bitte ein Datum wählen.');
   if (!d.activityId) return alert('Bitte zuerst unter Habits eine Aktivität anlegen.');
 
   let dur = Number(d.duration) || 0;
-  if (!dur && d.startedAt) {
-    const mins = Math.round((Date.now() - d.startedAt) / 60000);
-    if (mins >= 2 && mins <= 300) dur = mins;
+  if (!dur) {
+    const totalMs = getDraftElapsedMs(d);
+    if (totalMs >= 30000) {
+      dur = Math.max(1, Math.round(totalMs / 60000));
+    }
   }
 
   const w = {
@@ -1897,8 +2321,7 @@ function saveWorkout() {
             .filter(s => Number(s.reps) > 0 || Number(s.sec) > 0)
             .map(s => {
               const out = { kg: Number(s.kg) || 0, reps: ex.timed ? 0 : (Number(s.reps) || 0) };
-              if (ex.timed && Number(s.sec) > 0) out.sec = Number(s.sec);
-              else if (!ex.timed && Number(s.sec) > 0) out.sec = Number(s.sec);
+              if (Number(s.sec) > 0) out.sec = Number(s.sec);
               if (s.t) out.t = s.t;
               return out;
             })
@@ -1936,6 +2359,7 @@ function saveWorkout() {
   saveState();
   closeModal();
   sportDraft = null;
+  sportLiveOpen = false;
   sportPickerState = null;
   render();
 }
