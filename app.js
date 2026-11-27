@@ -2490,43 +2490,62 @@ Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Br
   }
 
  try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseJsonSchema: {
-            type: 'object',
-            properties: {
-              mealName: { type: 'string' },
-              items: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    name: { type: 'string' },
-                    grams: { type: 'number' },
-                    kcal: { type: 'number' },
-                    p: { type: 'number' },
-                    c: { type: 'number' },
-                    f: { type: 'number' }
-                  },
-                  required: ['name', 'grams', 'kcal', 'p', 'c', 'f']
-                }
-              }
-            },
-            required: ['mealName', 'items']
+   const modelsToTry = ['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'];
+  const requestBody = JSON.stringify({
+    contents: [{ parts }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseJsonSchema: {
+        type: 'object',
+        properties: {
+          mealName: { type: 'string' },
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                grams: { type: 'number' },
+                kcal: { type: 'number' },
+                p: { type: 'number' },
+                c: { type: 'number' },
+                f: { type: 'number' }
+              },
+              required: ['name', 'grams', 'kcal', 'p', 'c', 'f']
+            }
           }
-        }
-      })
-    });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error?.message || `HTTP ${res.status}`);
+        },
+        required: ['mealName', 'items']
+      }
     }
+  });
+
+  try {
+    let res = null;
+    let lastError = 'Unbekannter Fehler';
+
+    for (const model of modelsToTry) {
+      btn.textContent = `⏳ Analysiere (${model})...`;
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: requestBody
+      });
+
+      if (res.ok) break;
+
+      const errData = await res.json().catch(() => ({}));
+      lastError = errData.error?.message || `HTTP ${res.status}`;
+      // Nur bei Überlastung (503), Rate-Limit (429) oder nicht verfügbarem Modell (404) weiterprobieren
+      if (![404, 429, 503].includes(res.status)) {
+        throw new Error(lastError);
+      }
+      res = null;
+    }
+
+    if (!res) throw new Error(lastError);
+
+    const result = await res.json();
 
     const result = await res.json();
     const rawJson = result.candidates?.[0]?.content?.parts?.[0]?.text;
