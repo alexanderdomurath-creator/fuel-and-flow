@@ -359,7 +359,12 @@ async function pullStateFromCloud(forceOverwrite = false) {
       lastRemoteTimestamp = remoteTs;
       render();
       const wCount = (state.workouts || []).length;
+      const gCount = (state.weightHistory || []).length;
+      const rCount = (state.recipes || []).length;
       setSyncStatusText(`Geladen (${wCount} Wo. · ${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
+      alert(wCount > 0
+        ? `✅ Aus Cloud geladen: ${wCount} Workouts, ${gCount} Gewichtstage, ${rCount} Rezepte.`
+        : `ℹ️ Aus Cloud geladen (${gCount} Gewichtstage, ${rCount} Rezepte), aber aktuell 0 Workouts in der Cloud.\n\nBitte am Desktop unter „Backup“ einmal auf „↑ Senden“ tippen und dann hier erneut auf „↓ Laden“.`);
       return;
     }
 
@@ -690,7 +695,10 @@ const DE_TO_EN = {
   'naturjoghurt': 'plain yogurt',
   'griechischer joghurt': 'greek yogurt',
   'körniger frischkäse': 'cottage cheese',
+  'körnigen frischkäse': 'cottage cheese',
+  'körniger frischkäse light': 'cottage cheese low fat',
   'hüttenkäse': 'cottage cheese',
+  'cottage cheese': 'cottage cheese',
   'frischkäse': 'cream cheese',
   'mozzarella': 'mozzarella cheese',
   'feta': 'feta cheese',
@@ -845,6 +853,10 @@ function applyFoodSuggestion(mode, term) {
 
 function suggestDefaultGrams(foodName) {
   const n = String(foodName || '').toLowerCase();
+  // Körniger Frischkäse / Hüttenkäse / Cottage Cheese (1 Becher = 200 g) vor normalem Frischkäse prüfen
+  if (/(körnige[rn]?\s+frischkäse|hüttenkäse|cottage cheese)/.test(n)) {
+    return 200;
+  }
   // Öle, Knoblauch, Gewürze, Kräuter: 5 g
   if (/(öl\b|\boil\b|olive oil|canola|sunflower oil|coconut oil|flaxseed oil|sesame oil|knoblauch|garlic|ingwer|ginger|gewürz|spice|pfeffer|pepper\b|salz|salt\b|chili|petersilie|basilikum|koriander|parsley|basil|zimt|cinnamon|curry|kurkuma)/.test(n)) {
     return 5;

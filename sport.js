@@ -1070,7 +1070,17 @@ function renderPerformanceKpis() {
       </div>
 
       ${!hasAny
-        ? '<p class="text-xs text-zinc-500">Noch keine Kraft-Einheiten vorhanden. Importiere deine RepCount-CSV oder starte ein Training.</p>'
+        ? `<div class="space-y-2">
+             <p class="text-xs text-zinc-500">Auf diesem Gerät sind aktuell 0 Workouts gespeichert.</p>
+             <div class="flex flex-wrap gap-2">
+               <button onclick="pullStateFromCloud(true)" class="px-3 py-1.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/35 text-sky-300 text-xs font-semibold transition">
+                 ☁️ Aus Cloud laden
+               </button>
+               <button onclick="openRepCountImportModal()" class="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-200 text-xs font-medium transition">
+                 CSV importieren
+               </button>
+             </div>
+           </div>`
         : `
           <div class="grid grid-cols-2 gap-2">
             ${cards.map(c => {
