@@ -300,7 +300,7 @@ function ensureDayLog(dateStr) {
       entries: [],
       sportDone: [],
       badHabits: { cigarettes: null, vape: null, alcohol: null },
-      routines: { creatine: null, skincare: null }
+      routines: { creatine: null, skincare: null, sertraline: null }
     };
   }
   if (!state.logs[dateStr].badHabits) {
@@ -310,10 +310,11 @@ function ensureDayLog(dateStr) {
     state.logs[dateStr].badHabits[k] = normalizeHabitStatus(state.logs[dateStr].badHabits[k]);
   });
   if (!state.logs[dateStr].routines) {
-    state.logs[dateStr].routines = { creatine: null, skincare: null };
+    state.logs[dateStr].routines = { creatine: null, skincare: null, sertraline: null };
   }
   state.logs[dateStr].routines.creatine = normalizeRoutineStatus(state.logs[dateStr].routines.creatine);
   state.logs[dateStr].routines.skincare = normalizeRoutineStatus(state.logs[dateStr].routines.skincare);
+  state.logs[dateStr].routines.sertraline = normalizeRoutineStatus(state.logs[dateStr].routines.sertraline);
   return state.logs[dateStr];
 }
 
@@ -335,11 +336,13 @@ function toggleHeatmapRoutineDay(key, dateStr) {
   if (key === 'routine') {
     const c = day.routines.creatine;
     const s = day.routines.skincare;
+    const se = day.routines.sertraline;
     let nextVal = true;
-    if (c === true && s === true) nextVal = false;
-    else if (c === false && s === false) nextVal = null;
+    if (c === true && s === true && se === true) nextVal = false;
+    else if (c === false && s === false && se === false) nextVal = null;
     day.routines.creatine = nextVal;
     day.routines.skincare = nextVal;
+    day.routines.sertraline = nextVal;
   } else {
     day.routines[key] = nextRoutineState(day.routines[key]);
   }
@@ -1243,6 +1246,7 @@ function renderDashboard() {
   const days7 = getLast7Days();
   const creatineStreak = getRoutineStreak('creatine');
   const skincareStreak = getRoutineStreak('skincare');
+  const sertralineStreak = getRoutineStreak('sertraline');
 
   const sortedW = [...state.weightHistory].sort((a, b) => a.date.localeCompare(b.date));
   const latestW = sortedW[sortedW.length - 1] || { weight: 74.0, bodyFat: 15.9, muscle: 59.4, bioAge: 34, date: getTodayStr() };
@@ -1287,11 +1291,11 @@ function renderDashboard() {
 
             if (status === 'clean') {
               tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
-              icon = '✓';
-              stateLabel = 'Clean';
+              icon = '✕';
+              stateLabel = 'Kein Konsum (Clean)';
             } else if (status === 'consumed') {
               tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
-              icon = '✕';
+              icon = '✓';
               stateLabel = 'Konsumiert';
             }
 
@@ -1520,7 +1524,7 @@ function renderDashboard() {
         </button>
       </div>
 
-      <div class="grid grid-cols-2 gap-2.5">
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
         <button onclick="toggleRoutine('creatine')"
           class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
             log.routines.creatine
@@ -1558,6 +1562,29 @@ function renderDashboard() {
           </div>
           <div class="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 border ${
             log.routines.skincare
+              ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
+              : 'bg-zinc-950/60 border-border text-zinc-500'
+          }">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6 9 17l-5-5"/>
+            </svg>
+          </div>
+        </button>
+
+        <button onclick="toggleRoutine('sertraline')"
+          class="col-span-2 sm:col-span-1 p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
+            log.routines.sertraline
+              ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
+              : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
+          }">
+          <div class="min-w-0">
+            <div class="text-xs font-semibold truncate">Sertralin</div>
+            <div class="text-[11px] mt-0.5 ${log.routines.sertraline ? 'text-emerald-400' : 'text-zinc-500'}">
+              ${sertralineStreak > 0 ? `${sertralineStreak}d Streak` : 'Heute offen'}
+            </div>
+          </div>
+          <div class="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 border ${
+            log.routines.sertraline
               ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
               : 'bg-zinc-950/60 border-border text-zinc-500'
           }">
@@ -1770,6 +1797,7 @@ function renderHabitsTab() {
   const todayLog = ensureDayLog(state.selectedDate);
   const creatineStreak = getRoutineStreak('creatine');
   const skincareStreak = getRoutineStreak('skincare');
+  const sertralineStreak = getRoutineStreak('sertraline');
 
   const metricTabs = [
     { id: 'alcohol', label: '🍷 Alkohol' },
@@ -1781,9 +1809,10 @@ function renderHabitsTab() {
   const getCombinedRoutineStatus = (log) => {
     const c = normalizeRoutineStatus(log?.routines?.creatine);
     const s = normalizeRoutineStatus(log?.routines?.skincare);
-    if (c === true && s === true) return 'yes';
-    if (c === false || s === false) return 'no';
-    if (c === true || s === true) return 'partial';
+    const se = normalizeRoutineStatus(log?.routines?.sertraline);
+    if (c === true && s === true && se === true) return 'yes';
+    if (c === false || s === false || se === false) return 'no';
+    if (c === true || s === true || se === true) return 'partial';
     return null;
   };
 
@@ -1800,7 +1829,7 @@ function renderHabitsTab() {
         if (st === 'yes') clean++;
         else if (st === 'no') consumed++;
         else open++;
-      } else if (metricKey === 'creatine' || metricKey === 'skincare') {
+      } else if (metricKey === 'creatine' || metricKey === 'skincare' || metricKey === 'sertraline') {
         const val = normalizeRoutineStatus(log?.routines?.[metricKey]);
         if (val === true) clean++;
         else if (val === false) consumed++;
@@ -1850,7 +1879,7 @@ function renderHabitsTab() {
             statusIcon = '½';
           }
           clickHandler = `toggleHeatmapRoutineDay('routine', '${d.dateStr}')`;
-        } else if (metricKey === 'creatine' || metricKey === 'skincare') {
+        } else if (metricKey === 'creatine' || metricKey === 'skincare' || metricKey === 'sertraline') {
           const val = normalizeRoutineStatus(log?.routines?.[metricKey]);
           if (val === true) {
             tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
@@ -1864,20 +1893,20 @@ function renderHabitsTab() {
           const st = getCombinedNicotineStatus(log);
           if (st === 'clean') {
             tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
-            statusIcon = '✓';
+            statusIcon = '✕';
           } else if (st === 'consumed') {
             tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
-            statusIcon = '✕';
+            statusIcon = '✓';
           }
           clickHandler = `cycleCombinedNicotineDay('${d.dateStr}')`;
         } else {
           const st = log && log.badHabits ? normalizeHabitStatus(log.badHabits[metricKey]) : null;
           if (st === 'clean') {
             tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
-            statusIcon = '✓';
+            statusIcon = '✕';
           } else if (st === 'consumed') {
             tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
-            statusIcon = '✕';
+            statusIcon = '✓';
           }
           clickHandler = `cycleBadHabitDay('${metricKey}', '${d.dateStr}')`;
         }
@@ -1898,6 +1927,7 @@ function renderHabitsTab() {
   const vapeCounts = getCountsForMetric('vape');
   const creatineCounts = getCountsForMetric('creatine');
   const skincareCounts = getCountsForMetric('skincare');
+  const sertralineCounts = getCountsForMetric('sertraline');
 
   const renderLegend = () => {
     if (selectedHeatmapMetric === 'routine') {
@@ -2027,7 +2057,7 @@ function renderHabitsTab() {
           <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-3.5">
             <div class="flex items-center justify-between">
               <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">Aufschlüsselung Routine (30 Tage)</span>
-              <span class="text-[10px] text-zinc-500">✓ oben = Kreatin & Skincare</span>
+              <span class="text-[10px] text-zinc-500">✓ oben = Kreatin, Skincare & Sertralin</span>
             </div>
 
             <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
@@ -2053,6 +2083,18 @@ function renderHabitsTab() {
               </div>
               ${renderHeatmapGrid('skincare', true)}
             </div>
+
+            <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
+              <div class="flex items-center justify-between text-xs">
+                <span class="font-medium text-zinc-200">💊 Sertralin</span>
+                <span class="text-[11px] text-zinc-400">
+                  <span class="text-emerald-400 font-semibold">${sertralineCounts.clean}</span> ja ·
+                  <span class="text-rose-400 font-semibold">${sertralineCounts.consumed}</span> nein ·
+                  <span class="text-amber-300 font-semibold">${sertralineCounts.open}</span> offen · ${sertralineStreak}d Streak
+                </span>
+              </div>
+              ${renderHeatmapGrid('sertraline', true)}
+            </div>
           </div>
         ` : ''}
 
@@ -2071,13 +2113,14 @@ function renderHabitsTab() {
             <p class="text-[11px] text-zinc-400">Tägliche Basics für ${state.selectedDate}</p>
           </div>
           <span class="text-[11px] text-zinc-400">
-            ${(todayLog.routines.creatine === true ? 1 : 0) + (todayLog.routines.skincare === true ? 1 : 0)}/2 erledigt
+            ${(todayLog.routines.creatine === true ? 1 : 0) + (todayLog.routines.skincare === true ? 1 : 0) + (todayLog.routines.sertraline === true ? 1 : 0)}/3 erledigt
           </span>
         </div>
 
-        <div class="grid grid-cols-2 gap-2.5">
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
           ${renderRoutineCardButton('creatine', 'Kreatin', creatineStreak)}
           ${renderRoutineCardButton('skincare', 'Skincare', skincareStreak)}
+          ${renderRoutineCardButton('sertraline', 'Sertralin', sertralineStreak)}
         </div>
       </div>
 
