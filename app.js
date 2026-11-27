@@ -2694,7 +2694,6 @@ function renderDashboard() {
                 <span class="text-zinc-500 ml-2">${e.kcal} kcal · P ${e.p}g</span>
               </div>
               <div class="flex items-center gap-1 shrink-0">
-                <button onclick="saveDayEntryAsRecipe('${e.id}')" title="Als Rezept speichern" class="text-zinc-400 hover:text-emerald-400 px-1.5">📖</button>
                 <button onclick="deleteDayEntry('${e.id}')" title="Eintrag löschen" class="text-zinc-500 hover:text-rose-400 px-1.5">✕</button>
               </div>
             </div>
