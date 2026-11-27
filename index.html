@@ -59,13 +59,7 @@
       </div>
 
       <div class="flex items-center gap-1.5">
-        <button onclick="openBarcodeModal()" class="px-2.5 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-medium transition flex items-center gap-1" title="Barcode scannen">
-          <span>📷</span><span>Scan</span>
-        </button>
-      <button id="aiMealBtn" class="btn-ai-header" onclick="openAiMealModal()" title="Gericht per KI-JSON importieren">
-  ✨ KI-Gericht
-</button>
-        <button id="headerBackupBtn" onclick="openBackupModal()" class="relative px-2.5 py-1.5 rounded-xl bg-card hover:bg-cardHover border border-border text-zinc-300 text-xs transition" title="Daten sichern / wiederherstellen">
+        <button id="headerBackupBtn" onclick="openBackupModal()" class="px-2.5 py-1.5 rounded-xl bg-card hover:bg-cardHover border border-border text-zinc-300 text-xs font-medium transition" title="Daten sichern / wiederherstellen">
           Backup
         </button>
       </div>
@@ -82,13 +76,13 @@
         <span class="text-base mb-0.5">📊</span>
         <span>Heute</span>
       </button>
-      <button onclick="switchTab('recipes')" data-tab="recipes" class="nav-btn flex flex-col items-center py-1.5 rounded-xl text-xs font-medium transition">
-        <span class="text-base mb-0.5">🥣</span>
-        <span>Rezepte</span>
+      <button onclick="switchTab('food')" data-tab="food" class="nav-btn flex flex-col items-center py-1.5 rounded-xl text-xs font-medium transition">
+        <span class="text-base mb-0.5">🍽️</span>
+        <span>Food</span>
       </button>
-      <button onclick="switchTab('search')" data-tab="search" class="nav-btn flex flex-col items-center py-1.5 rounded-xl text-xs font-medium transition">
-        <span class="text-base mb-0.5">🔍</span>
-        <span>Food-Suche</span>
+      <button onclick="switchTab('sport')" data-tab="sport" class="nav-btn flex flex-col items-center py-1.5 rounded-xl text-xs font-medium transition">
+        <span class="text-base mb-0.5">🏋️</span>
+        <span>Sport</span>
       </button>
       <button onclick="switchTab('habits')" data-tab="habits" class="nav-btn flex flex-col items-center py-1.5 rounded-xl text-xs font-medium transition">
         <span class="text-base mb-0.5">⚡</span>
@@ -105,6 +99,7 @@
   <!-- Ausgelagerte Anwendungslogik -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <script src="app.js"></script>
+  <script src="sport.js"></script>
 
 <!-- Barcode & Schnell-Portionierung Modal -->
   <div id="barcodeModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-3">

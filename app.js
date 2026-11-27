@@ -170,6 +170,7 @@ let state = (() => {
       if (parsed && typeof parsed === 'object') {
         parsed.recipes = Array.isArray(parsed.recipes) ? parsed.recipes : [];
         parsed.sportHabits = Array.isArray(parsed.sportHabits) ? parsed.sportHabits : [];
+        parsed.workouts = Array.isArray(parsed.workouts) ? parsed.workouts : [];
         parsed.weightHistory = Array.isArray(parsed.weightHistory) ? parsed.weightHistory : [];
         parsed.logs = parsed.logs && typeof parsed.logs === 'object' ? parsed.logs : {};
         return parsed;
@@ -370,12 +371,20 @@ let selectedHeatmapMetric = 'alcohol'; // 'alcohol' | 'nicotine' | 'sport'
 let chartRangeDays = 14; // 7 | 14 | 30
 let selectedChartDate = null;
 
+let editingSportId = null;
+let foodSubTab = 'search'; // 'search' | 'recipes'
+
 function switchTab(tab, pushHistory = true) {
+  // Legacy-Tabs auf Food-Sub-Tabs mappen
+  if (tab === 'recipes' || tab === 'search') {
+    foodSubTab = tab;
+    tab = 'food';
+  }
   if (pushHistory && currentTab !== tab) {
     navHistory.push(tab);
   }
   currentTab = tab;
-  if (tab !== 'recipes') editingRecipe = null;
+  if (tab !== 'food' || foodSubTab !== 'recipes') editingRecipe = null;
   render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1087,8 +1096,8 @@ function render() {
 
   const container = document.getElementById('app-content');
   if (currentTab === 'dashboard') container.innerHTML = renderDashboard();
-  else if (currentTab === 'recipes') container.innerHTML = renderRecipesTab();
-  else if (currentTab === 'search') container.innerHTML = renderSearchTab();
+  else if (currentTab === 'food') container.innerHTML = renderFoodTab();
+  else if (currentTab === 'sport') container.innerHTML = renderSportTab();
   else if (currentTab === 'habits') container.innerHTML = renderHabitsTab();
 }
 
@@ -1265,9 +1274,6 @@ function renderDashboard() {
           <button onclick="openQuickLogModal()" class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
             + Mahlzeit
           </button>
-          <button onclick="openGoalModal()" class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs">
-            Ziele
-          </button>
         </div>
       </div>
 
@@ -1306,6 +1312,95 @@ function renderDashboard() {
           `).join('')}
         </div>
       ` : `<p class="text-xs text-zinc-500">Noch keine Mahlzeiten für ${formatDisplayDate(state.selectedDate)} eingetragen.</p>`}
+    </section>
+
+    <!-- Gewicht & Smartwaage (FitDays) -->
+    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-sm font-semibold text-white">Gewicht & Körperwerte (FitDays)</h2>
+          <p class="text-[11px] text-zinc-400">Aktueller Stand & CSV-Sync</p>
+        </div>
+       <div class="flex gap-1.5">
+          <label class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 cursor-pointer">
+            FitDays CSV
+            <input type="file" accept=".csv" onchange="importFitDaysCsv(event)" class="hidden" />
+          </label>
+          <button onclick="openBulkWeightModal()" class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 border border-border">
+            30T-Pflege
+          </button>
+          <button onclick="openWeightModal()" class="px-2.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-xs font-medium">
+            + Gewicht
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
+          <div class="text-[11px] text-zinc-400">Aktuelles Gewicht</div>
+          <div class="text-lg font-bold text-white mt-0.5">${latestW.weight.toFixed(1)} kg</div>
+          <div class="text-[11px] ${deltaW <= 0 ? 'text-emerald-400' : 'text-amber-400'}">
+            ${deltaW > 0 ? '+' : ''}${deltaW.toFixed(1)} kg Trend
+          </div>
+        </div>
+        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
+          <div class="text-[11px] text-zinc-400">Körperfett</div>
+          <div class="text-lg font-bold text-zinc-100 mt-0.5">${latestW.bodyFat ? latestW.bodyFat.toFixed(1) + '%' : '—'}</div>
+          <div class="text-[11px] text-zinc-500">Smartwaage</div>
+        </div>
+        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
+          <div class="text-[11px] text-zinc-400">Muskelmasse</div>
+          <div class="text-lg font-bold text-zinc-100 mt-0.5">${latestW.muscle ? latestW.muscle.toFixed(1) + ' kg' : '—'}</div>
+          <div class="text-[11px] text-zinc-500">Stand ${latestW.date.slice(5)}</div>
+        </div>
+        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
+          <div class="text-[11px] text-zinc-400">Bio-Alter</div>
+          <div class="text-lg font-bold text-emerald-400 mt-0.5">${latestW.bioAge ? latestW.bioAge + ' J.' : '—'}</div>
+          <div class="text-[11px] text-zinc-500">Stoffwechsel</div>
+        </div>
+      </div>
+
+      ${renderWeightCalorieChart()}
+    </section>
+
+    <!-- Konsum / Bad Habits -->
+    <section class="bg-card border border-border rounded-3xl p-4 space-y-3.5">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-semibold text-white">Konsum & Verzicht</h2>
+          <p class="text-[11px] text-zinc-400">Tippen wechselt Status: Offen → Clean → Konsumiert</p>
+        </div>
+        <button onclick="openManageHabits('sec-heatmap')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium shrink-0">
+          30d-Heatmap →
+        </button>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3 text-[11px] px-1">
+        <span class="flex items-center gap-1.5 text-emerald-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span> Clean
+        </span>
+        <span class="flex items-center gap-1.5 text-rose-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block"></span> Konsumiert
+        </span>
+        <span class="flex items-center gap-1.5 text-amber-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block"></span> Nicht erfasst
+        </span>
+      </div>
+
+      ${renderConsumptionRow('alcohol', '🍷 Alkohol', '7-Tage-Übersicht')}
+
+      <div class="border border-border rounded-2xl p-3.5 bg-zinc-950/50 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold uppercase tracking-wider text-zinc-300">💨 Nikotin</span>
+          <span class="text-[11px] px-2.5 py-0.5 rounded-full font-medium ${nicBadgeClass}">
+            ${nicBadgeText}
+          </span>
+        </div>
+        <div class="space-y-2.5 pl-1 border-l-2 border-zinc-800">
+          ${renderConsumptionRow('cigarettes', 'Zigaretten', 'Unterpunkt Nikotin')}
+          ${renderConsumptionRow('vape', 'Vape', 'Unterpunkt Nikotin')}
+        </div>
+      </div>
     </section>
 
     <!-- Sport & Bewegung Cluster -->
@@ -1396,95 +1491,6 @@ function renderDashboard() {
           </div>
         </button>
       </div>
-    </section>
-
-    <!-- Konsum / Bad Habits -->
-    <section class="bg-card border border-border rounded-3xl p-4 space-y-3.5">
-      <div class="flex items-start justify-between gap-2">
-        <div>
-          <h2 class="text-sm font-semibold text-white">Konsum & Verzicht</h2>
-          <p class="text-[11px] text-zinc-400">Tippen wechselt Status: Offen → Clean → Konsumiert</p>
-        </div>
-        <button onclick="openManageHabits('sec-heatmap')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium shrink-0">
-          30d-Heatmap →
-        </button>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-3 text-[11px] px-1">
-        <span class="flex items-center gap-1.5 text-emerald-300">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span> Clean
-        </span>
-        <span class="flex items-center gap-1.5 text-rose-300">
-          <span class="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block"></span> Konsumiert
-        </span>
-        <span class="flex items-center gap-1.5 text-amber-300">
-          <span class="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block"></span> Nicht erfasst
-        </span>
-      </div>
-
-      ${renderConsumptionRow('alcohol', '🍷 Alkohol', '7-Tage-Übersicht')}
-
-      <div class="border border-border rounded-2xl p-3.5 bg-zinc-950/50 space-y-3">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-semibold uppercase tracking-wider text-zinc-300">💨 Nikotin</span>
-          <span class="text-[11px] px-2.5 py-0.5 rounded-full font-medium ${nicBadgeClass}">
-            ${nicBadgeText}
-          </span>
-        </div>
-        <div class="space-y-2.5 pl-1 border-l-2 border-zinc-800">
-          ${renderConsumptionRow('cigarettes', 'Zigaretten', 'Unterpunkt Nikotin')}
-          ${renderConsumptionRow('vape', 'Vape', 'Unterpunkt Nikotin')}
-        </div>
-      </div>
-    </section>
-
-    <!-- Gewicht & Smartwaage (FitDays) -->
-    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="text-sm font-semibold text-white">Gewicht & Körperwerte (FitDays)</h2>
-          <p class="text-[11px] text-zinc-400">Aktueller Stand & CSV-Sync</p>
-        </div>
-       <div class="flex gap-1.5">
-          <label class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 cursor-pointer">
-            FitDays CSV
-            <input type="file" accept=".csv" onchange="importFitDaysCsv(event)" class="hidden" />
-          </label>
-          <button onclick="openBulkWeightModal()" class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 border border-border">
-            30T-Pflege
-          </button>
-          <button onclick="openWeightModal()" class="px-2.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-xs font-medium">
-            + Gewicht
-          </button>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
-          <div class="text-[11px] text-zinc-400">Aktuelles Gewicht</div>
-          <div class="text-lg font-bold text-white mt-0.5">${latestW.weight.toFixed(1)} kg</div>
-          <div class="text-[11px] ${deltaW <= 0 ? 'text-emerald-400' : 'text-amber-400'}">
-            ${deltaW > 0 ? '+' : ''}${deltaW.toFixed(1)} kg Trend
-          </div>
-        </div>
-        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
-          <div class="text-[11px] text-zinc-400">Körperfett</div>
-          <div class="text-lg font-bold text-zinc-100 mt-0.5">${latestW.bodyFat ? latestW.bodyFat.toFixed(1) + '%' : '—'}</div>
-          <div class="text-[11px] text-zinc-500">Smartwaage</div>
-        </div>
-        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
-          <div class="text-[11px] text-zinc-400">Muskelmasse</div>
-          <div class="text-lg font-bold text-zinc-100 mt-0.5">${latestW.muscle ? latestW.muscle.toFixed(1) + ' kg' : '—'}</div>
-          <div class="text-[11px] text-zinc-500">Stand ${latestW.date.slice(5)}</div>
-        </div>
-        <div class="bg-zinc-900/80 border border-border rounded-2xl p-3">
-          <div class="text-[11px] text-zinc-400">Bio-Alter</div>
-          <div class="text-lg font-bold text-emerald-400 mt-0.5">${latestW.bioAge ? latestW.bioAge + ' J.' : '—'}</div>
-          <div class="text-[11px] text-zinc-500">Stoffwechsel</div>
-        </div>
-      </div>
-
-      ${renderWeightCalorieChart()}
     </section>
   `;
 }
@@ -1629,6 +1635,34 @@ function renderRecipesTab() {
         `;
       }).join('')}
     </div>
+  `;
+}
+
+function setFoodSubTab(sub) {
+  foodSubTab = sub;
+  if (sub !== 'recipes') editingRecipe = null;
+  render();
+}
+
+function renderFoodTab() {
+  const actionCls = 'flex-1 px-3 py-2.5 rounded-2xl text-xs font-semibold transition flex items-center justify-center gap-1.5 border';
+  const subCls = (id) => `flex-1 py-2 rounded-xl text-xs font-medium transition ${
+    foodSubTab === id ? 'bg-emerald-500/15 text-emerald-400' : 'text-zinc-400 hover:text-zinc-200'
+  }`;
+  return `
+    <div class="flex gap-2">
+      <button onclick="openBarcodeModal()" class="${actionCls} bg-sky-500/15 hover:bg-sky-500/25 border-sky-500/30 text-sky-300">
+        <span>📷</span><span>Scan</span>
+      </button>
+      <button onclick="openAiMealModal()" class="${actionCls} bg-violet-500/15 hover:bg-violet-500/25 border-violet-500/30 text-violet-300">
+        <span>✨</span><span>KI-Analyse</span>
+      </button>
+    </div>
+    <div class="flex gap-1 bg-card border border-border rounded-2xl p-1">
+      <button onclick="setFoodSubTab('search')" class="${subCls('search')}">🔍 Food-Suche</button>
+      <button onclick="setFoodSubTab('recipes')" class="${subCls('recipes')}">🥣 Rezepte</button>
+    </div>
+    ${foodSubTab === 'recipes' ? renderRecipesTab() : renderSearchTab()}
   `;
 }
 
@@ -1996,15 +2030,39 @@ function renderHabitsTab() {
         <div class="flex gap-2">
           <input id="new-sport-name" type="text" placeholder="Neue Aktivität (z. B. Radfahren)..."
             class="flex-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white" />
-          <button onclick="addSportHabit()" class="px-3.5 py-2 rounded-xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
-            Hinzufügen
+          <button onclick="addSportHabit()" title="Hinzufügen" aria-label="Hinzufügen"
+            class="w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 transition">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
           </button>
         </div>
         <div class="space-y-1.5">
-          ${state.sportHabits.map(sp => `
-            <div class="flex items-center justify-between bg-zinc-900 border border-border rounded-xl px-3 py-2 text-xs">
-              <span class="text-zinc-200">${sp.name}</span>
-              <button onclick="deleteSportHabit('${sp.id}')" class="text-rose-400 hover:text-rose-300">Löschen</button>
+          ${state.sportHabits.map(sp => editingSportId === sp.id ? `
+            <div class="flex items-center gap-1.5 bg-zinc-900 border border-emerald-500/40 rounded-xl px-2 py-1.5">
+              <input id="edit-sport-name" type="text" value="${String(sp.name).replace(/"/g, '&quot;')}"
+                onkeydown="if(event.key==='Enter') saveSportHabitEdit('${sp.id}'); if(event.key==='Escape') cancelSportHabitEdit();"
+                class="flex-1 min-w-0 px-2 py-1 rounded-lg bg-zinc-950 border border-border text-xs text-white focus:outline-none focus:border-emerald-500" />
+              <button onclick="saveSportHabitEdit('${sp.id}')" title="Speichern" aria-label="Speichern"
+                class="w-8 h-8 flex items-center justify-center rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-400 transition">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+              </button>
+              <button onclick="cancelSportHabitEdit()" title="Abbrechen" aria-label="Abbrechen"
+                class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+          ` : `
+            <div class="flex items-center justify-between gap-2 bg-zinc-900 border border-border rounded-xl px-3 py-1.5 text-xs">
+              <span class="text-zinc-200 truncate">${sp.name}</span>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="startSportHabitEdit('${sp.id}')" title="Bearbeiten" aria-label="Bearbeiten"
+                  class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                </button>
+                <button onclick="deleteSportHabit('${sp.id}')" title="Löschen" aria-label="Löschen"
+                  class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-rose-500/15 border border-border hover:border-rose-500/30 text-zinc-400 hover:text-rose-400 transition">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                </button>
+              </div>
             </div>
           `).join('')}
         </div>
@@ -2161,6 +2219,28 @@ function addSportHabit() {
   const inp = document.getElementById('new-sport-name');
   if (!inp || !inp.value.trim()) return;
   state.sportHabits.push({ id: 'sp_' + Date.now(), name: inp.value.trim() });
+  saveState();
+  render();
+}
+
+function startSportHabitEdit(id) {
+  editingSportId = id;
+  render();
+  const el = document.getElementById('edit-sport-name');
+  if (el) { el.focus(); el.select(); }
+}
+
+function cancelSportHabitEdit() {
+  editingSportId = null;
+  render();
+}
+
+function saveSportHabitEdit(id) {
+  const el = document.getElementById('edit-sport-name');
+  const name = el ? el.value.trim() : '';
+  const sp = state.sportHabits.find(s => s.id === id);
+  if (sp && name) sp.name = name;
+  editingSportId = null;
   saveState();
   render();
 }
