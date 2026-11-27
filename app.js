@@ -186,6 +186,8 @@ let syncTimer = null;
 let lastRemoteTimestamp = null;
 let hasPendingLocalPush = false;
 let isSyncInFlight = false;
+let lastSyncStatusMsg = '';
+let lastSyncStatusErr = false;
 
 function normalizeLoadedState(obj) {
   if (!obj || typeof obj !== 'object') return obj;
@@ -197,6 +199,50 @@ function normalizeLoadedState(obj) {
   return obj;
 }
 
+function mergeByKey(primaryArr, secondaryArr, keyFn) {
+  const map = new Map();
+  (secondaryArr || []).forEach(item => { if (item) map.set(keyFn(item), item); });
+  (primaryArr || []).forEach(item => { if (item) map.set(keyFn(item), item); });
+  return [...map.values()];
+}
+
+function mergeCloudStates(localSt, remoteSt) {
+  const loc = normalizeLoadedState(localSt || {});
+  const rem = normalizeLoadedState(remoteSt || {});
+  const localNewer = (loc._updatedAt || '') >= (rem._updatedAt || '');
+  const primary = localNewer ? loc : rem;
+  const secondary = localNewer ? rem : loc;
+
+  const merged = { ...secondary, ...primary };
+  merged.workouts = mergeByKey(primary.workouts, secondary.workouts, w => w.id)
+    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')) || String(a.id || '').localeCompare(String(b.id || '')));
+  merged.weightHistory = mergeByKey(primary.weightHistory, secondary.weightHistory, w => w.date)
+    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  merged.recipes = mergeByKey(primary.recipes, secondary.recipes, r => r.id);
+  merged.sportHabits = mergeByKey(primary.sportHabits, secondary.sportHabits, h => h.id);
+
+  // Tageslogs zusammenführen, ohne Einträge oder Habits von einem Gerät zu verlieren
+  const mergedLogs = { ...(secondary.logs || {}) };
+  Object.keys(primary.logs || {}).forEach(dateKey => {
+    const pLog = primary.logs[dateKey] || {};
+    const sLog = mergedLogs[dateKey] || {};
+    const entries = mergeByKey(pLog.entries || [], sLog.entries || [], e => e.id || `${e.name}_${e.kcal}`);
+    const sportDone = [...new Set([...(sLog.sportDone || []), ...(pLog.sportDone || [])])];
+    const badHabits = { ...(sLog.badHabits || {}) };
+    Object.keys(pLog.badHabits || {}).forEach(k => {
+      if (pLog.badHabits[k] !== null && pLog.badHabits[k] !== undefined) badHabits[k] = pLog.badHabits[k];
+    });
+    const routines = { ...(sLog.routines || {}) };
+    Object.keys(pLog.routines || {}).forEach(k => {
+      if (pLog.routines[k] !== null && pLog.routines[k] !== undefined) routines[k] = pLog.routines[k];
+    });
+    mergedLogs[dateKey] = { ...sLog, ...pLog, entries, sportDone, badHabits, routines };
+  });
+  merged.logs = mergedLogs;
+  merged._updatedAt = localNewer ? (loc._updatedAt || rem._updatedAt) : (rem._updatedAt || loc._updatedAt);
+  return normalizeLoadedState(merged);
+}
+
 function getSyncConfig() {
   try {
     return JSON.parse(localStorage.getItem(SYNC_CFG_KEY) || 'null');
@@ -206,6 +252,8 @@ function getSyncConfig() {
 }
 
 function setSyncStatusText(msg, isError = false) {
+  lastSyncStatusMsg = msg;
+  lastSyncStatusErr = isError;
   const el = document.getElementById('syncStatusLabel');
   if (!el) return;
   el.textContent = msg;
@@ -224,25 +272,33 @@ function buildSyncHeaders(cfg, extra = {}) {
   return headers;
 }
 
-async function pushStateToCloud(useKeepalive = false) {
+async function pushStateToCloud(useKeepalive = false, showAlert = false) {
   const cfg = getSyncConfig();
-  if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) return;
+  if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) {
+    if (showAlert) alert('Bitte zuerst Supabase URL, Key und Sync-Key eintragen.');
+    return;
+  }
 
-  const updatedAt = state._updatedAt || new Date().toISOString();
+  const updatedAt = new Date().toISOString();
   state._updatedAt = updatedAt;
+  const bodyStr = JSON.stringify({
+    sync_key: cfg.syncKey,
+    payload: state,
+    updated_at: updatedAt
+  });
+  // Chrome bricht fetch mit keepalive:true bei >64KB Body hart ab!
+  const safeKeepalive = Boolean(useKeepalive) && bodyStr.length < 50000;
+
   try {
+    setSyncStatusText('Sende in Cloud...');
     const res = await fetch(`${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync`, {
       method: 'POST',
-      keepalive: Boolean(useKeepalive),
+      keepalive: safeKeepalive,
       headers: buildSyncHeaders(cfg, {
         'Content-Type': 'application/json',
         'Prefer': 'resolution=merge-duplicates'
       }),
-      body: JSON.stringify({
-        sync_key: cfg.syncKey,
-        payload: state,
-        updated_at: updatedAt
-      })
+      body: bodyStr
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
@@ -250,9 +306,14 @@ async function pushStateToCloud(useKeepalive = false) {
     }
     hasPendingLocalPush = false;
     lastRemoteTimestamp = updatedAt;
-    setSyncStatusText(`Synchronisiert (${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
+    const kb = Math.round(bodyStr.length / 1024);
+    const wCount = Array.isArray(state.workouts) ? state.workouts.length : 0;
+    const timeStr = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    setSyncStatusText(`Gesendet (${wCount} Wo., ${kb} KB · ${timeStr})`);
+    if (showAlert) alert(`✅ In Cloud gesichert: ${wCount} Workouts, ${(state.weightHistory || []).length} Gewichtstage, ${(state.recipes || []).length} Rezepte.`);
   } catch (err) {
     setSyncStatusText(`Push-Fehler: ${err.message}`, true);
+    if (showAlert) alert(`❌ Cloud-Upload fehlgeschlagen: ${err.message}`);
   }
 }
 
@@ -260,13 +321,6 @@ async function pullStateFromCloud(forceOverwrite = false) {
   const cfg = getSyncConfig();
   if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) return;
   if (isSyncInFlight && !forceOverwrite) return;
-
-  // Wenn lokale Änderungen noch nicht hochgeladen wurden, zuerst pushen statt überschreiben
-  if (!forceOverwrite && hasPendingLocalPush) {
-    clearTimeout(syncTimer);
-    await pushStateToCloud();
-    return;
-  }
 
   isSyncInFlight = true;
   try {
@@ -282,35 +336,61 @@ async function pullStateFromCloud(forceOverwrite = false) {
     const rows = await res.json();
 
     if (!rows.length) {
+      isSyncInFlight = false;
       await pushStateToCloud();
       return;
     }
 
     const remote = rows[0];
     const remoteTs = remote.updated_at || remote.payload?._updatedAt || '';
-    const localTs = state._updatedAt || '';
+    const remotePayload = remote.payload && typeof remote.payload === 'object' ? normalizeLoadedState(remote.payload) : null;
+    if (!remotePayload) return;
 
-    if (forceOverwrite || (!localTs && remoteTs) || (remoteTs && remoteTs > localTs)) {
-      if (remote.payload && typeof remote.payload === 'object') {
-        // Laufende Eingabe im Rezept- oder Live-Workout-Editor bei stillem Hintergrund-Pull nicht abbrechen
-        const isEditingNow = !forceOverwrite && (
-          Boolean(editingRecipe) ||
-          (typeof sportLiveOpen !== 'undefined' && sportLiveOpen)
-        );
-        if (!isEditingNow) {
-          state = normalizeLoadedState(remote.payload);
-          if (remoteTs) state._updatedAt = remoteTs;
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-          lastRemoteTimestamp = remoteTs;
-          render();
-        }
-      }
-    } else if (!forceOverwrite && localTs && remoteTs && localTs > remoteTs) {
-      await pushStateToCloud();
-    } else if (remoteTs) {
+    const isEditingNow = !forceOverwrite && (
+      Boolean(editingRecipe) ||
+      (typeof sportLiveOpen !== 'undefined' && sportLiveOpen)
+    );
+
+    if (forceOverwrite) {
+      state = remotePayload;
+      if (remoteTs) state._updatedAt = remoteTs;
+      hasPendingLocalPush = false;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       lastRemoteTimestamp = remoteTs;
+      render();
+      const wCount = (state.workouts || []).length;
+      setSyncStatusText(`Geladen (${wCount} Wo. · ${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
+      return;
     }
-    setSyncStatusText(`Cloud aktuell (${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
+
+    const localWCount = (state.workouts || []).length;
+    const remoteWCount = (remotePayload.workouts || []).length;
+    const localWeightCount = (state.weightHistory || []).length;
+    const remoteWeightCount = (remotePayload.weightHistory || []).length;
+    const needsMerge = remoteTs !== lastRemoteTimestamp || remoteWCount !== localWCount || remoteWeightCount !== localWeightCount || hasPendingLocalPush;
+
+    if (needsMerge && !isEditingNow) {
+      const merged = mergeCloudStates(state, remotePayload);
+      const mergedHasMoreThanRemote =
+        merged.workouts.length > remoteWCount ||
+        merged.weightHistory.length > remoteWeightCount ||
+        merged.recipes.length > (remotePayload.recipes || []).length ||
+        hasPendingLocalPush;
+
+      state = merged;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      lastRemoteTimestamp = remoteTs;
+      render();
+
+      if (mergedHasMoreThanRemote) {
+        isSyncInFlight = false;
+        await pushStateToCloud();
+        return;
+      }
+    }
+
+    const wCount = (state.workouts || []).length;
+    setSyncStatusText(`Synchron (${wCount} Wo. · ${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
   } catch (err) {
     setSyncStatusText(`Pull-Fehler: ${err.message}`, true);
   } finally {
@@ -682,17 +762,85 @@ function translateFoodQueryDeToEn(rawQuery) {
   const out = tokens.map(tok => {
     if (DE_TO_EN[tok]) { translatedAny = true; return DE_TO_EN[tok]; }
     if (DE_WORD_MAP[tok] !== undefined) { translatedAny = true; return DE_WORD_MAP[tok]; }
-    // Einfache Plural-Endungen abbauen (z. B. zwiebeln -> zwiebel, tomaten -> tomate)
     for (const suf of ['en', 'n', 'e', 's']) {
       if (tok.length > 4 && tok.endsWith(suf)) {
         const stem = tok.slice(0, -suf.length);
         if (DE_TO_EN[stem]) { translatedAny = true; return DE_TO_EN[stem]; }
       }
     }
+    if (tok.length >= 3) {
+      const prefKey = Object.keys(DE_TO_EN).find(k => k.startsWith(tok));
+      if (prefKey) { translatedAny = true; return DE_TO_EN[prefKey]; }
+    }
     return tok;
   }).filter(Boolean);
 
-  return translatedAny ? out.join(' ') : clean;
+  if (translatedAny) return out.join(' ');
+
+  if (clean.length >= 3) {
+    const subKey = Object.keys(DE_TO_EN).find(k => k.includes(clean));
+    if (subKey) return DE_TO_EN[subKey];
+  }
+  return clean;
+}
+
+function getFoodSuggestions(rawQuery) {
+  const q = String(rawQuery || '').trim().toLowerCase();
+  if (q.length < 2) return [];
+
+  const titleCase = s => s.replace(/(^|\s)([a-zäöüß])/g, (_, sp, ch) => sp + ch.toUpperCase());
+  const pool = new Map();
+  // Eigene bereits genutzte Rezeptzutaten zuerst merken
+  (state.recipes || []).forEach(r => {
+    (r.items || []).forEach(it => {
+      const base = String(it.name || '').split('(')[0].trim();
+      if (base.length >= 2) pool.set(base.toLowerCase(), base);
+    });
+  });
+  Object.keys(DE_TO_EN).forEach(k => {
+    if (!pool.has(k)) pool.set(k, titleCase(k));
+  });
+
+  const starts = [];
+  const contains = [];
+  pool.forEach((label, key) => {
+    if (key === q) return;
+    if (key.startsWith(q)) starts.push(label);
+    else if (key.includes(q)) contains.push(label);
+  });
+
+  return [...starts, ...contains].slice(0, 6);
+}
+
+function renderFoodSuggestions(mode, rawVal) {
+  const boxId = mode === 'builder' ? 'builder-search-suggestions' : 'global-food-suggestions';
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  const list = getFoodSuggestions(rawVal);
+  if (!list.length) {
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = list.map(label => {
+    const safe = label.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `
+      <button type="button" onclick="applyFoodSuggestion('${mode}', '${safe}')"
+        class="px-2.5 py-1 rounded-full bg-zinc-900 hover:bg-emerald-500/20 border border-border hover:border-emerald-500/40 text-[11px] text-zinc-200 hover:text-emerald-300 transition">
+        ${label}
+      </button>
+    `;
+  }).join('');
+}
+
+function applyFoodSuggestion(mode, term) {
+  const inpId = mode === 'builder' ? 'builder-search-input' : 'global-food-query';
+  const boxId = mode === 'builder' ? 'builder-search-suggestions' : 'global-food-suggestions';
+  const inp = document.getElementById(inpId);
+  const sugBox = document.getElementById(boxId);
+  if (inp) inp.value = term;
+  if (sugBox) sugBox.innerHTML = '';
+  if (mode === 'builder') runBuilderSearch();
+  else runGlobalFoodSearch();
 }
 
 function suggestDefaultGrams(foodName) {
@@ -2056,12 +2204,14 @@ function renderRecipesTab() {
           </div>
           <div class="flex gap-2">
             <input id="builder-search-input" type="text" placeholder="Deutsch suchen (z. B. rote Zwiebeln, Olivenöl, Tofu…)"
+              oninput="renderFoodSuggestions('builder', this.value)"
               onkeydown="if(event.key==='Enter') runBuilderSearch()"
               class="flex-1 px-3 py-2.5 rounded-xl bg-zinc-900 border border-border text-xs text-white" />
             <button onclick="runBuilderSearch()" class="px-3.5 py-2.5 rounded-xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
               Suchen
             </button>
           </div>
+          <div id="builder-search-suggestions" class="flex flex-wrap gap-1.5"></div>
           <div id="builder-search-results" class="space-y-1.5 max-h-60 overflow-y-auto"></div>
         </div>
 
@@ -2174,13 +2324,15 @@ function renderSearchTab() {
         <p class="text-xs text-zinc-400">Parallele Suche in Open Food Facts & USDA FoodData Central</p>
       </div>
       <div class="flex gap-2">
-        <input id="global-food-query" type="text" placeholder="Lebensmittel eingeben (z. B. Apfel, Haferflocken, Quark)..."
+        <input id="global-food-query" type="text" placeholder="Lebensmittel eingeben (z. B. Zwiebeln, Haferflocken, Quark)..."
+          oninput="renderFoodSuggestions('global', this.value)"
           onkeydown="if(event.key==='Enter') runGlobalFoodSearch()"
           class="flex-1 px-3.5 py-2.5 rounded-2xl bg-zinc-900 border border-border text-sm text-white focus:outline-none focus:border-emerald-500" />
         <button onclick="runGlobalFoodSearch()" class="px-4 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs">
           Suchen
         </button>
       </div>
+      <div id="global-food-suggestions" class="flex flex-wrap gap-1.5"></div>
       <div id="global-food-results" class="space-y-2">
         <p class="text-xs text-zinc-500">Gib einen Suchbegriff ein, um Live-Nährwerte pro 100g abzurufen.</p>
       </div>
@@ -3331,9 +3483,16 @@ function openBackupModal() {
       </div>
 
       <div class="rounded-2xl bg-zinc-900/90 border border-border p-3 space-y-2">
-        <div class="flex items-center justify-between">
+        <div class="flex items-center justify-between gap-2">
           <span class="text-xs font-semibold text-white">☁️ Supabase Auto-Sync</span>
-          <span id="syncStatusLabel" class="text-[11px] text-zinc-400">${cfg.url ? 'Aktiv' : 'Nicht eingerichtet'}</span>
+          <span id="syncStatusLabel" class="text-[11px] ${lastSyncStatusErr ? 'text-rose-400' : (lastSyncStatusMsg ? 'text-emerald-400' : 'text-zinc-400')}">
+            ${lastSyncStatusMsg || (cfg.url ? 'Aktiv' : 'Nicht eingerichtet')}
+          </span>
+        </div>
+        <div class="text-[10px] text-zinc-400 bg-zinc-950/80 border border-zinc-800/80 rounded-xl px-2.5 py-1.5">
+          Auf diesem Gerät: <strong class="text-white">${(state.workouts || []).length}</strong> Workouts ·
+          <strong class="text-white">${(state.weightHistory || []).length}</strong> Gewichtstage ·
+          <strong class="text-white">${(state.recipes || []).length}</strong> Rezepte
         </div>
         <input id="sync-url" type="url" value="${cfg.url}" placeholder="Project URL (https://....supabase.co)"
           class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
@@ -3341,11 +3500,16 @@ function openBackupModal() {
           class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
         <input id="sync-secret" type="password" value="${cfg.syncKey}" placeholder="Dein persönlicher Sync-Key (z. B. alex-ff-2026)"
           class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
-        <div class="flex gap-2 pt-1">
+        <div class="flex gap-1.5 pt-1">
           <button onclick="saveSyncSettings()" class="flex-1 py-2 rounded-xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
-            Speichern & Syncen
+            Sync starten
           </button>
-          <button onclick="pullStateFromCloud(true)" class="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs">
+          <button onclick="pushStateToCloud(false, true)" title="Daten dieses Geräts in die Cloud senden"
+            class="px-2.5 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/35 text-sky-300 text-xs font-medium">
+            ↑ Senden
+          </button>
+          <button onclick="pullStateFromCloud(true)" title="Cloud-Stand direkt auf dieses Gerät laden"
+            class="px-2.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium">
             ↓ Laden
           </button>
         </div>
