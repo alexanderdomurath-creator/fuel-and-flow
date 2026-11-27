@@ -1687,17 +1687,65 @@ function saveWeightEntry() {
   render();
 }
 
+function handleBulkWeightPaste(event) {
+  const target = event.target;
+  if (!target || target.tagName !== 'INPUT') return;
+
+  const rawText = (event.clipboardData || window.clipboardData)?.getData('text') || '';
+  // Nur eingreifen, wenn Tabulatoren (mehrere Spalten) oder Zeilenumbrüche (mehrere Zeilen) enthalten sind
+  if (!rawText.includes('\t') && !rawText.includes('\n')) return;
+
+  event.preventDefault();
+
+  const fieldOrder = ['weight', 'bodyFat', 'muscle', 'bioAge'];
+  const startField = target.dataset.field;
+  const startColIdx = fieldOrder.indexOf(startField);
+  const startRow = target.closest('.bulk-weight-row');
+  const allRows = Array.from(document.querySelectorAll('.bulk-weight-row'));
+  const startRowIdx = allRows.indexOf(startRow);
+
+  if (startColIdx === -1 || startRowIdx === -1) return;
+
+  // Excel-Zeilen aufteilen (letzte leere Zeile am Ende entfernen)
+  const pastedRows = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  if (pastedRows.length > 1 && pastedRows[pastedRows.length - 1].trim() === '') {
+    pastedRows.pop();
+  }
+
+  pastedRows.forEach((rowStr, rOffset) => {
+    const targetRow = allRows[startRowIdx + rOffset];
+    if (!targetRow) return;
+
+    const cols = rowStr.split('\t');
+    cols.forEach((cellVal, cOffset) => {
+      const targetField = fieldOrder[startColIdx + cOffset];
+      if (!targetField) return;
+
+      const input = targetRow.querySelector(`input[data-field="${targetField}"]`);
+      if (!input) return;
+
+      // Einheiten wie "kg" oder "%" entfernen und Komma in Punkt umwandeln
+      const cleaned = cellVal.replace(/[^\d,.-]/g, '').replace(',', '.').trim();
+      if (cleaned !== '' && !isNaN(Number(cleaned))) {
+        input.value = cleaned;
+        targetRow.classList.remove('bg-zinc-900/70', 'border-border');
+        targetRow.classList.add('bg-emerald-500/10', 'border-emerald-500/30');
+      }
+    });
+  });
+}
+
 function openBulkWeightModal() {
   const days30 = [...getLastNDays(30)].reverse(); // Heute oben, dann rückwärts
   const weightMap = {};
   state.weightHistory.forEach(w => { weightMap[w.date] = w; });
 
   openModal(`
-    <form onsubmit="event.preventDefault(); saveBulkWeights();" class="space-y-3.5">
+    <form onpaste="handleBulkWeightPaste(event)" onsubmit="event.preventDefault(); saveBulkWeights();" class="space-y-3.5">
       <div class="flex items-center justify-between">
         <div>
           <h3 class="text-base font-semibold text-white">30-Tage-Schnellpflege (FitDays)</h3>
-          <p class="text-[11px] text-zinc-400">Mit Tab von Feld zu Feld springen · Enter speichert alle Zeilen</p>
+          <p class="text-[11px] text-zinc-400">Excel-Bereich kopieren & in beliebige Startzelle einfügen (Strg+V)</p>
         </div>
         <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-1">✕</button>
       </div>
@@ -1788,11 +1836,10 @@ function saveBulkWeights() {
     }
   });
 
-  // Einträge außerhalb der letzten 30 Tage behalten, die letzten 30 Tage sauber ersetzen
   const olderEntries = state.weightHistory.filter(w => !editedDates.has(w.date));
   state.weightHistory = [...olderEntries, ...newEntries].sort((a, b) => a.date.localeCompare(b.date));
 
-  chartRangeDays = 30; // Chart automatisch auf 30 Tage stellen, damit alle nachgepflegten Werte sichtbar sind
+  chartRangeDays = 30;
   saveState();
   closeModal();
   render();
