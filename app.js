@@ -139,15 +139,30 @@ function buildInitialState() {
       { id: 'sp_run', name: 'Laufen' },
       { id: 'sp_surf', name: 'Surfen / Mobility' }
     ],
-    weightHistory: [
-      { date: getPastDateStr(14), weight: 74.6, bodyFat: 16.4, muscle: 59.1, bioAge: 35 },
-      { date: getPastDateStr(7), weight: 74.2, bodyFat: 16.1, muscle: 59.3, bioAge: 34 },
-      { date: today, weight: 74.0, bodyFat: 15.9, muscle: 59.4, bioAge: 34 }
-    ],
-    logs
+    weightHistory: [],
+    logs: {}
   };
 }
 
+function isDemoWeightEntry(w) {
+  if (!w || typeof w !== 'object') return false;
+  if (w.timeStr || w.bmi != null || w.bodyWater != null || w.bmr != null || w.subcutaneousFat != null || w.visceralFat != null) {
+    return false;
+  }
+  const wt = Number(w.weight), bf = Number(w.bodyFat), mu = Number(w.muscle), age = Number(w.bioAge);
+  return (
+    (wt === 74.0 && bf === 15.9 && mu === 59.4 && age === 34) ||
+    (wt === 74.2 && bf === 16.1 && mu === 59.3 && age === 34) ||
+    (wt === 74.6 && bf === 16.4 && mu === 59.1 && age === 35)
+  );
+}
+
+function stripDemoWeightEntries(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr.filter(w => !isDemoWeightEntry(w));
+}
+
+let removedDemoWeightsOnLoad = false;
 let state = (() => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -157,7 +172,12 @@ let state = (() => {
         parsed.recipes = Array.isArray(parsed.recipes) ? parsed.recipes : [];
         parsed.sportHabits = Array.isArray(parsed.sportHabits) ? parsed.sportHabits : [];
         parsed.workouts = Array.isArray(parsed.workouts) ? parsed.workouts : [];
-        parsed.weightHistory = Array.isArray(parsed.weightHistory) ? parsed.weightHistory : [];
+        const rawW = Array.isArray(parsed.weightHistory) ? parsed.weightHistory : [];
+        parsed.weightHistory = stripDemoWeightEntries(rawW);
+        if (parsed.weightHistory.length < rawW.length) {
+          removedDemoWeightsOnLoad = true;
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)); } catch (e) {}
+        }
         parsed.logs = parsed.logs && typeof parsed.logs === 'object' ? parsed.logs : {};
         return parsed;
       }
@@ -180,7 +200,7 @@ function normalizeLoadedState(obj) {
   obj.recipes = Array.isArray(obj.recipes) ? obj.recipes : [];
   obj.sportHabits = Array.isArray(obj.sportHabits) ? obj.sportHabits : [];
   obj.workouts = Array.isArray(obj.workouts) ? obj.workouts : [];
-  obj.weightHistory = Array.isArray(obj.weightHistory) ? obj.weightHistory : [];
+  obj.weightHistory = stripDemoWeightEntries(Array.isArray(obj.weightHistory) ? obj.weightHistory : []);
   obj.logs = obj.logs && typeof obj.logs === 'object' ? obj.logs : {};
   return obj;
 }
@@ -391,8 +411,14 @@ async function pullStateFromCloud(forceOverwrite = false) {
 
     const remote = rows[0];
     const remoteTs = remote.updated_at || remote.payload?._updatedAt || '';
+    const remoteHadDemoWeights = Array.isArray(remote.payload?.weightHistory) && remote.payload.weightHistory.some(isDemoWeightEntry);
     const remotePayload = remote.payload && typeof remote.payload === 'object' ? normalizeLoadedState(remote.payload) : null;
     if (!remotePayload) return;
+
+    if (remoteHadDemoWeights || removedDemoWeightsOnLoad) {
+      removedDemoWeightsOnLoad = false;
+      hasPendingLocalPush = true;
+    }
 
     const isEditingNow = !forceOverwrite && (
       Boolean(editingRecipe) ||
@@ -4024,9 +4050,18 @@ function saveWeightEntry() {
   const bioAge = ageRaw !== '' ? Number(ageRaw) : null;
   if (!weight || isNaN(weight)) return;
 
-  // Alle evtl. vorhandenen Einträge für dieses Datum sauber ersetzen
+  // Bestehende FitDays-Zusatzwerte dieses Datums erhalten, falls vorhanden
+  const prev = state.weightHistory.find(w => w.date === dateVal) || {};
   state.weightHistory = state.weightHistory.filter(w => w.date !== dateVal);
-  state.weightHistory.push({ date: dateVal, weight, bodyFat, muscle, bioAge });
+  state.weightHistory.push({
+    ...prev,
+    date: dateVal,
+    weight,
+    bodyFat: bodyFat !== null ? bodyFat : (prev.bodyFat ?? null),
+    muscle: muscle !== null ? muscle : (prev.muscle ?? null),
+    bioAge: bioAge !== null ? bioAge : (prev.bioAge ?? null)
+  });
+  state.weightHistory.sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
 
   state.selectedDate = dateVal;
   selectedChartDate = dateVal;
