@@ -179,10 +179,102 @@ let state = (() => {
   return buildInitialState();
 })();
 
+// ---------- SUPABASE CLOUD SYNC ----------
+const SYNC_CFG_KEY = 'fuel_and_flow_sync_cfg';
+let syncTimer = null;
+let lastRemoteTimestamp = null;
+
+function getSyncConfig() {
+  try {
+    return JSON.parse(localStorage.getItem(SYNC_CFG_KEY) || 'null');
+  } catch (e) {
+    return null;
+  }
+}
+
+function setSyncStatusText(msg, isError = false) {
+  const el = document.getElementById('syncStatusLabel');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = isError ? 'text-[11px] text-rose-400' : 'text-[11px] text-emerald-400';
+}
+
+async function pushStateToCloud() {
+  const cfg = getSyncConfig();
+  if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) return;
+
+  const updatedAt = new Date().toISOString();
+  try {
+    const res = await fetch(`${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': cfg.anonKey,
+        'Authorization': `Bearer ${cfg.anonKey}`,
+        'x-sync-key': cfg.syncKey,
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      body: JSON.stringify({
+        sync_key: cfg.syncKey,
+        payload: state,
+        updated_at: updatedAt
+      })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    lastRemoteTimestamp = updatedAt;
+    setSyncStatusText(`Synchronisiert (${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
+  } catch (err) {
+    setSyncStatusText('Sync-Fehler (offline?)', true);
+  }
+}
+
+async function pullStateFromCloud(forceOverwrite = false) {
+  const cfg = getSyncConfig();
+  if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) return;
+
+  try {
+    const url = `${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync?sync_key=eq.${encodeURIComponent(cfg.syncKey)}&select=payload,updated_at`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'apikey': cfg.anonKey,
+        'Authorization': `Bearer ${cfg.anonKey}`,
+        'x-sync-key': cfg.syncKey
+      }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
+
+    if (!rows.length) {
+      // Erstes Gerät: lokalen Stand direkt initial in die Cloud laden
+      await pushStateToCloud();
+      return;
+    }
+
+    const remote = rows[0];
+    if (forceOverwrite || !lastRemoteTimestamp || remote.updated_at > lastRemoteTimestamp) {
+      if (remote.payload && typeof remote.payload === 'object') {
+        state = remote.payload;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        lastRemoteTimestamp = remote.updated_at;
+        render();
+      }
+    }
+    setSyncStatusText(`Cloud aktuell (${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
+  } catch (err) {
+    setSyncStatusText('Cloud nicht erreichbar', true);
+  }
+}
+
 function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {}
+
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    pushStateToCloud();
+  }, 800);
 }
 
 function ensureDayLog(dateStr) {
@@ -1961,6 +2053,7 @@ async function triggerNativeInstall() {
 
 function openBackupModal() {
   const status = getBackupReminderStatus();
+  const cfg = getSyncConfig() || { url: '', anonKey: '', syncKey: '' };
   const badgeHtml = status.isDue
     ? `<div class="rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 py-2 text-[11px] text-amber-300">${status.message}</div>`
     : `<div class="rounded-xl bg-zinc-900 border border-zinc-800 px-3 py-2 text-[11px] text-zinc-400">${status.message}</div>`;
@@ -1968,14 +2061,36 @@ function openBackupModal() {
   openModal(`
     <div class="space-y-3">
       <div class="flex items-center justify-between">
-        <h3 class="text-base font-semibold text-white">Daten-Backup & Export</h3>
+        <h3 class="text-base font-semibold text-white">Cloud-Sync & Backup</h3>
         <button onclick="closeModal()" class="text-zinc-400 hover:text-white">✕</button>
       </div>
+
+      <div class="rounded-2xl bg-zinc-900/90 border border-border p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-white">☁️ Supabase Auto-Sync</span>
+          <span id="syncStatusLabel" class="text-[11px] text-zinc-400">${cfg.url ? 'Aktiv' : 'Nicht eingerichtet'}</span>
+        </div>
+        <input id="sync-url" type="url" value="${cfg.url}" placeholder="Project URL (https://....supabase.co)"
+          class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
+        <input id="sync-anon" type="password" value="${cfg.anonKey}" placeholder="Anon / Public Key"
+          class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
+        <input id="sync-secret" type="password" value="${cfg.syncKey}" placeholder="Dein persönlicher Sync-Key (z. B. alex-ff-2026)"
+          class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
+        <div class="flex gap-2 pt-1">
+          <button onclick="saveSyncSettings()" class="flex-1 py-2 rounded-xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
+            Speichern & Syncen
+          </button>
+          <button onclick="pullStateFromCloud(true)" class="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs">
+            ↓ Laden
+          </button>
+        </div>
+      </div>
+
       ${badgeHtml}
       <button onclick="exportCsvExcel()" class="w-full py-2.5 rounded-2xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-semibold text-xs transition">
         Als Excel-Tabelle exportieren (.csv)
       </button>
-      <button onclick="exportJsonBackup()" class="w-full py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+      <button onclick="exportJsonBackup()" class="w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-xs transition">
         Komplett-Backup herunterladen (.json)
       </button>
       <label class="block w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-center text-zinc-200 font-medium text-xs cursor-pointer transition">
@@ -1984,6 +2099,19 @@ function openBackupModal() {
       </label>
     </div>
   `);
+}
+
+async function saveSyncSettings() {
+  const url = document.getElementById('sync-url').value.trim();
+  const anonKey = document.getElementById('sync-anon').value.trim();
+  const syncKey = document.getElementById('sync-secret').value.trim();
+  if (!url || !anonKey || !syncKey) {
+    setSyncStatusText('Bitte alle 3 Felder ausfüllen.', true);
+    return;
+  }
+  localStorage.setItem(SYNC_CFG_KEY, JSON.stringify({ url, anonKey, syncKey }));
+  setSyncStatusText('Verbinde...');
+  await pullStateFromCloud(false);
 }
 
 function exportJsonBackup() {
@@ -2759,3 +2887,8 @@ function saveAiMealToLog(asSingleEntry) {
 }
 
 render();
+
+pullStateFromCloud();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') pullStateFromCloud();
+});
