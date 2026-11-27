@@ -2017,18 +2017,31 @@ function renderHabitsTab() {
           `).join('')}
         </div>
 
-        <div class="pt-1">
-          ${renderHeatmapGrid(selectedHeatmapMetric, false)}
-        </div>
+        ${selectedHeatmapMetric === 'alcohol' ? `
+          <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-2.5">
+            <div class="flex items-center justify-between text-xs">
+              <span class="font-semibold text-zinc-200">🍷 Alkohol</span>
+              <span class="text-[11px] text-zinc-400">
+                <span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> clean ·
+                <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> kons. ·
+                <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen
+              </span>
+            </div>
+            ${renderHeatmapGrid('alcohol', false)}
+          </div>
+        ` : ''}
 
         ${selectedHeatmapMetric === 'nicotine' ? `
           <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-3.5">
             <div class="flex items-center justify-between">
-              <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">Aufschlüsselung Nikotin (30 Tage)</span>
-              <span class="text-[10px] text-zinc-500">✕ oben = Zigaretten oder Vape</span>
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">💨 Nikotin (30 Tage)</span>
+              <span class="text-[11px] text-zinc-400">
+                Gesamt: <span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> clean ·
+                <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> kons.
+              </span>
             </div>
 
-            <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
+            <div class="space-y-1.5">
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">🚬 Zigaretten</span>
                 <span class="text-[11px] text-zinc-400">
@@ -2040,7 +2053,7 @@ function renderHabitsTab() {
               ${renderHeatmapGrid('cigarettes', true)}
             </div>
 
-            <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
+            <div class="space-y-1.5 pt-2 border-t border-zinc-900">
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">💨 Vape</span>
                 <span class="text-[11px] text-zinc-400">
@@ -2053,14 +2066,29 @@ function renderHabitsTab() {
             </div>
           </div>
         ` : ''}
+
+        ${selectedHeatmapMetric === 'sport' ? `
+          <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-2.5">
+            <div class="flex items-center justify-between text-xs">
+              <span class="font-semibold text-zinc-200">⚡ Sport</span>
+              <span class="text-[11px] text-zinc-400">
+                <span class="text-emerald-400 font-semibold">${mainCounts.clean}</span>/30 aktiv
+              </span>
+            </div>
+            ${renderHeatmapGrid('sport', false)}
+          </div>
+        ` : ''}
+
         ${selectedHeatmapMetric === 'routine' ? `
           <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-3.5">
             <div class="flex items-center justify-between">
-              <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">Aufschlüsselung Routine (30 Tage)</span>
-              <span class="text-[10px] text-zinc-500">✓ oben = Kreatin, Skincare & Sertralin</span>
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">✨ Routine & Supplements (30 Tage)</span>
+              <span class="text-[11px] text-zinc-400">
+                Komplett: <span class="text-emerald-400 font-semibold">${mainCounts.clean}</span>/30
+              </span>
             </div>
 
-            <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
+            <div class="space-y-1.5">
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">💊 Kreatin</span>
                 <span class="text-[11px] text-zinc-400">
@@ -2072,7 +2100,7 @@ function renderHabitsTab() {
               ${renderHeatmapGrid('creatine', true)}
             </div>
 
-            <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
+            <div class="space-y-1.5 pt-2 border-t border-zinc-900">
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">🧴 Skincare</span>
                 <span class="text-[11px] text-zinc-400">
@@ -2084,7 +2112,7 @@ function renderHabitsTab() {
               ${renderHeatmapGrid('skincare', true)}
             </div>
 
-            <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
+            <div class="space-y-1.5 pt-2 border-t border-zinc-900">
               <div class="flex items-center justify-between text-xs">
                 <span class="font-medium text-zinc-200">💊 Sertralin</span>
                 <span class="text-[11px] text-zinc-400">
