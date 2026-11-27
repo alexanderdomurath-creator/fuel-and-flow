@@ -1959,4 +1959,204 @@ function importJsonBackup(event) {
   reader.readAsText(file);
 }
 
+// === BARCODE-SCANNER & SCHNELL-PORTIONIERUNG ===
+let scannerStream = null;
+let scannerRafId = null;
+let currentScannedFood = null;
+
+async function openBarcodeModal() {
+  const modal = document.getElementById('barcodeModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  document.getElementById('scannedFoodPanel').classList.add('hidden');
+  document.getElementById('manualBarcodeInput').value = '';
+  startBarcodeCamera();
+}
+
+function closeBarcodeModal() {
+  stopBarcodeCamera();
+  const modal = document.getElementById('barcodeModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function stopBarcodeCamera() {
+  if (scannerRafId) {
+    cancelAnimationFrame(scannerRafId);
+    scannerRafId = null;
+  }
+  if (scannerStream) {
+    scannerStream.getTracks().forEach(t => t.stop());
+    scannerStream = null;
+  }
+}
+
+async function startBarcodeCamera() {
+  const statusEl = document.getElementById('scannerStatus');
+  const videoEl = document.getElementById('barcodeVideo');
+
+  if (!('BarcodeDetector' in window)) {
+    statusEl.textContent = 'Kamera-Scanner auf diesem Browser nicht verfügbar – bitte EAN unten eingeben.';
+    return;
+  }
+
+  try {
+    scannerStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+      audio: false
+    });
+    videoEl.srcObject = scannerStream;
+    await videoEl.play();
+    statusEl.textContent = 'Barcode mittig in den Rahmen halten…';
+
+    const detector = new BarcodeDetector({
+      formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e']
+    });
+
+    let isLookingUp = false;
+    const scanLoop = async () => {
+      if (!scannerStream) return;
+      if (!isLookingUp && videoEl.readyState === videoEl.HAVE_ENOUGH_DATA) {
+        try {
+          const codes = await detector.detect(videoEl);
+          if (codes.length > 0 && codes[0].rawValue) {
+            isLookingUp = true;
+            const ean = codes[0].rawValue;
+            statusEl.textContent = `Erkannt: ${ean} – lade Produktdaten…`;
+            await lookupBarcodeProduct(ean);
+            stopBarcodeCamera();
+            return;
+          }
+        } catch (_) {}
+      }
+      scannerRafId = requestAnimationFrame(scanLoop);
+    };
+    scannerRafId = requestAnimationFrame(scanLoop);
+  } catch (err) {
+    statusEl.textContent = 'Kamera blockiert (HTTPS/localhost nötig) – EAN manuell eingeben.';
+  }
+}
+
+function handleManualBarcodeSubmit(e) {
+  e.preventDefault();
+  const ean = (document.getElementById('manualBarcodeInput').value || '').trim();
+  if (!ean) return;
+  stopBarcodeCamera();
+  document.getElementById('scannerStatus').textContent = `Suche EAN ${ean}…`;
+  lookupBarcodeProduct(ean);
+}
+
+async function lookupBarcodeProduct(ean) {
+  const statusEl = document.getElementById('scannerStatus');
+  try {
+    const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(ean)}.json`);
+    const data = await res.json();
+    if (data.status !== 1 || !data.product) {
+      statusEl.textContent = `Kein Produkt für EAN ${ean} gefunden.`;
+      return;
+    }
+
+    const p = data.product;
+    const n = p.nutriments || {};
+    const kcal = Number(n['energy-kcal_100g'] || n['energy-kcal'] || 0);
+    const brand = p.brands ? ` (${p.brands.split(',')[0].trim()})` : '';
+    const servingGrams = Math.round(Number(p.serving_quantity) || 0);
+
+    currentScannedFood = {
+      name: (p.product_name || `Produkt ${ean}`) + brand,
+      kcal100: Math.round(kcal),
+      p100: Math.round((Number(n.proteins_100g) || 0) * 10) / 10,
+      c100: Math.round((Number(n.carbohydrates_100g) || 0) * 10) / 10,
+      f100: Math.round((Number(n.fat_100g) || 0) * 10) / 10,
+      servingGrams: servingGrams > 0 ? servingGrams : null
+    };
+
+    statusEl.textContent = `Gefunden: ${currentScannedFood.name}`;
+    renderScannedFoodPanel();
+  } catch (err) {
+    statusEl.textContent = 'Netzwerkfehler bei der Open Food Facts Abfrage.';
+  }
+}
+
+function renderScannedFoodPanel() {
+  if (!currentScannedFood) return;
+  const panel = document.getElementById('scannedFoodPanel');
+  panel.classList.remove('hidden');
+
+  document.getElementById('scannedFoodName').textContent = currentScannedFood.name;
+  document.getElementById('scannedFoodBaseMacros').textContent =
+    `Pro 100g: ${currentScannedFood.kcal100} kcal · ${currentScannedFood.p100}g P · ${currentScannedFood.c100}g KH · ${currentScannedFood.f100}g F`;
+
+  // Quick-Portions-Buttons aufbauen
+  const presets = [50, 100, 150, 250, 500];
+  let btnsHtml = presets.map(g =>
+    `<button type="button" onclick="setScannedGrams(${g})" class="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-[11px] text-zinc-200 transition">${g}g</button>`
+  ).join('');
+
+  if (currentScannedFood.servingGrams) {
+    const sg = currentScannedFood.servingGrams;
+    btnsHtml = `<button type="button" onclick="setScannedGrams(${sg})" class="px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/40 text-[11px] text-sky-300 font-medium transition">1 Portion (${sg}g)</button>` + btnsHtml;
+  }
+
+  document.getElementById('portionQuickButtons').innerHTML = btnsHtml;
+  document.getElementById('scannedGramsInput').value = currentScannedFood.servingGrams || 100;
+
+  // Rezept-Button nur zeigen, wenn gerade ein Rezept bearbeitet wird
+  const recipeBtn = document.getElementById('btnAddScannedToRecipe');
+  if (typeof editingRecipe !== 'undefined' && editingRecipe) {
+    recipeBtn.classList.remove('hidden');
+  } else {
+    recipeBtn.classList.add('hidden');
+  }
+
+  updateScannedPreview();
+}
+
+function setScannedGrams(grams) {
+  document.getElementById('scannedGramsInput').value = grams;
+  updateScannedPreview();
+}
+
+function updateScannedPreview() {
+  if (!currentScannedFood) return;
+  const g = Math.max(1, Number(document.getElementById('scannedGramsInput').value) || 0);
+  const factor = g / 100;
+  const kcal = Math.round(currentScannedFood.kcal100 * factor);
+  const p = Math.round(currentScannedFood.p100 * factor * 10) / 10;
+  document.getElementById('scannedLiveMacros').textContent = `${kcal} kcal · ${p}g Protein`;
+}
+
+function confirmScannedFood(target) {
+  if (!currentScannedFood) return;
+  const g = Math.max(1, Number(document.getElementById('scannedGramsInput').value) || 100);
+  const factor = g / 100;
+
+  if (target === 'recipe' && typeof editingRecipe !== 'undefined' && editingRecipe) {
+    editingRecipe.items.push({
+      id: 'it_' + Date.now(),
+      name: currentScannedFood.name,
+      grams: g,
+      kcal100: currentScannedFood.kcal100,
+      p100: currentScannedFood.p100,
+      c100: currentScannedFood.c100,
+      f100: currentScannedFood.f100
+    });
+    closeBarcodeModal();
+    render();
+    return;
+  }
+
+  const log = ensureDayLog(state.selectedDate);
+  log.entries.push({
+    id: 'ent_' + Date.now(),
+    name: `${currentScannedFood.name} (${g}g)`,
+    kcal: Math.round(currentScannedFood.kcal100 * factor),
+    p: Math.round(currentScannedFood.p100 * factor * 10) / 10,
+    c: Math.round(currentScannedFood.c100 * factor * 10) / 10,
+    f: Math.round(currentScannedFood.f100 * factor * 10) / 10
+  });
+  saveState();
+  closeBarcodeModal();
+  switchTab('dashboard');
+}
+
 render();
