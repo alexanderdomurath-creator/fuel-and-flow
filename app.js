@@ -295,6 +295,18 @@ async function pushStateToCloud(useKeepalive = false, showAlert = false) {
     return;
   }
 
+  // Schutz gegen Datenverlust durch ein frisch installiertes Gerät:
+  // Vor dem ersten erfolgreichen Cloud-Abgleich niemals blind überschreiben!
+  if (!showAlert && !lastRemoteTimestamp) {
+    hasPendingLocalPush = true;
+    if (isSyncInFlight) {
+      syncTimer = setTimeout(() => pushStateToCloud(false, false), 800);
+    } else {
+      await pullStateFromCloud(false);
+    }
+    return;
+  }
+
   const updatedAt = nextMonotonicIsoTs();
   state._updatedAt = updatedAt;
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
@@ -371,6 +383,7 @@ async function pullStateFromCloud(forceOverwrite = false) {
     const rows = await res.json();
 
     if (!rows.length) {
+      lastRemoteTimestamp = new Date(0).toISOString();
       isSyncInFlight = false;
       await pushStateToCloud();
       return;
@@ -409,7 +422,9 @@ async function pullStateFromCloud(forceOverwrite = false) {
     const remoteWCount = (remotePayload.workouts || []).length;
     const localWeightCount = (state.weightHistory || []).length;
     const remoteWeightCount = (remotePayload.weightHistory || []).length;
-    const remoteLooksWiped = (localWCount > 5 && remoteWCount === 0) || (localWeightCount > 10 && remoteWeightCount <= 3);
+    const remoteLooksWiped =
+      (localWCount > 5 && remoteWCount < Math.floor(localWCount * 0.5)) ||
+      (localWeightCount > 10 && remoteWeightCount < Math.floor(localWeightCount * 0.5));
 
     if (!isEditingNow) {
       if (!hasPendingLocalPush && remoteMs > 0 && remoteMs > localMs && !remoteLooksWiped) {
@@ -545,6 +560,28 @@ let selectedChartDate = null;
 
 let editingSportId = null;
 let foodSubTab = 'recipes';
+let dashboardSection = 'bilanz'; // 'bilanz' | 'koerper' | 'konsum' | 'sport'
+let calorieHistoryDays = 14; // 7 | 14 | 30
+let selectedCalorieChartDate = null;
+
+function setDashboardSection(sec) {
+  dashboardSection = sec;
+  render();
+}
+
+function setCalorieHistoryDays(days) {
+  calorieHistoryDays = days;
+  selectedCalorieChartDate = null;
+  render();
+}
+
+function selectDateFromCalorieChart(dateStr) {
+  if (!dateStr) return;
+  state.selectedDate = dateStr;
+  ensureDayLog(dateStr);
+  saveState();
+  render();
+}
 
 function switchTab(tab, pushHistory = true) {
   if (tab === 'recipes' || tab === 'search') {
@@ -1729,6 +1766,296 @@ function scrubDashChart(ev, svg) {
   showDashChartPoint(idx);
 }
 
+function showCalorieChartPoint(idx) {
+  const meta = window._calChartMeta;
+  if (!meta || !meta.points || !meta.points[idx]) return;
+  const pt = meta.points[idx];
+  selectedCalorieChartDate = pt.dateStr;
+  const readout = document.getElementById('cal-chart-readout');
+  if (readout) readout.innerHTML = pt.html;
+  const hl = document.getElementById('cal-chart-highlight');
+  if (hl) {
+    hl.setAttribute('x', (pt.cx - meta.slotW / 2).toFixed(1));
+    hl.setAttribute('width', meta.slotW.toFixed(1));
+  }
+  const dot = document.getElementById('cal-chart-tdee-dot');
+  if (dot) {
+    dot.setAttribute('cx', pt.cx.toFixed(1));
+    dot.setAttribute('cy', pt.tdeeY.toFixed(1));
+  }
+}
+
+function scrubCalorieChart(ev, svg) {
+  const meta = window._calChartMeta;
+  if (!meta || !meta.points || !meta.points.length || !svg) return;
+  const touch = ev.touches && ev.touches[0];
+  const clientX = touch ? touch.clientX : ev.clientX;
+  if (typeof clientX !== 'number') return;
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width) return;
+  const svgX = ((clientX - rect.left) / rect.width) * meta.W;
+  const plotW = meta.W - meta.padL - meta.padR;
+  const rel = Math.max(0, Math.min(plotW - 0.01, svgX - meta.padL));
+  const idx = Math.max(0, Math.min(meta.points.length - 1, Math.floor(rel / meta.slotW)));
+  showCalorieChartPoint(idx);
+}
+
+function renderCalorieMacroHistoryCard() {
+  const range = calorieHistoryDays || 14;
+  const days = [];
+  for (let i = range - 1; i >= 0; i--) {
+    const dateStr = getPastDateStr(i);
+    const dayLog = state.logs[dateStr];
+    const entries = Array.isArray(dayLog?.entries) ? dayLog.entries : [];
+    const kcal = Math.round(entries.reduce((s, e) => s + (Number(e.kcal) || 0), 0));
+    const p = Math.round(entries.reduce((s, e) => s + (Number(e.p) || 0), 0));
+    const c = Math.round(entries.reduce((s, e) => s + (Number(e.c) || 0), 0));
+    const f = Math.round(entries.reduce((s, e) => s + (Number(e.f) || 0), 0));
+    const t = getDynamicCalorieTarget(dateStr);
+    const tdee = t.baseTdee + t.sportBonus;
+    const pKcal = p * 4;
+    const cKcal = c * 4;
+    const fKcal = f * 9;
+    const mSum = pKcal + cKcal + fKcal;
+    const pPct = mSum > 0 ? Math.round((pKcal / mSum) * 100) : 0;
+    const cPct = mSum > 0 ? Math.round((cKcal / mSum) * 100) : 0;
+    const fPct = mSum > 0 ? Math.max(0, 100 - pPct - cPct) : 0;
+    const dt = new Date(dateStr + 'T12:00:00');
+    const shortLabel = dt.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+    const wdLabel = dt.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+    days.push({
+      dateStr, shortLabel, wdLabel, kcal, p, c, f, tdee,
+      sportBonus: t.sportBonus, pPct, cPct, fPct, mSum,
+      pKcal, cKcal, fKcal, diff: kcal - tdee
+    });
+  }
+
+  const W = 360, H = 166;
+  const padL = 36, padR = 10, padT = 16, padB = 24;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const rawMax = Math.max(2400, ...days.map(d => Math.max(d.kcal, d.tdee)));
+  const maxY = Math.ceil(rawMax / 250) * 250;
+  const yOf = val => padT + plotH - (Math.max(0, val) / maxY) * plotH;
+  const slotW = plotW / Math.max(1, days.length);
+  const barW = Math.max(4, Math.min(20, slotW * 0.64));
+
+  const buildReadoutHtml = d => {
+    const hasLog = d.kcal > 0;
+    const diffSign = d.diff > 0 ? '+' : '−';
+    const diffAbs = Math.abs(d.diff);
+    const diffBadge = hasLog
+      ? (d.diff <= 0
+          ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">${diffSign}${diffAbs} kcal Defizit</span>`
+          : `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">${diffSign}${diffAbs} kcal Überschuss</span>`)
+      : `<span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-zinc-800 text-zinc-400 border border-zinc-700">Keine Mahlzeiten</span>`;
+
+    return `
+      <div class="flex items-center justify-between gap-2 flex-wrap">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-semibold text-white">${d.wdLabel}</span>
+          ${d.sportBonus > 0 ? `<span class="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 font-medium">⚡ +${d.sportBonus} Sport</span>` : ''}
+        </div>
+        <div class="flex items-center gap-1.5">
+          ${diffBadge}
+          ${d.dateStr !== state.selectedDate ? `<button onclick="selectDateFromCalorieChart('${d.dateStr}')" class="text-[10px] px-2 py-0.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition">Öffnen</button>` : ''}
+        </div>
+      </div>
+      <div class="flex items-baseline justify-between gap-2 mt-1.5 text-xs">
+        <div>
+          <span class="text-zinc-400">Aufnahme:</span>
+          <span class="font-bold text-white ml-1">${hasLog ? d.kcal.toLocaleString('de-DE') + ' kcal' : '—'}</span>
+        </div>
+        <div>
+          <span class="text-zinc-400">Verbrauch:</span>
+          <span class="font-semibold text-emerald-400 ml-1">${d.tdee.toLocaleString('de-DE')} kcal</span>
+        </div>
+      </div>
+      <div class="grid grid-cols-3 gap-1.5 mt-2 text-[11px]">
+        <div class="bg-zinc-950/60 border border-zinc-800/80 rounded-xl px-2 py-1">
+          <span class="text-sky-400 font-semibold">P ${d.p}g</span>
+          <span class="text-zinc-500 ml-1">${hasLog && d.mSum > 0 ? d.pPct + '%' : '—'}</span>
+        </div>
+        <div class="bg-zinc-950/60 border border-zinc-800/80 rounded-xl px-2 py-1">
+          <span class="text-amber-400 font-semibold">C ${d.c}g</span>
+          <span class="text-zinc-500 ml-1">${hasLog && d.mSum > 0 ? d.cPct + '%' : '—'}</span>
+        </div>
+        <div class="bg-zinc-950/60 border border-zinc-800/80 rounded-xl px-2 py-1">
+          <span class="text-rose-400 font-semibold">F ${d.f}g</span>
+          <span class="text-zinc-500 ml-1">${hasLog && d.mSum > 0 ? d.fPct + '%' : '—'}</span>
+        </div>
+      </div>
+      ${hasLog && d.mSum > 0 ? `
+        <div class="w-full h-1.5 rounded-full overflow-hidden flex bg-zinc-800 mt-1.5">
+          <div style="width:${d.pPct}%" class="bg-sky-400"></div>
+          <div style="width:${d.cPct}%" class="bg-amber-400"></div>
+          <div style="width:${d.fPct}%" class="bg-rose-400"></div>
+        </div>
+      ` : ''}
+    `;
+  };
+
+  let defaultIdx = days.findIndex(d => d.dateStr === selectedCalorieChartDate);
+  if (defaultIdx < 0) {
+    for (let i = days.length - 1; i >= 0; i--) {
+      if (days[i].kcal > 0) { defaultIdx = i; break; }
+    }
+  }
+  if (defaultIdx < 0) defaultIdx = days.length - 1;
+
+  const metaPoints = [];
+  const barSvgParts = [];
+  const tdeeLinePts = [];
+  const sportDots = [];
+  const xLabels = [];
+  const labelStep = range <= 7 ? 1 : (range <= 14 ? 2 : 5);
+
+  days.forEach((d, idx) => {
+    const cx = padL + idx * slotW + slotW / 2;
+    const bx = cx - barW / 2;
+    const baseY = padT + plotH;
+    const tdeeY = yOf(d.tdee);
+    tdeeLinePts.push(`${cx.toFixed(1)},${tdeeY.toFixed(1)}`);
+
+    if (d.sportBonus > 0) {
+      sportDots.push(`<circle cx="${cx.toFixed(1)}" cy="${tdeeY.toFixed(1)}" r="2.3" fill="#34d399" />`);
+    }
+
+    if (d.kcal > 0) {
+      const totalH = Math.max(3, (d.kcal / maxY) * plotH);
+      if (d.mSum > 0) {
+        const pH = (d.pKcal / d.mSum) * totalH;
+        const cH = (d.cKcal / d.mSum) * totalH;
+        const fH = Math.max(0, totalH - pH - cH);
+        const yP = baseY - pH;
+        const yC = yP - cH;
+        const yF = yC - fH;
+        if (pH > 0.3) barSvgParts.push(`<rect x="${bx.toFixed(1)}" y="${yP.toFixed(1)}" width="${barW.toFixed(1)}" height="${pH.toFixed(1)}" fill="#38bdf8" rx="1.2" />`);
+        if (cH > 0.3) barSvgParts.push(`<rect x="${bx.toFixed(1)}" y="${yC.toFixed(1)}" width="${barW.toFixed(1)}" height="${cH.toFixed(1)}" fill="#fbbf24" />`);
+        if (fH > 0.3) barSvgParts.push(`<rect x="${bx.toFixed(1)}" y="${yF.toFixed(1)}" width="${barW.toFixed(1)}" height="${fH.toFixed(1)}" fill="#fb7185" rx="1.5" />`);
+      } else {
+        barSvgParts.push(`<rect x="${bx.toFixed(1)}" y="${(baseY - totalH).toFixed(1)}" width="${barW.toFixed(1)}" height="${totalH.toFixed(1)}" fill="#10b981" rx="2" />`);
+      }
+    } else {
+      barSvgParts.push(`<rect x="${bx.toFixed(1)}" y="${(baseY - 3).toFixed(1)}" width="${barW.toFixed(1)}" height="3" fill="#27272a" rx="1.5" />`);
+    }
+
+    if (idx % labelStep === 0 || idx === days.length - 1) {
+      xLabels.push(`<text x="${cx.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="#71717a" font-size="9">${d.shortLabel}</text>`);
+    }
+
+    metaPoints.push({ dateStr: d.dateStr, cx, tdeeY, html: buildReadoutHtml(d) });
+  });
+
+  window._calChartMeta = { W, padL, padR, slotW, points: metaPoints };
+  const activePt = metaPoints[defaultIdx];
+
+  const gridTicks = [0, Math.round(maxY / 2), maxY];
+  const gridSvg = gridTicks.map(v => {
+    const y = yOf(v);
+    const lbl = v === 0 ? '0' : (v >= 1000 ? (v / 1000).toFixed(1).replace('.0', '') + 'k' : String(v));
+    return `
+      <line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#27272a" stroke-width="1" />
+      <text x="${padL - 5}" y="${(y + 3).toFixed(1)}" text-anchor="end" fill="#71717a" font-size="9">${lbl}</text>
+    `;
+  }).join('');
+
+  const loggedDays = days.filter(d => d.kcal > 0);
+  const avgTdee = Math.round(days.reduce((s, d) => s + d.tdee, 0) / Math.max(1, days.length));
+  const avgKcal = loggedDays.length ? Math.round(loggedDays.reduce((s, d) => s + d.kcal, 0) / loggedDays.length) : 0;
+  const avgP = loggedDays.length ? Math.round(loggedDays.reduce((s, d) => s + d.p, 0) / loggedDays.length) : 0;
+  const avgC = loggedDays.length ? Math.round(loggedDays.reduce((s, d) => s + d.c, 0) / loggedDays.length) : 0;
+  const avgF = loggedDays.length ? Math.round(loggedDays.reduce((s, d) => s + d.f, 0) / loggedDays.length) : 0;
+  const avgMSum = avgP * 4 + avgC * 4 + avgF * 9;
+  const avgPPct = avgMSum > 0 ? Math.round((avgP * 4 / avgMSum) * 100) : 0;
+  const avgCPct = avgMSum > 0 ? Math.round((avgC * 4 / avgMSum) * 100) : 0;
+  const avgFPct = avgMSum > 0 ? Math.max(0, 100 - avgPPct - avgCPct) : 0;
+
+  return `
+    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-semibold text-white">Kalorien- & Makro-Verlauf</h2>
+          <p class="text-[11px] text-zinc-400">Aufnahme (P/C/F) vs. Tagesverbrauch</p>
+        </div>
+        <div class="flex items-center gap-1 bg-zinc-900 border border-border rounded-xl p-0.5">
+          ${[7, 14, 30].map(r => `
+            <button onclick="setCalorieHistoryDays(${r})"
+              class="px-2 py-1 rounded-lg text-[11px] font-semibold transition ${
+                range === r ? 'bg-emerald-500 text-zinc-950' : 'text-zinc-400 hover:text-white'
+              }">${r}T</button>
+          `).join('')}
+        </div>
+      </div>
+
+      <div id="cal-chart-readout" class="bg-zinc-900/80 border border-border rounded-2xl p-3">
+        ${activePt ? activePt.html : ''}
+      </div>
+
+      <div class="bg-zinc-950/60 border border-border rounded-2xl p-2">
+        <svg viewBox="0 0 ${W} ${H}" class="w-full h-auto block"
+          style="touch-action: pan-y; user-select: none; -webkit-user-select: none;"
+          onpointerdown="scrubCalorieChart(event, this)"
+          onpointermove="if(event.buttons===1||event.pointerType==='touch')scrubCalorieChart(event, this)"
+          ontouchstart="scrubCalorieChart(event, this)"
+          ontouchmove="scrubCalorieChart(event, this)">
+          ${gridSvg}
+          <rect id="cal-chart-highlight"
+            x="${(activePt.cx - slotW / 2).toFixed(1)}" y="${padT}"
+            width="${slotW.toFixed(1)}" height="${plotH}"
+            fill="rgba(255,255,255,0.06)" rx="4" />
+          ${barSvgParts.join('')}
+          <polyline fill="none" stroke="#10b981" stroke-width="1.8" stroke-dasharray="4 3"
+            points="${tdeeLinePts.join(' ')}" />
+          ${sportDots.join('')}
+          <circle id="cal-chart-tdee-dot" cx="${activePt.cx.toFixed(1)}" cy="${activePt.tdeeY.toFixed(1)}"
+            r="3.5" fill="#10b981" stroke="#09090b" stroke-width="1.5" />
+          ${xLabels.join('')}
+        </svg>
+        <div class="flex flex-wrap items-center justify-between gap-2 px-2 pt-1.5 text-[10px] text-zinc-400">
+          <div class="flex items-center gap-2.5">
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-sky-400 inline-block"></span>Protein</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-amber-400 inline-block"></span>Carbs</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-rose-400 inline-block"></span>Fett</span>
+          </div>
+          <span class="flex items-center gap-1 text-emerald-400">
+            <span class="w-3 border-t-2 border-dashed border-emerald-400 inline-block"></span>Verbrauch
+          </span>
+        </div>
+      </div>
+
+      ${loggedDays.length > 0 ? `
+        <div class="grid grid-cols-4 gap-1.5 text-center">
+          <div class="bg-zinc-900/80 border border-border rounded-xl p-2">
+            <div class="text-[10px] text-zinc-400">Ø kcal (${loggedDays.length}T)</div>
+            <div class="text-xs font-bold text-white mt-0.5">${avgKcal.toLocaleString('de-DE')}</div>
+            <div class="text-[9px] text-emerald-400">Bed. ${avgTdee.toLocaleString('de-DE')}</div>
+          </div>
+          <div class="bg-zinc-900/80 border border-border rounded-xl p-2">
+            <div class="text-[10px] text-zinc-400">Ø Protein</div>
+            <div class="text-xs font-bold text-sky-400 mt-0.5">${avgP}g</div>
+            <div class="text-[9px] text-zinc-500">${avgPPct}%</div>
+          </div>
+          <div class="bg-zinc-900/80 border border-border rounded-xl p-2">
+            <div class="text-[10px] text-zinc-400">Ø Carbs</div>
+            <div class="text-xs font-bold text-amber-400 mt-0.5">${avgC}g</div>
+            <div class="text-[9px] text-zinc-500">${avgCPct}%</div>
+          </div>
+          <div class="bg-zinc-900/80 border border-border rounded-xl p-2">
+            <div class="text-[10px] text-zinc-400">Ø Fett</div>
+            <div class="text-xs font-bold text-rose-400 mt-0.5">${avgF}g</div>
+            <div class="text-[9px] text-zinc-500">${avgFPct}%</div>
+          </div>
+        </div>
+      ` : `
+        <p class="text-[11px] text-zinc-500 px-1">
+          Sobald du Mahlzeiten einträgst, erscheinen hier deine täglichen Kalorien- und Makro-Balken im Vergleich zum Tagesverbrauch (${avgTdee.toLocaleString('de-DE')} kcal Ø).
+        </p>
+      `}
+    </section>
+  `;
+}
+
 // ---------- RENDERING ----------
 function render() {
   const backBtn = document.getElementById('back-btn');
@@ -1975,8 +2302,30 @@ function renderDashboard() {
     nicBadgeText = `${nicStreak}d clean`;
   }
 
-  return `
-    <!-- Date Selector -->
+  const dashTabs = [
+    { id: 'bilanz', icon: '🔥', label: 'Bilanz' },
+    { id: 'koerper', icon: '⚖️', label: 'Körper' },
+    { id: 'konsum', icon: '🛡️', label: 'Konsum' },
+    { id: 'sport', icon: '🏃', label: 'Sport' }
+  ];
+
+  const dashSwitcherHtml = `
+    <div class="grid grid-cols-4 gap-1 bg-card border border-border rounded-2xl p-1">
+      ${dashTabs.map(t => `
+        <button onclick="setDashboardSection('${t.id}')"
+          class="py-2 px-1 rounded-xl text-[11px] font-semibold transition flex items-center justify-center gap-1 ${
+            dashboardSection === t.id
+              ? 'bg-emerald-500 text-zinc-950 shadow-sm'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-800/70'
+          }">
+          <span>${t.icon}</span>
+          <span class="truncate">${t.label}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+
+  const dateSelectorHtml = `
     <div class="flex items-center justify-between bg-card border border-border rounded-2xl px-3.5 py-2.5">
       <button onclick="changeSelectedDate(-1)" class="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200">←</button>
       <div class="text-center">
@@ -1985,7 +2334,9 @@ function renderDashboard() {
       </div>
       <button onclick="changeSelectedDate(1)" class="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200">→</button>
     </div>
+  `;
 
+  const bilanzSectionHtml = `
     <!-- Calories & Macros Card -->
     <section class="bg-card border border-border rounded-3xl p-4 space-y-4">
       <div class="flex items-start justify-between">
@@ -2047,17 +2398,21 @@ function renderDashboard() {
       ` : `<p class="text-xs text-zinc-500">Noch keine Mahlzeiten für ${formatDisplayDate(state.selectedDate)} eingetragen.</p>`}
     </section>
 
-    <!-- Gewicht & Smartwaage (FitDays) -->
+    ${renderCalorieMacroHistoryCard()}
+  `;
+
+  const koerperSectionHtml = `
+    <!-- Gewicht & Körperwerte -->
     <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
         <div>
           <h2 class="text-sm font-semibold text-white">Gewicht & Körperwerte</h2>
-          <p class="text-[11px] text-zinc-400">Aktueller Stand & CSV-Sync</p>
+          <p class="text-[11px] text-zinc-400">${sortedW.length} Messungen gespeichert${sortedW.length > 1 ? ` · ab ${sortedW[0].date}` : ''}</p>
         </div>
-       <div class="flex gap-1.5">
+        <div class="flex gap-1.5">
           <label class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 cursor-pointer">
             FitDays CSV
-            <input type="file" accept=".csv" onchange="importFitDaysCsv(event)" class="hidden" />
+            <input type="file" accept=".csv,.xls,.xlsx" onchange="importFitdaysCsv(event)" class="hidden" />
           </label>
           <button onclick="openBulkWeightModal()" class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 border border-border">
             30T-Pflege
@@ -2095,7 +2450,9 @@ function renderDashboard() {
 
       ${renderWeightCalorieChart()}
     </section>
+  `;
 
+  const konsumSectionHtml = `
     <!-- Konsum / Bad Habits -->
     <section class="bg-card border border-border rounded-3xl p-4 space-y-3.5">
       <div class="flex items-start justify-between gap-2">
@@ -2133,35 +2490,6 @@ function renderDashboard() {
           ${renderConsumptionRow('cigarettes', 'Zigaretten', 'Unterpunkt Nikotin')}
           ${renderConsumptionRow('vape', 'Vape', 'Unterpunkt Nikotin')}
         </div>
-      </div>
-    </section>
-
-    <!-- Sport & Bewegung Cluster -->
-    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="text-sm font-semibold text-white">Sport & Bewegung</h2>
-          <p class="text-[11px] text-zinc-400">Aktive Einheiten für ${formatDisplayDate(state.selectedDate)}</p>
-        </div>
-        <button onclick="switchTab('sport')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
-          Zum Sport-Tab →
-        </button>
-      </div>
-      <div class="flex flex-wrap gap-2">
-        ${state.sportHabits.map(sp => {
-          const done = log.sportDone.includes(sp.id);
-          return `
-            <button onclick="toggleSportHabit('${sp.id}')"
-              class="px-3.5 py-2 rounded-2xl text-xs font-medium border transition flex items-center gap-2 ${
-                done
-                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                  : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
-              }">
-              <span>${done ? '✓' : '○'}</span>
-              <span>${sp.name}</span>
-            </button>
-          `;
-        }).join('')}
       </div>
     </section>
 
@@ -2249,6 +2577,93 @@ function renderDashboard() {
       </div>
     </section>
   `;
+
+  const recentWorkouts = [...(state.workouts || [])]
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    .slice(0, 3);
+  const sport7ActiveDays = days7.filter(d => {
+    const l = state.logs[d.dateStr];
+    const hasHabit = Array.isArray(l?.sportDone) && l.sportDone.length > 0;
+    const hasWo = (state.workouts || []).some(w => w.date === d.dateStr);
+    return hasHabit || hasWo;
+  }).length;
+
+  const sportSectionHtml = `
+    <!-- Sport & Bewegung Cluster -->
+    <section class="bg-card border border-border rounded-3xl p-4 space-y-3.5">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-sm font-semibold text-white">Sport & Bewegung</h2>
+          <p class="text-[11px] text-zinc-400">Aktive Einheiten für ${formatDisplayDate(state.selectedDate)} · ${sport7ActiveDays}/7 Tage aktiv</p>
+        </div>
+        <button onclick="switchTab('sport')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
+          Zum Sport-Tab →
+        </button>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        ${state.sportHabits.map(sp => {
+          const done = log.sportDone.includes(sp.id);
+          return `
+            <button onclick="toggleSportHabit('${sp.id}')"
+              class="px-3.5 py-2 rounded-2xl text-xs font-medium border transition flex items-center gap-2 ${
+                done
+                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                  : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
+              }">
+              <span>${done ? '✓' : '○'}</span>
+              <span>${sp.name}</span>
+            </button>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="grid grid-cols-7 gap-1.5 pt-1">
+        ${days7.map(d => {
+          const l = state.logs[d.dateStr];
+          const active = (Array.isArray(l?.sportDone) && l.sportDone.length > 0) || (state.workouts || []).some(w => w.date === d.dateStr);
+          return `
+            <div class="py-1.5 rounded-xl text-center border ${
+              active ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300' : 'bg-zinc-900/70 border-border text-zinc-500'
+            }">
+              <div class="text-[10px] font-medium">${d.label}</div>
+              <div class="text-xs font-bold mt-0.5">${active ? '✓' : '·'}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </section>
+
+    ${recentWorkouts.length > 0 ? `
+      <section class="bg-card border border-border rounded-3xl p-4 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <h3 class="text-xs uppercase tracking-wider text-zinc-400 font-semibold">Letzte Workouts</h3>
+          <button onclick="switchTab('sport')" class="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">Alle anzeigen →</button>
+        </div>
+        <div class="space-y-1.5">
+          ${recentWorkouts.map(w => `
+            <div class="flex items-center justify-between gap-2 bg-zinc-900/80 border border-border rounded-2xl px-3 py-2 text-xs">
+              <div class="min-w-0">
+                <div class="font-medium text-white truncate">${w.title || (w.type === 'run' ? 'Lauf' : 'Workout')}</div>
+                <div class="text-[11px] text-zinc-400">${w.date}${w.durationMin ? ` · ${w.durationMin} Min.` : ''}${w.distanceKm ? ` · ${w.distanceKm} km` : ''}</div>
+              </div>
+              <span class="text-zinc-500 text-xs shrink-0">${w.type === 'run' ? '🏃' : '🏋️'}</span>
+            </div>
+          `).join('')}
+        </div>
+      </section>
+    ` : ''}
+  `;
+
+  if (dashboardSection === 'koerper') {
+    return `${dashSwitcherHtml}${koerperSectionHtml}`;
+  }
+  if (dashboardSection === 'konsum') {
+    return `${dashSwitcherHtml}${dateSelectorHtml}${konsumSectionHtml}`;
+  }
+  if (dashboardSection === 'sport') {
+    return `${dashSwitcherHtml}${dateSelectorHtml}${sportSectionHtml}`;
+  }
+  return `${dashSwitcherHtml}${dateSelectorHtml}${bilanzSectionHtml}`;
 }
 
 function renderRecipesTab() {
@@ -3175,6 +3590,7 @@ async function importFitdaysCsv(event) {
     if (event?.target) event.target.value = '';
   }
 }
+const importFitDaysCsv = importFitdaysCsv;
 
 // ---------- MODALS ----------
 function openModal(html) {
@@ -4392,6 +4808,7 @@ function saveAiMealToLog(asSingleEntry) {
 
   saveState();
   closeAiMealModal();
+  dashboardSection = 'bilanz';
   switchTab('dashboard');
 }
 
