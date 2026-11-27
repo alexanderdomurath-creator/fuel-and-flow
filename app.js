@@ -2584,6 +2584,12 @@ function updateAiItemGrams(idx, newGrams) {
   renderAiMealPreview();
 }
 
+function removeAiMealItem(idx) {
+  if (!aiParsedMeal || !aiParsedMeal.items[idx]) return;
+  aiParsedMeal.items.splice(idx, 1);
+  renderAiMealPreview();
+}
+
 function renderAiMealPreview() {
   const preview = document.getElementById('aiMealPreview');
   if (!aiParsedMeal) return;
@@ -2597,35 +2603,77 @@ function renderAiMealPreview() {
 
   const rowsHtml = aiParsedMeal.items.map((it, idx) => `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #27272a;font-size:0.84rem;">
-      <div style="flex:1;">
-        <div style="font-weight:600;">${it.name}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${it.name}</div>
         <div style="color:#a1a1aa;font-size:0.76rem;">${it.kcal} kcal · P ${it.p}g · C ${it.c}g · F ${it.f}g</div>
       </div>
-      <div style="display:flex;align-items:center;gap:4px;">
+      <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
         <input type="number" value="${it.grams}" onchange="updateAiItemGrams(${idx}, this.value)"
-          style="width:62px;background:#09090b;color:#fff;border:1px solid #3f3f46;border-radius:6px;padding:4px 6px;text-align:right;font-size:0.82rem;">
+          style="width:58px;background:#09090b;color:#fff;border:1px solid #3f3f46;border-radius:6px;padding:4px 6px;text-align:right;font-size:0.82rem;">
         <span style="color:#a1a1aa;font-size:0.78rem;">g</span>
+        <button type="button" onclick="removeAiMealItem(${idx})" title="Zutat entfernen"
+          style="background:none;border:none;color:#f87171;cursor:pointer;padding:2px 4px;font-size:0.85rem;">✕</button>
       </div>
     </div>
   `).join('');
 
   preview.innerHTML = `
     <div style="background:#09090b;border:1px solid #27272a;border-radius:10px;padding:12px;">
-      <div style="font-weight:700;margin-bottom:6px;">${aiParsedMeal.mealName}</div>
-      ${rowsHtml}
+      <input type="text" value="${aiParsedMeal.mealName.replace(/"/g, '&quot;')}"
+        oninput="aiParsedMeal.mealName = this.value"
+        style="width:100%;box-sizing:border-box;background:#18181b;color:#fff;border:1px solid #3f3f46;border-radius:8px;padding:6px 8px;font-weight:700;font-size:0.9rem;margin-bottom:8px;" />
+      ${rowsHtml || '<div style="color:#71717a;font-size:0.8rem;padding:6px 0;">Keine Zutaten mehr in der Liste.</div>'}
       <div style="margin-top:10px;font-size:0.85rem;font-weight:600;color:#a5b4fc;">
         Gesamt: ${Math.round(totals.kcal)} kcal · P ${totals.p.toFixed(1)}g · C ${totals.c.toFixed(1)}g · F ${totals.f.toFixed(1)}g
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;">
-        <button onclick="saveAiMealToLog(false)" style="flex:1;background:#6366f1;color:#fff;border:none;border-radius:8px;padding:9px;font-weight:600;cursor:pointer;">
+        <button type="button" onclick="saveAiMealToLog(false)" style="flex:1;background:#6366f1;color:#fff;border:none;border-radius:8px;padding:9px;font-weight:600;font-size:0.82rem;cursor:pointer;">
           Als Einzelzutaten
         </button>
-        <button onclick="saveAiMealToLog(true)" style="flex:1;background:#27272a;color:#f4f4f5;border:1px solid #3f3f46;border-radius:8px;padding:9px;font-weight:600;cursor:pointer;">
+        <button type="button" onclick="saveAiMealToLog(true)" style="flex:1;background:#27272a;color:#f4f4f5;border:1px solid #3f3f46;border-radius:8px;padding:9px;font-weight:600;font-size:0.82rem;cursor:pointer;">
           Als 1 Gericht
         </button>
       </div>
+      <button type="button" onclick="saveAiMealAsRecipe()"
+        style="width:100%;margin-top:8px;background:rgba(16,185,129,0.16);color:#34d399;border:1px solid rgba(16,185,129,0.4);border-radius:8px;padding:9px;font-weight:600;font-size:0.83rem;cursor:pointer;">
+        📖 Als Rezept speichern
+      </button>
     </div>
   `;
+}
+
+function saveAiMealAsRecipe() {
+  if (!aiParsedMeal || !aiParsedMeal.items.length) return;
+  const now = Date.now();
+  const recipeName = (aiParsedMeal.mealName || '').trim() || 'KI-Rezept';
+
+  const items = aiParsedMeal.items
+    .filter(it => (Number(it.grams) || 0) > 0)
+    .map((it, idx) => {
+      const g = Number(it.grams) || 100;
+      const factor = 100 / g;
+      return {
+        id: 'it_' + (now + idx),
+        name: it.name || 'Zutat',
+        grams: Math.round(g),
+        kcal100: Math.round((Number(it.kcal) || 0) * factor),
+        p100: Math.round((Number(it.p) || 0) * factor * 10) / 10,
+        c100: Math.round((Number(it.c) || 0) * factor * 10) / 10,
+        f100: Math.round((Number(it.f) || 0) * factor * 10) / 10
+      };
+    });
+
+  if (!items.length) return;
+
+  state.recipes.unshift({
+    id: 'rec_' + now,
+    name: recipeName,
+    items
+  });
+
+  saveState();
+  closeAiMealModal();
+  switchTab('recipes');
 }
 
 function saveAiMealToLog(asSingleEntry) {
