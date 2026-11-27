@@ -763,78 +763,162 @@ function selectChartDay(dateStr) {
   render();
 }
 
+const FITDAYS_METRICS = [
+  { key: 'weight',          label: 'Gewicht',          unit: 'kg',       decimals: 1, color: '#10b981', cols: ['Weight', 'Gewicht'] },
+  { key: 'bioAge',          label: 'Biol. Alter',      unit: 'J.',       decimals: 0, color: '#a855f7', cols: ['Body age', 'Körperalter'] },
+  { key: 'bmi',             label: 'BMI',              unit: '',         decimals: 1, color: '#3b82f6', cols: ['BMI'] },
+  { key: 'bodyFat',         label: 'Körperfett',       unit: '%',        decimals: 1, color: '#f59e0b', cols: ['Body Fat', 'Körperfett'] },
+  { key: 'subcutaneousFat', label: 'Subkutanfett',     unit: '%',        decimals: 1, color: '#fb923c', cols: ['Subcutaneous fat', 'Subkutanes Fett'] },
+  { key: 'visceralFat',     label: 'Viszeralfett',     unit: '',         decimals: 1, color: '#ef4444', cols: ['Visceral Fat', 'Viszerales Fett'] },
+  { key: 'bodyWater',       label: 'Körperwasser',     unit: '%',        decimals: 1, color: '#06b6d4', cols: ['Body Water', 'Körperwasser'] },
+  { key: 'skeletalMuscle',  label: 'Skelettmuskel',    unit: '%',        decimals: 1, color: '#14b8a6', cols: ['Skeletal Muscle', 'Skelettmuskulatur'] },
+  { key: 'muscle',          label: 'Muskelmasse',      unit: 'kg',       decimals: 1, color: '#22c55e', cols: ['Muscle Mass', 'Muskelmasse'] },
+  { key: 'boneMass',        label: 'Knochenmasse',     unit: 'kg',       decimals: 1, color: '#94a3b8', cols: ['Bone Mass', 'Knochenmasse'] },
+  { key: 'protein',         label: 'Protein',          unit: '%',        decimals: 1, color: '#6366f1', cols: ['Protein', 'Eiweiß'] },
+  { key: 'bmr',             label: 'Grundumsatz (BMR)',unit: 'kcal',     decimals: 0, color: '#eab308', cols: ['BMR', 'Grundumsatz'] },
+  { key: 'heartRate',       label: 'Herzfrequenz',     unit: 'bpm',      decimals: 0, color: '#f43f5e', cols: ['Heart Rate', 'Herzfrequenz'] },
+  { key: 'cardiacIndex',    label: 'Herzindex',        unit: 'L/min/m²', decimals: 1, color: '#ec4899', cols: ['Cardiac Index', 'Herzindex'] }
+];
+
+function getVisibleMetrics() {
+  if (!Array.isArray(state.visibleMetrics)) {
+    state.visibleMetrics = ['weight', 'bioAge'];
+  }
+  return state.visibleMetrics;
+}
+
+function toggleChartMetric(key) {
+  const current = new Set(getVisibleMetrics());
+  if (current.has(key)) {
+    if (current.size === 1) return; // Mindestens 1 Kennzahl bleibt sichtbar
+    current.delete(key);
+  } else {
+    current.add(key);
+  }
+  state.visibleMetrics = [...current];
+  saveState();
+  render();
+}
+
 function renderWeightCalorieChart() {
   const rawDays = getLastNDays(chartRangeDays);
-  const weightMap = {};
-  [...state.weightHistory]
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .forEach(w => { weightMap[w.date] = Number(w.weight); });
+  const visibleKeys = getVisibleMetrics();
+  const activeMetrics = FITDAYS_METRICS.filter(m => visibleKeys.includes(m.key));
 
-  const priorWeights = [...state.weightHistory]
-    .filter(w => w.date < rawDays[0].dateStr)
-    .sort((a, b) => a.date.localeCompare(b.date));
-  let carryWeight = priorWeights.length
-    ? Number(priorWeights[priorWeights.length - 1].weight)
-    : (state.weightHistory.length ? Number(state.weightHistory[0].weight) : 74.0);
+  const sortedHistory = [...(state.weightHistory || [])].sort((a, b) => a.date.localeCompare(b.date));
+  const historyMap = {};
+  sortedHistory.forEach(w => { historyMap[w.date] = w; });
+
+  // Fortschreibung für Tage ohne eigene Waagenmessung
+  const carryValues = {};
+  FITDAYS_METRICS.forEach(m => {
+    const prior = sortedHistory.filter(w => w.date < rawDays[0].dateStr && w[m.key] !== null && w[m.key] !== undefined);
+    if (prior.length) {
+      carryValues[m.key] = Number(prior[prior.length - 1][m.key]);
+    } else {
+      const firstAny = sortedHistory.find(w => w[m.key] !== null && w[m.key] !== undefined);
+      carryValues[m.key] = firstAny ? Number(firstAny[m.key]) : (m.key === 'weight' ? 74.0 : null);
+    }
+  });
 
   const dailySeries = rawDays.map(d => {
-    const exactWeight = weightMap[d.dateStr] !== undefined ? weightMap[d.dateStr] : null;
-    if (exactWeight !== null) carryWeight = exactWeight;
+    const exactEntry = historyMap[d.dateStr] || null;
+    const values = {};
+    const exactFlags = {};
+
+    FITDAYS_METRICS.forEach(m => {
+      const rawVal = exactEntry && exactEntry[m.key] !== null && exactEntry[m.key] !== undefined
+        ? Number(exactEntry[m.key])
+        : null;
+      if (rawVal !== null && !Number.isNaN(rawVal)) {
+        carryValues[m.key] = rawVal;
+        exactFlags[m.key] = true;
+      } else {
+        exactFlags[m.key] = false;
+      }
+      values[m.key] = carryValues[m.key];
+    });
+
     const log = state.logs[d.dateStr];
     const kcal = log && Array.isArray(log.entries)
       ? log.entries.reduce((sum, e) => sum + (Number(e.kcal) || 0), 0)
       : 0;
     const yearShort = String(d.dateStr).slice(2, 4);
+
     return {
       dateStr: d.dateStr,
       shortLabel: chartRangeDays > 90
         ? `${String(d.monthNum).padStart(2, '0')}/${yearShort}`
         : `${d.dayNum}.${d.monthNum}`,
       fullLabel: `${d.dayNum}.${d.monthNum}.${d.dateStr.slice(0, 4)}`,
-      weight: carryWeight,
-      exactWeight,
+      values,
+      exactFlags,
+      hasAnyMeasurement: Boolean(exactEntry),
       kcal
     };
   });
 
-  // Bei großen Zeiträumen (90T / 1J / 5J) sinnvoll verdichten, damit das SVG flüssig & lesbar bleibt
+  // Bei großen Zeiträumen (90T / 1J / 5J) sinnvoll verdichten
   const bucketSize = chartRangeDays <= 30 ? 1 : (chartRangeDays <= 365 ? 7 : 14);
   const series = [];
   for (let i = 0; i < dailySeries.length; i += bucketSize) {
     const chunk = dailySeries.slice(i, i + bucketSize);
-    const measured = chunk.filter(c => c.exactWeight !== null);
+    const measured = chunk.filter(c => c.hasAnyMeasurement);
     const rep = measured.length > 0 ? measured[measured.length - 1] : chunk[chunk.length - 1];
     const avgKcal = chunk.reduce((s, c) => s + c.kcal, 0) / chunk.length;
     series.push({
       dateStr: rep.dateStr,
       shortLabel: rep.shortLabel,
       fullLabel: rep.fullLabel,
-      weight: rep.weight,
-      exactWeight: measured.length > 0 ? rep.exactWeight : null,
+      values: { ...rep.values },
+      exactFlags: { ...rep.exactFlags },
+      hasAnyMeasurement: measured.length > 0,
       kcal: avgKcal
     });
   }
 
-  const weights = series.map(s => s.weight);
-  const minW = Math.min(...weights) - 0.4;
-  const maxW = Math.max(...weights) + 0.4;
-  const spanW = Math.max(0.5, maxW - minW);
+  // Min/Max pro aktiver Metrik bestimmen (für Multi-Metrik-Normalisierung)
+  const metricScales = {};
+  activeMetrics.forEach(m => {
+    const vals = series.map(s => s.values[m.key]).filter(v => v !== null && v !== undefined && !Number.isNaN(v));
+    if (!vals.length) {
+      metricScales[m.key] = { min: 0, max: 1, span: 1, hasData: false };
+      return;
+    }
+    const rawMin = Math.min(...vals);
+    const rawMax = Math.max(...vals);
+    const pad = m.key === 'weight' ? 0.4 : Math.max((rawMax - rawMin) * 0.12, m.decimals === 0 ? 1 : 0.3);
+    const min = rawMin - pad;
+    const max = rawMax + pad;
+    metricScales[m.key] = {
+      min,
+      max,
+      span: Math.max(0.1, max - min),
+      hasData: true
+    };
+  });
+
+  const primaryMetric = activeMetrics[0] || FITDAYS_METRICS[0];
+  const primaryScale = metricScales[primaryMetric.key];
+
   const chartBaseGoal = getDynamicCalorieTarget(state.selectedDate).total;
   const maxKcal = Math.max(chartBaseGoal * 1.15, ...series.map(s => s.kcal), 2500);
   const showKcalBars = chartRangeDays <= 30;
 
-  const W = 560, H = 175;
-  const padL = 34, padR = 12, padT = 16, padB = 24;
+  const W = 560, H = 180;
+  const padL = 36, padR = 12, padT = 16, padB = 24;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const stepX = series.length > 1 ? plotW / (series.length - 1) : plotW;
   const barW = Math.max(4, Math.min(16, (plotW / series.length) * 0.55));
 
   const getX = (idx) => padL + idx * stepX;
-  const getWeightY = (w) => padT + plotH - ((w - minW) / spanW) * plotH;
+  const getMetricY = (key, val) => {
+    const sc = metricScales[key];
+    if (!sc || !sc.hasData || val === null || val === undefined) return null;
+    return padT + plotH - ((val - sc.min) / sc.span) * plotH;
+  };
   const getKcalH = (k) => (k / maxKcal) * (plotH * 0.75);
-
-  const linePoints = series.map((s, idx) => `${getX(idx).toFixed(1)},${getWeightY(s.weight).toFixed(1)}`).join(' ');
   const goalY = padT + plotH - getKcalH(chartBaseGoal);
 
   const activePoint = series.find(s => s.dateStr === selectedChartDate) || series[series.length - 1];
@@ -849,16 +933,37 @@ function renderWeightCalorieChart() {
     { days: 1825, label: '5J' }
   ];
 
+  const formatMetricVal = (m, val) => {
+    if (val === null || val === undefined || Number.isNaN(val)) return '–';
+    return `${Number(val).toFixed(m.decimals)}${m.unit ? ' ' + m.unit : ''}`;
+  };
+
   return `
     <div class="bg-zinc-950/70 border border-border rounded-2xl p-3 space-y-2.5">
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="text-xs text-zinc-300">
+      <div class="flex flex-wrap items-start justify-between gap-2">
+        <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-zinc-300">
           <span class="font-semibold text-white">${activePoint.fullLabel}:</span>
-          <span class="text-emerald-400 font-semibold">${activePoint.weight.toFixed(1)} kg</span>
-          ${activePoint.exactWeight === null ? '<span class="text-[10px] text-zinc-500">(fortgeschrieben)</span>' : ''}
-          ${showKcalBars ? `· <span class="text-sky-400 font-semibold">${Math.round(activePoint.kcal)} kcal</span>` : ''}
+          ${activeMetrics.map(m => {
+            const val = activePoint.values[m.key];
+            const isExact = activePoint.exactFlags[m.key];
+            return `
+              <span class="inline-flex items-center gap-1">
+                <span class="w-2 h-2 rounded-full inline-block" style="background:${m.color}"></span>
+                <span class="text-zinc-400">${m.label}:</span>
+                <span class="font-semibold" style="color:${m.color}">${formatMetricVal(m, val)}</span>
+                ${!isExact && val !== null ? '<span class="text-[10px] text-zinc-500">(fortg.)</span>' : ''}
+              </span>
+            `;
+          }).join('')}
+          ${showKcalBars ? `
+            <span class="inline-flex items-center gap-1">
+              <span class="text-zinc-600">·</span>
+              <span class="text-sky-400 font-semibold">${Math.round(activePoint.kcal)} kcal</span>
+            </span>
+          ` : ''}
         </div>
-        <div class="flex flex-wrap gap-1">
+
+        <div class="flex flex-wrap gap-1 shrink-0">
           ${rangeOptions.map(r => `
             <button onclick="setChartRange(${r.days})"
               class="px-2 py-0.5 rounded-lg text-[11px] font-medium transition ${
@@ -875,8 +980,10 @@ function renderWeightCalorieChart() {
       <svg viewBox="0 0 ${W} ${H}" class="w-full h-44 overflow-visible select-none">
         <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#27272a" stroke-dasharray="3 3" />
         <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="#27272a" />
-        <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" fill="#71717a" font-size="9">${maxW.toFixed(1)}</text>
-        <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="#71717a" font-size="9">${minW.toFixed(1)}</text>
+        ${primaryScale && primaryScale.hasData ? `
+          <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" fill="${primaryMetric.color}" font-size="9">${primaryScale.max.toFixed(primaryMetric.decimals)}</text>
+          <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="${primaryMetric.color}" font-size="9">${primaryScale.min.toFixed(primaryMetric.decimals)}</text>
+        ` : ''}
         ${showKcalBars ? `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" stroke="#0ea5e9" stroke-opacity="0.35" stroke-dasharray="4 4" />` : ''}
 
         ${series.map((s, idx) => {
@@ -897,24 +1004,67 @@ function renderWeightCalorieChart() {
           `;
         }).join('')}
 
-        <polyline fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${linePoints}" />
+        ${activeMetrics.map(m => {
+          const sc = metricScales[m.key];
+          if (!sc || !sc.hasData) return '';
+          const pts = series
+            .map((s, idx) => {
+              const y = getMetricY(m.key, s.values[m.key]);
+              return y !== null ? `${getX(idx).toFixed(1)},${y.toFixed(1)}` : null;
+            })
+            .filter(Boolean)
+            .join(' ');
+          if (!pts) return '';
 
-        ${series.map((s, idx) => {
-          const x = getX(idx);
-          const y = getWeightY(s.weight);
-          const isSelected = s.dateStr === activePoint.dateStr;
-          const hasMeasurement = s.exactWeight !== null;
           return `
-            <g class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')">
-              <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="10" fill="transparent" />
-              ${(hasMeasurement || isSelected) ? `
-                <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${isSelected ? 4.5 : (chartRangeDays > 90 ? 2.2 : 3)}"
-                  fill="${isSelected ? '#34d399' : '#10b981'}" stroke="#09090b" stroke-width="1.2" />
-              ` : ''}
+            <g>
+              <polyline fill="none" stroke="${m.color}" stroke-width="${m.key === 'weight' ? '2.4' : '1.8'}"
+                stroke-opacity="${m.key === 'weight' ? '1' : '0.88'}" stroke-linecap="round" stroke-linejoin="round" points="${pts}" />
+              ${series.map((s, idx) => {
+                const y = getMetricY(m.key, s.values[m.key]);
+                if (y === null) return '';
+                const x = getX(idx);
+                const isSelected = s.dateStr === activePoint.dateStr;
+                const hasMeasurement = s.exactFlags[m.key];
+                if (!hasMeasurement && !isSelected) return '';
+                return `
+                  <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}"
+                    r="${isSelected ? 4.2 : (chartRangeDays > 90 ? 2.0 : 2.6)}"
+                    fill="${m.color}" stroke="#09090b" stroke-width="1.1"
+                    class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')" />
+                `;
+              }).join('')}
             </g>
           `;
         }).join('')}
+
+        ${series.map((s, idx) => {
+          const x = getX(idx);
+          return `
+            <rect x="${(x - stepX / 2).toFixed(1)}" y="${padT}" width="${Math.max(8, stepX).toFixed(1)}" height="${plotH}"
+              fill="transparent" class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')" />
+          `;
+        }).join('')}
       </svg>
+
+      <div class="flex flex-wrap gap-1.5 pt-1 border-t border-zinc-900">
+        ${FITDAYS_METRICS.map(m => {
+          const isOn = visibleKeys.includes(m.key);
+          const hasAnyData = sortedHistory.some(h => h[m.key] !== null && h[m.key] !== undefined);
+          return `
+            <button onclick="toggleChartMetric('${m.key}')"
+              title="${hasAnyData ? m.label + ' ein-/ausblenden' : m.label + ' (noch keine Messwerte – Datei einmal neu importieren)'}"
+              class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium transition border ${
+                isOn
+                  ? 'bg-zinc-900 text-zinc-100 border-zinc-700'
+                  : 'bg-zinc-950/60 text-zinc-500 border-zinc-900 hover:text-zinc-300 hover:border-zinc-800'
+              } ${!hasAnyData ? 'opacity-50' : ''}">
+              <span class="w-2 h-2 rounded-full" style="background:${isOn ? m.color : '#52525b'}"></span>
+              <span>${m.label}</span>
+            </button>
+          `;
+        }).join('')}
+      </div>
     </div>
   `;
 }
@@ -2084,6 +2234,19 @@ async function importFitdaysCsv(event) {
       return;
     }
 
+    const readMetricVal = (row, cols, decimals) => {
+      for (const col of cols) {
+        if (row[col] !== undefined && row[col] !== '') {
+          const parsed = parseFitdaysNum(row[col]);
+          if (parsed !== null && !Number.isNaN(parsed)) {
+            const factor = Math.pow(10, decimals);
+            return Math.round(parsed * factor) / factor;
+          }
+        }
+      }
+      return null;
+    };
+
     // Pro Datum nach Uhrzeit sortieren: früheste Messung des Tages (nüchtern) gewinnt
     const byDate = {};
     rows.forEach(r => {
@@ -2091,20 +2254,16 @@ async function importFitdaysCsv(event) {
       const weight = parseFitdaysNum(r['Weight'] || r['Gewicht']);
       if (!dt || !weight || weight <= 0) return;
 
-      const bodyFat = parseFitdaysNum(r['Body Fat'] || r['Körperfett']);
-      const muscle = parseFitdaysNum(r['Muscle Mass'] || r['Muskelmasse'] || r['Skeletal Muscle']);
-      const bioAge = parseFitdaysNum(r['Body age'] || r['Körperalter']);
-
       const existing = byDate[dt.dateStr];
       if (!existing || dt.timeStr < existing.timeStr) {
-        byDate[dt.dateStr] = {
+        const entry = {
           date: dt.dateStr,
-          timeStr: dt.timeStr,
-          weight: Math.round(weight * 10) / 10,
-          bodyFat: bodyFat !== null ? Math.round(bodyFat * 10) / 10 : null,
-          muscle: muscle !== null ? Math.round(muscle * 10) / 10 : null,
-          bioAge: bioAge !== null ? Math.round(bioAge) : null
+          timeStr: dt.timeStr
         };
+        FITDAYS_METRICS.forEach(m => {
+          entry[m.key] = readMetricVal(r, m.cols, m.decimals);
+        });
+        byDate[dt.dateStr] = entry;
       }
     });
 
@@ -2123,18 +2282,20 @@ async function importFitdaysCsv(event) {
     let updatedCount = 0;
 
     importedDates.forEach(d => {
-      const prev = mergedMap[d];
+      const prev = mergedMap[d] || {};
       const next = byDate[d];
-      if (prev) updatedCount++;
+      if (mergedMap[d]) updatedCount++;
       else addedCount++;
 
-      mergedMap[d] = {
-        date: d,
-        weight: next.weight,
-        bodyFat: next.bodyFat !== null ? next.bodyFat : (prev?.bodyFat ?? 15.9),
-        muscle: next.muscle !== null ? next.muscle : (prev?.muscle ?? 59.4),
-        bioAge: next.bioAge !== null ? next.bioAge : (prev?.bioAge ?? 34)
-      };
+      const mergedEntry = { ...prev, date: d };
+      FITDAYS_METRICS.forEach(m => {
+        if (next[m.key] !== null && next[m.key] !== undefined) {
+          mergedEntry[m.key] = next[m.key];
+        } else if (mergedEntry[m.key] === undefined) {
+          mergedEntry[m.key] = null;
+        }
+      });
+      mergedMap[d] = mergedEntry;
     });
 
     state.weightHistory = Object.values(mergedMap).sort((a, b) => a.date.localeCompare(b.date));
