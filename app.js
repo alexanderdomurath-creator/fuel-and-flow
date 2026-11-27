@@ -2143,8 +2143,8 @@ function renderDashboard() {
           <h2 class="text-sm font-semibold text-white">Sport & Bewegung</h2>
           <p class="text-[11px] text-zinc-400">Aktive Einheiten für ${formatDisplayDate(state.selectedDate)}</p>
         </div>
-        <button onclick="openManageHabits('sec-sport')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
-          Alle verwalten →
+        <button onclick="switchTab('sport')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
+          Zum Sport-Tab →
         </button>
       </div>
       <div class="flex flex-wrap gap-2">
@@ -2831,49 +2831,6 @@ function renderHabitsTab() {
               <div class="space-y-0.5">
                 <div class="text-xs font-semibold text-white">${ins.title}</div>
                 <p class="text-xs text-zinc-300 leading-relaxed">${ins.text}</p>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-
-      <div id="sec-sport" class="bg-card border border-border rounded-3xl p-4 space-y-3">
-        <h2 class="text-sm font-semibold text-white">Sport & Bewegung verwalten</h2>
-        <div class="flex gap-2">
-          <input id="new-sport-name" type="text" placeholder="Neue Aktivität (z. B. Radfahren)..."
-            class="flex-1 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white" />
-          <button onclick="addSportHabit()" title="Hinzufügen" aria-label="Hinzufügen"
-            class="w-9 h-9 shrink-0 flex items-center justify-center rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 transition">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
-          </button>
-        </div>
-        <div class="space-y-1.5">
-          ${state.sportHabits.map(sp => editingSportId === sp.id ? `
-            <div class="flex items-center gap-1.5 bg-zinc-900 border border-emerald-500/40 rounded-xl px-2 py-1.5">
-              <input id="edit-sport-name" type="text" value="${String(sp.name).replace(/"/g, '&quot;')}"
-                onkeydown="if(event.key==='Enter') saveSportHabitEdit('${sp.id}'); if(event.key==='Escape') cancelSportHabitEdit();"
-                class="flex-1 min-w-0 px-2 py-1 rounded-lg bg-zinc-950 border border-border text-xs text-white focus:outline-none focus:border-emerald-500" />
-              <button onclick="saveSportHabitEdit('${sp.id}')" title="Speichern" aria-label="Speichern"
-                class="w-8 h-8 flex items-center justify-center rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-400 transition">
-                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-              </button>
-              <button onclick="cancelSportHabitEdit()" title="Abbrechen" aria-label="Abbrechen"
-                class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition">
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-              </button>
-            </div>
-          ` : `
-            <div class="flex items-center justify-between gap-2 bg-zinc-900 border border-border rounded-xl px-3 py-1.5 text-xs">
-              <span class="text-zinc-200 truncate">${sp.name}</span>
-              <div class="flex items-center gap-1.5 shrink-0">
-                <button onclick="startSportHabitEdit('${sp.id}')" title="Bearbeiten" aria-label="Bearbeiten"
-                  class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition">
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
-                </button>
-                <button onclick="deleteSportHabit('${sp.id}')" title="Löschen" aria-label="Löschen"
-                  class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-rose-500/15 border border-border hover:border-rose-500/30 text-zinc-400 hover:text-rose-400 transition">
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                </button>
               </div>
             </div>
           `).join('')}
