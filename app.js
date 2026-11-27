@@ -1511,12 +1511,13 @@ function renderWeightCalorieChart() {
     });
   }
 
-  // Min/Max pro aktiver Metrik bestimmen (für Multi-Metrik-Normalisierung)
+  // Min/Max pro aktiver Metrik bestimmen (für Multi-Metrik-Normalisierung mit getrennten Bändern)
   const metricScales = {};
+  const metricsWithData = [];
   activeMetrics.forEach(m => {
     const vals = series.map(s => s.values[m.key]).filter(v => v !== null && v !== undefined && !Number.isNaN(v));
     if (!vals.length) {
-      metricScales[m.key] = { min: 0, max: 1, span: 1, hasData: false };
+      metricScales[m.key] = { min: 0, max: 1, span: 1, hasData: false, bandLow: 0, bandHigh: 1 };
       return;
     }
     const rawMin = Math.min(...vals);
@@ -1528,9 +1529,25 @@ function renderWeightCalorieChart() {
       min,
       max,
       span: Math.max(0.1, max - min),
-      hasData: true
+      hasData: true,
+      bandLow: 0,
+      bandHigh: 1
     };
+    metricsWithData.push(m.key);
   });
+
+  // Bei mehreren aktiven Kennzahlen jede Linie in einem eigenen, leicht versetzten Vertikalband führen,
+  // damit korrelierte (z. B. Körperfett & Subkutanfett) oder konstante Linien niemals exakt übereinander liegen.
+  const nActive = metricsWithData.length;
+  if (nActive > 1) {
+    const bandSpan = nActive === 2 ? 0.66 : (nActive === 3 ? 0.52 : (nActive === 4 ? 0.42 : 0.34));
+    const step = (1 - bandSpan) / (nActive - 1);
+    metricsWithData.forEach((key, bIdx) => {
+      const bandLow = (nActive - 1 - bIdx) * step;
+      metricScales[key].bandLow = bandLow;
+      metricScales[key].bandHigh = bandLow + bandSpan;
+    });
+  }
 
   const primaryMetric = activeMetrics[0] || FITDAYS_METRICS[0];
   const primaryScale = metricScales[primaryMetric.key];
@@ -1539,8 +1556,10 @@ function renderWeightCalorieChart() {
   const maxKcal = Math.max(chartBaseGoal * 1.15, ...series.map(s => s.kcal), 2500);
   const showKcalBars = chartRangeDays <= 30;
 
-  const W = 560, H = 180;
-  const padL = 36, padR = 12, padT = 16, padB = 24;
+  const W = 560, H = nActive > 1 ? 200 : 180;
+  const padL = nActive > 1 ? 14 : 36;
+  const padR = nActive > 1 ? 52 : 12;
+  const padT = 16, padB = 24;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const stepX = series.length > 1 ? plotW / (series.length - 1) : plotW;
@@ -1550,7 +1569,9 @@ function renderWeightCalorieChart() {
   const getMetricY = (key, val) => {
     const sc = metricScales[key];
     if (!sc || !sc.hasData || val === null || val === undefined) return null;
-    return padT + plotH - ((val - sc.min) / sc.span) * plotH;
+    const norm = (val - sc.min) / sc.span;
+    const mapped = sc.bandLow + norm * (sc.bandHigh - sc.bandLow);
+    return padT + plotH - mapped * plotH;
   };
   const getKcalH = (k) => (k / maxKcal) * (plotH * 0.75);
   const goalY = padT + plotH - getKcalH(chartBaseGoal);
@@ -1608,6 +1629,30 @@ function renderWeightCalorieChart() {
 
   const initMeta = window._dashChartMeta.points[initialIdx] || window._dashChartMeta.points[0];
 
+  // Rechte Linien-Endlabels (damit bei mehreren Linien jede Kurve direkt erkennbar ist)
+  const rightEndLabels = [];
+  if (nActive > 1 && series.length > 0) {
+    const lastPt = series[series.length - 1];
+    activeMetrics.forEach(m => {
+      const sc = metricScales[m.key];
+      if (!sc || !sc.hasData) return;
+      const val = lastPt.values[m.key];
+      const y = getMetricY(m.key, val);
+      if (y === null) return;
+      rightEndLabels.push({
+        y,
+        color: m.color,
+        text: `${Number(val).toFixed(m.decimals)}${m.unit && m.unit.length <= 4 ? m.unit : ''}`
+      });
+    });
+    rightEndLabels.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < rightEndLabels.length; i++) {
+      if (rightEndLabels[i].y - rightEndLabels[i - 1].y < 12) {
+        rightEndLabels[i].y = rightEndLabels[i - 1].y + 12;
+      }
+    }
+  }
+
   const legendHtml = `
     <div class="flex items-center gap-1.5 pt-1.5 border-t border-zinc-900">
       <div class="flex-1 flex items-center gap-1 overflow-x-auto pb-0.5">
@@ -1653,14 +1698,14 @@ function renderWeightCalorieChart() {
         </div>
       </div>
 
-      <svg viewBox="0 0 ${W} ${H}" class="w-full h-44 overflow-visible select-none" style="touch-action:pan-y"
+      <svg viewBox="0 0 ${W} ${H}" class="w-full ${nActive > 1 ? 'h-48' : 'h-44'} overflow-visible select-none" style="touch-action:pan-y"
         onpointerdown="scrubDashChart(event, this)"
         onpointermove="if(event.buttons===1||event.pointerType==='mouse') scrubDashChart(event, this)"
         ontouchstart="scrubDashChart(event, this)"
         ontouchmove="scrubDashChart(event, this)">
         <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#27272a" stroke-dasharray="3 3" />
         <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="#27272a" />
-        ${primaryScale && primaryScale.hasData ? `
+        ${nActive === 1 && primaryScale && primaryScale.hasData ? `
           <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" fill="${primaryMetric.color}" font-size="9">${primaryScale.max.toFixed(primaryMetric.decimals)}</text>
           <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="${primaryMetric.color}" font-size="9">${primaryScale.min.toFixed(primaryMetric.decimals)}</text>
         ` : ''}
@@ -1719,6 +1764,10 @@ function renderWeightCalorieChart() {
             </g>
           `;
         }).join('')}
+
+        ${rightEndLabels.map(lbl => `
+          <text x="${W - padR + 6}" y="${(lbl.y + 3).toFixed(1)}" text-anchor="start" fill="${lbl.color}" font-size="9.5" font-weight="600">${lbl.text}</text>
+        `).join('')}
       </svg>
 
       ${legendHtml}
