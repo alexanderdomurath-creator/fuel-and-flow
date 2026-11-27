@@ -1147,27 +1147,73 @@ function toggleHeatmapSportDay(dateStr) {
   render();
 }
 
-// ---------- KORRELATIONS-INSIGHTS ENGINE ----------
+// ---------- KORRELATIONS-INSIGHTS ENGINE (v2: Workouts, Makros, Körperwerte & Routinen) ----------
 function computeHabitInsights() {
   const days30 = getLastNDays(30);
   const insights = [];
+  const weekdayNames = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+
+  // Workouts & Gewichtsmessungen nach Datum indizieren
+  const workoutDates = new Set();
+  const workoutCountByDate = {};
+  (state.workouts || []).forEach(w => {
+    if (!w || !w.date) return;
+    workoutDates.add(w.date);
+    workoutCountByDate[w.date] = (workoutCountByDate[w.date] || 0) + 1;
+  });
+
+  const weightByDate = {};
+  (state.weightHistory || []).forEach(w => {
+    if (w && w.date && Number(w.weight) > 0) weightByDate[w.date] = w;
+  });
+
+  const addDaysIso = (isoStr, delta) => {
+    const dt = new Date(isoStr + 'T12:00:00');
+    dt.setDate(dt.getDate() + delta);
+    return formatDateStr(dt);
+  };
 
   let sportTracked = 0, sportNicClean = 0;
   let restTracked = 0, restNicClean = 0;
+  let totalSportDays30 = 0;
+
+  let sportProteinSum = 0, sportProteinDays = 0;
+  let restProteinSum = 0, restProteinDays = 0;
+
+  let kcalDiffSum = 0, kcalLoggedDays = 0;
 
   let alcKcalSum = 0, alcKcalDays = 0;
   let cleanAlcKcalSum = 0, cleanAlcKcalDays = 0;
+  let alcNextWeightDiffSum = 0, alcNextWeightDays = 0;
+  let cleanNextWeightDiffSum = 0, cleanNextWeightDays = 0;
+
+  let routineAnyTracked = 0;
+  let routineFullDays = 0;
+  const routineCounts = { creatine: 0, skincare: 0, sertraline: 0 };
+  let fullRoutineCleanDays = 0, fullRoutineKonsumTracked = 0;
+  let partialRoutineCleanDays = 0, partialRoutineKonsumTracked = 0;
 
   const weekdayConsumedCounts = [0, 0, 0, 0, 0, 0, 0];
-  const weekdayNames = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+  const weekdaySportCounts = [0, 0, 0, 0, 0, 0, 0];
+
+  const weightsIn30 = [];
 
   days30.forEach(d => {
-    const log = state.logs[d.dateStr];
-    if (!log) return;
+    const log = state.logs[d.dateStr] || null;
+    const hasSportChip = Boolean(log && Array.isArray(log.sportDone) && log.sportDone.length > 0);
+    const hasWorkout = workoutDates.has(d.dateStr);
+    const hasSport = hasSportChip || hasWorkout;
 
-    const hasSport = Array.isArray(log.sportDone) && log.sportDone.length > 0;
-    const nicStatus = getCombinedNicotineStatus(log);
-    const alc = log.badHabits ? normalizeHabitStatus(log.badHabits.alcohol) : null;
+    if (hasSport) {
+      totalSportDays30++;
+      weekdaySportCounts[d.weekdayIdx]++;
+    }
+
+    const wEntry = weightByDate[d.dateStr];
+    if (wEntry) weightsIn30.push(wEntry);
+
+    const nicStatus = log ? getCombinedNicotineStatus(log) : null;
+    const alc = log && log.badHabits ? normalizeHabitStatus(log.badHabits.alcohol) : null;
 
     if (nicStatus !== null) {
       if (hasSport) {
@@ -1179,8 +1225,24 @@ function computeHabitInsights() {
       }
     }
 
-    const dayKcal = (log.entries || []).reduce((s, e) => s + (Number(e.kcal) || 0), 0);
+    const entries = log && Array.isArray(log.entries) ? log.entries : [];
+    const dayKcal = entries.reduce((s, e) => s + (Number(e.kcal) || 0), 0);
+    const dayProtein = entries.reduce((s, e) => s + (Number(e.p) || 0), 0);
+
     if (dayKcal > 200) {
+      const target = getDynamicCalorieTarget(d.dateStr);
+      const tdee = target.baseTdee + target.sportBonus;
+      kcalDiffSum += (dayKcal - tdee);
+      kcalLoggedDays++;
+
+      if (hasSport) {
+        sportProteinSum += dayProtein;
+        sportProteinDays++;
+      } else {
+        restProteinSum += dayProtein;
+        restProteinDays++;
+      }
+
       if (alc === 'consumed') {
         alcKcalSum += dayKcal;
         alcKcalDays++;
@@ -1190,55 +1252,223 @@ function computeHabitInsights() {
       }
     }
 
+    // Alkohol-Effekt auf Folgetag-Gewicht
+    if (alc !== null && wEntry) {
+      const nextW = weightByDate[addDaysIso(d.dateStr, 1)];
+      if (nextW) {
+        const wDelta = Number(nextW.weight) - Number(wEntry.weight);
+        if (alc === 'consumed') {
+          alcNextWeightDiffSum += wDelta;
+          alcNextWeightDays++;
+        } else if (alc === 'clean') {
+          cleanNextWeightDiffSum += wDelta;
+          cleanNextWeightDays++;
+        }
+      }
+    }
+
+    // Routine & Supplements (Kreatin, Skincare, Sertralin)
+    if (log && log.routines) {
+      const r = log.routines;
+      const doneCnt = (r.creatine ? 1 : 0) + (r.skincare ? 1 : 0) + (r.sertraline ? 1 : 0);
+      if (r.creatine) routineCounts.creatine++;
+      if (r.skincare) routineCounts.skincare++;
+      if (r.sertraline) routineCounts.sertraline++;
+      if (doneCnt > 0) routineAnyTracked++;
+      if (doneCnt === 3) routineFullDays++;
+
+      const hasKonsumData = alc !== null || nicStatus !== null;
+      if (hasKonsumData) {
+        const isFullyClean = (alc !== 'consumed') && (nicStatus !== 'consumed');
+        if (doneCnt === 3) {
+          fullRoutineKonsumTracked++;
+          if (isFullyClean) fullRoutineCleanDays++;
+        } else {
+          partialRoutineKonsumTracked++;
+          if (isFullyClean) partialRoutineCleanDays++;
+        }
+      }
+    }
+
     if (alc === 'consumed') weekdayConsumedCounts[d.weekdayIdx]++;
     if (nicStatus === 'consumed') weekdayConsumedCounts[d.weekdayIdx]++;
   });
 
+  // 1) Training (inkl. Sport-Tab Workouts) & Nikotin-Balance
   if (sportTracked >= 2 && restTracked >= 2) {
     const sportPct = Math.round((sportNicClean / sportTracked) * 100);
     const restPct = Math.round((restNicClean / restTracked) * 100);
     const diff = sportPct - restPct;
     insights.push({
-      icon: '🏃‍♂️',
-      title: 'Sport & Nikotin-Balance',
+      icon: '🏋️',
+      title: 'Training & Nikotin-Balance',
+      badge: diff > 0 ? `+${diff} %` : `${sportPct} % clean`,
+      badgeTone: diff >= 0 ? 'emerald' : 'amber',
       text: diff >= 0
-        ? `An Trainingstagen bist du zu <strong>${sportPct} %</strong> nikotinfrei (vs. ${restPct} % an Ruhetagen${diff > 0 ? `, +${diff} %-Punkte` : ''}).`
+        ? `An Trainingstagen (${totalSportDays30} aktiv in 30T) bist du zu <strong>${sportPct} %</strong> nikotinfrei – gegenüber <strong>${restPct} %</strong> an Ruhetagen${diff > 0 ? ` (+${diff} %-Punkte)` : ''}.`
         : `An Trainingstagen liegt deine nikotinfreie Quote bei <strong>${sportPct} %</strong> (Ruhetage: ${restPct} %).`
     });
   } else {
     insights.push({
-      icon: '🏃‍♂️',
-      title: 'Sport & Verzicht-Korrelation',
-      text: `Logge weitere Sport-Einheiten und Nikotin-Tage, um deine persönliche Trainings-Korrelation freizuschalten (${sportTracked + restTracked}/4 erfasste Vergleichstage).`
+      icon: '🏋️',
+      title: 'Training & Verzicht-Korrelation',
+      badge: `${totalSportDays30} Sporttage`,
+      badgeTone: 'zinc',
+      text: `Inkl. Sport-Tab wurden <strong>${totalSportDays30} Trainingstage</strong> erkannt. Sobald je mind. 2 Trainings- und Ruhetage mit Nikotin-Status erfasst sind, erscheint dein Vergleich (${sportTracked + restTracked}/4).`
     });
   }
 
-  if (alcKcalDays >= 1 && cleanAlcKcalDays >= 1) {
-    const avgAlc = Math.round(alcKcalSum / alcKcalDays);
-    const avgClean = Math.round(cleanAlcKcalSum / cleanAlcKcalDays);
-    const delta = avgAlc - avgClean;
+  // 2) Training & Protein-Versorgung
+  const totalProtDays = sportProteinDays + restProteinDays;
+  if (sportProteinDays >= 1 && restProteinDays >= 1) {
+    const avgSportP = Math.round(sportProteinSum / sportProteinDays);
+    const avgRestP = Math.round(restProteinSum / restProteinDays);
+    const goalP = Number(state.proteinGoal) || 160;
+    const hitPct = Math.round((avgSportP / goalP) * 100);
     insights.push({
-      icon: '🍽️',
-      title: 'Alkohol & Kalorienbilanz',
-      text: delta > 0
-        ? `An Alkohol-Tagen nimmst du im Schnitt <strong>${avgAlc} kcal</strong> auf — das sind <strong>+${delta} kcal</strong> mehr als an Clean-Tagen (${avgClean} kcal).`
-        : `An Alkohol-Tagen liegst du im Schnitt bei <strong>${avgAlc} kcal</strong> gegenüber <strong>${avgClean} kcal</strong> an Clean-Tagen.`
+      icon: '🥩',
+      title: 'Protein an Trainingstagen',
+      badge: `${hitPct} % Ziel`,
+      badgeTone: hitPct >= 90 ? 'emerald' : 'amber',
+      text: `An Trainingstagen erreichst du im Schnitt <strong>${avgSportP} g Protein</strong> (Ziel: ${goalP} g) vs. <strong>${avgRestP} g</strong> an Ruhetagen.`
+    });
+  } else if (totalProtDays >= 1) {
+    const avgP = Math.round((sportProteinSum + restProteinSum) / totalProtDays);
+    const goalP = Number(state.proteinGoal) || 160;
+    const hitPct = Math.round((avgP / goalP) * 100);
+    insights.push({
+      icon: '🥩',
+      title: 'Protein-Versorgung',
+      badge: `Ø ${avgP} g`,
+      badgeTone: hitPct >= 90 ? 'emerald' : 'amber',
+      text: `Über ${totalProtDays} erfasste Tage liegst du bei <strong>Ø ${avgP} g Protein</strong> (${hitPct} % deines ${goalP} g Ziels). Sobald Trainings- und Ruhetage mit Mahlzeiten vorliegen, wird getrennt verglichen.`
     });
   } else {
     insights.push({
-      icon: '🍽️',
-      title: 'Kalorien-Vergleich (Alkohol vs. Clean)',
-      text: `Sobald mindestens je 1 Alkohol-Tag und 1 Clean-Tag mit Mahlzeiten erfasst sind, erscheint hier dein Kalorien-Delta.`
+      icon: '🥩',
+      title: 'Protein & Trainings-Korrelation',
+      badge: 'Wartet auf Logs',
+      badgeTone: 'zinc',
+      text: `Sobald du Mahlzeiten einträgst, vergleicht diese Karte deine Protein-Zufuhr zwischen Trainings- und Ruhetagen direkt gegen dein Ziel (${Number(state.proteinGoal) || 160} g).`
     });
   }
 
+  // 3) Kalorienbilanz & 30T-Körpertrend
+  const firstW30 = weightsIn30.length >= 2 ? weightsIn30[0] : null;
+  const lastW30 = weightsIn30.length >= 2 ? weightsIn30[weightsIn30.length - 1] : null;
+  const wDelta30 = firstW30 && lastW30 ? Math.round((Number(lastW30.weight) - Number(firstW30.weight)) * 10) / 10 : null;
+  const bfDelta30 = firstW30 && lastW30 && firstW30.bodyFat && lastW30.bodyFat
+    ? Math.round((Number(lastW30.bodyFat) - Number(firstW30.bodyFat)) * 10) / 10
+    : null;
+
+  if (wDelta30 !== null || kcalLoggedDays >= 2) {
+    const parts = [];
+    if (wDelta30 !== null) {
+      const sign = wDelta30 > 0 ? '+' : '';
+      parts.push(`Gewicht in 30T: <strong>${sign}${wDelta30.toFixed(1)} kg</strong> (${Number(firstW30.weight).toFixed(1)} → ${Number(lastW30.weight).toFixed(1)} kg)${bfDelta30 !== null ? `, Körperfett <strong>${bfDelta30 > 0 ? '+' : ''}${bfDelta30.toFixed(1)} %</strong>` : ''}.`);
+    }
+    if (kcalLoggedDays >= 2) {
+      const avgDiff = Math.round(kcalDiffSum / kcalLoggedDays);
+      const label = avgDiff <= 0 ? `<strong>${avgDiff} kcal Defizit</strong>` : `<strong>+${avgDiff} kcal Überschuss</strong>`;
+      parts.push(`Ø Kalorienbilanz über ${kcalLoggedDays} erfasste Tage: ${label}/Tag zum dynamischen Verbrauch.`);
+    } else {
+      parts.push(`Trage Mahlzeiten ein, um den 30T-Gewichtstrend direkt mit deinem täglichen Kaloriendefizit abzugleichen.`);
+    }
+    insights.push({
+      icon: '⚖️',
+      title: 'Kalorienbilanz & Körpertrend',
+      badge: wDelta30 !== null ? `${wDelta30 > 0 ? '+' : ''}${wDelta30.toFixed(1)} kg` : `${kcalLoggedDays}T Bilanz`,
+      badgeTone: wDelta30 !== null && wDelta30 <= 0 ? 'emerald' : 'amber',
+      text: parts.join(' ')
+    });
+  }
+
+  // 4) Alkohol-Effekt (Kalorien & Folgetag-Gewicht)
+  if ((alcKcalDays >= 1 && cleanAlcKcalDays >= 1) || (alcNextWeightDays >= 1 && cleanNextWeightDays >= 1)) {
+    const parts = [];
+    let badge = 'Aktiv';
+    let tone = 'amber';
+    if (alcKcalDays >= 1 && cleanAlcKcalDays >= 1) {
+      const avgAlc = Math.round(alcKcalSum / alcKcalDays);
+      const avgClean = Math.round(cleanAlcKcalSum / cleanAlcKcalDays);
+      const delta = avgAlc - avgClean;
+      badge = delta > 0 ? `+${delta} kcal` : `${delta} kcal`;
+      tone = delta > 150 ? 'rose' : 'emerald';
+      parts.push(`An Alkohol-Tagen nimmst du im Schnitt <strong>${avgAlc} kcal</strong> auf (${delta >= 0 ? '+' : ''}${delta} kcal gegenüber Clean-Tagen mit ${avgClean} kcal).`);
+    }
+    if (alcNextWeightDays >= 1 && cleanNextWeightDays >= 1) {
+      const avgAlcW = Math.round((alcNextWeightDiffSum / alcNextWeightDays) * 10) / 10;
+      const avgCleanW = Math.round((cleanNextWeightDiffSum / cleanNextWeightDays) * 10) / 10;
+      if (parts.length === 0) badge = `${avgAlcW > 0 ? '+' : ''}${avgAlcW.toFixed(1)} kg`;
+      parts.push(`Waage am Folgetag: <strong>${avgAlcW > 0 ? '+' : ''}${avgAlcW.toFixed(1)} kg</strong> nach Alkohol vs. <strong>${avgCleanW > 0 ? '+' : ''}${avgCleanW.toFixed(1)} kg</strong> nach Clean-Tagen.`);
+    }
+    insights.push({
+      icon: '🍷',
+      title: 'Alkohol-Effekt (Kalorien & Waage)',
+      badge,
+      badgeTone: tone,
+      text: parts.join(' ')
+    });
+  } else {
+    insights.push({
+      icon: '🍷',
+      title: 'Alkohol-Effekt (Kalorien & Waage)',
+      badge: 'Sammelt Daten',
+      badgeTone: 'zinc',
+      text: `Sobald mindestens je 1 Alkohol- und 1 Clean-Tag mit Mahlzeiten oder Folgetags-Gewicht erfasst sind, siehst du hier Kalorien- und Waagen-Delta.`
+    });
+  }
+
+  // 5) Routine & Supplements (Kreatin, Skincare, Sertralin)
+  if (routineAnyTracked >= 3) {
+    const rList = [
+      { name: 'Kreatin', c: routineCounts.creatine },
+      { name: 'Skincare', c: routineCounts.skincare },
+      { name: 'Sertralin', c: routineCounts.sertraline }
+    ].sort((a, b) => b.c - a.c);
+    const fullPct = Math.round((routineFullDays / 30) * 100);
+    let corrNote = `Am konstantesten: <strong>${rList[0].name}</strong> (${rList[0].c}/30T), Ausbaupotenzial bei <strong>${rList[2].name}</strong> (${rList[2].c}/30T).`;
+    if (fullRoutineKonsumTracked >= 2 && partialRoutineKonsumTracked >= 2) {
+      const fCleanPct = Math.round((fullRoutineCleanDays / fullRoutineKonsumTracked) * 100);
+      const pCleanPct = Math.round((partialRoutineCleanDays / partialRoutineKonsumTracked) * 100);
+      corrNote = `An 3/3-Routine-Tagen bist du zu <strong>${fCleanPct} %</strong> komplett clean (vs. ${pCleanPct} % an unvollständigen Tagen). Stärkste Routine: <strong>${rList[0].name}</strong> (${rList[0].c}/30T).`;
+    }
+    insights.push({
+      icon: '💊',
+      title: 'Routine-Konstanz (Kreatin · Skincare · Sertralin)',
+      badge: `${routineFullDays}/30T 3/3`,
+      badgeTone: fullPct >= 60 ? 'emerald' : 'amber',
+      text: `<strong>${routineFullDays} von 30 Tagen</strong> waren alle 3 Routinen komplett. ${corrNote}`
+    });
+  } else {
+    insights.push({
+      icon: '💊',
+      title: 'Routine-Konstanz & Clean-Korrelation',
+      badge: `${routineAnyTracked}/3 Tage`,
+      badgeTone: 'zinc',
+      text: `Hake Kreatin, Skincare und Sertralin regelmäßig ab – ab 3 erfassten Tagen zeigt dir diese Karte deine Routine-Stabilität und den Zusammenhang mit Clean-Tagen.`
+    });
+  }
+
+  // 6) Wochentags-Muster (Training & Konsum kombiniert)
+  const maxSportWd = Math.max(...weekdaySportCounts);
   const maxConsumed = Math.max(...weekdayConsumedCounts);
-  if (maxConsumed > 0) {
-    const peakIdx = weekdayConsumedCounts.indexOf(maxConsumed);
+  if (maxSportWd > 0 || maxConsumed > 0) {
+    const wdParts = [];
+    if (maxSportWd > 0) {
+      const bestSportIdx = weekdaySportCounts.indexOf(maxSportWd);
+      wdParts.push(`Stärkster Trainingstag: <strong>${weekdayNames[bestSportIdx]}</strong> (${maxSportWd}× in 30T).`);
+    }
+    if (maxConsumed > 0) {
+      const peakIdx = weekdayConsumedCounts.indexOf(maxConsumed);
+      wdParts.push(`Konsum trat am häufigsten am <strong>${weekdayNames[peakIdx]}</strong> auf (${maxConsumed} Ereignisse).`);
+    }
     insights.push({
       icon: '📅',
-      title: 'Wochentags-Fokus',
-      text: `In den letzten 30 Tagen trat Konsum am häufigsten am <strong>${weekdayNames[peakIdx]}</strong> auf (${maxConsumed} Ereignisse).`
+      title: 'Wochentags-Muster',
+      badge: '30T-Rhythmus',
+      badgeTone: 'zinc',
+      text: wdParts.join(' ')
     });
   }
 
@@ -3284,20 +3514,32 @@ function renderHabitsTab() {
       <div id="sec-insights" class="bg-card border border-border rounded-3xl p-4 space-y-3">
         <div>
           <h2 class="text-sm font-semibold text-white">Habit-Korrelations-Insights</h2>
-          <p class="text-[11px] text-zinc-400">Automatische Mustererkennung aus den letzten 30 Tagen</p>
+          <p class="text-[11px] text-zinc-400">Live-Muster aus Workouts, Makros, Körperwerten & Routinen (30T)</p>
         </div>
         <div class="space-y-2.5">
-          ${insights.map(ins => `
-            <div class="bg-zinc-900/90 border border-border rounded-2xl p-3 flex items-start gap-3">
-              <div class="w-8 h-8 rounded-xl bg-zinc-800 flex items-center justify-center text-base shrink-0">
-                ${ins.icon}
+          ${insights.map(ins => {
+            const toneClass = ins.badgeTone === 'emerald'
+              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+              : (ins.badgeTone === 'amber'
+                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                : (ins.badgeTone === 'rose'
+                  ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                  : 'bg-zinc-800 text-zinc-400 border-zinc-700'));
+            return `
+              <div class="bg-zinc-900/90 border border-border rounded-2xl p-3 flex items-start gap-3">
+                <div class="w-8 h-8 rounded-xl bg-zinc-800 flex items-center justify-center text-base shrink-0">
+                  ${ins.icon}
+                </div>
+                <div class="flex-1 min-w-0 space-y-0.5">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="text-xs font-semibold text-white truncate">${ins.title}</div>
+                    ${ins.badge ? `<span class="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${toneClass}">${ins.badge}</span>` : ''}
+                  </div>
+                  <p class="text-xs text-zinc-300 leading-relaxed">${ins.text}</p>
+                </div>
               </div>
-              <div class="space-y-0.5">
-                <div class="text-xs font-semibold text-white">${ins.title}</div>
-                <p class="text-xs text-zinc-300 leading-relaxed">${ins.text}</p>
-              </div>
-            </div>
-          `).join('')}
+            `;
+          }).join('')}
         </div>
       </div>
 
