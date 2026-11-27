@@ -2378,10 +2378,6 @@ function openAiMealModal() {
           </label>
         </div>
 
-        document.getElementById('aiPhotoInput').value = '';
-  const camInput = document.getElementById('aiCameraInput');
-  if (camInput) camInput.value = '';
-
         <div id="aiPhotoPreviewWrap" style="display:none;margin-bottom:10px;text-align:center;">
           <img id="aiPhotoPreviewImg" style="max-height:180px;border-radius:10px;border:1px solid #3f3f46;object-fit:cover;" />
         </div>
@@ -2407,6 +2403,8 @@ function openAiMealModal() {
   aiParsedMeal = null;
   aiSelectedImageBase64 = null;
   document.getElementById('aiPhotoInput').value = '';
+  const camInput = document.getElementById('aiCameraInput');
+  if (camInput) camInput.value = '';
   document.getElementById('aiPhotoPreviewWrap').style.display = 'none';
   document.getElementById('aiMealHintInput').value = '';
   document.getElementById('aiMealPreview').innerHTML = '';
