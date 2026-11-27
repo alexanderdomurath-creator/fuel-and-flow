@@ -2339,4 +2339,308 @@ function exportCsvExcel() {
   URL.revokeObjectURL(url);
 }
 
+const GEMINI_KEY_STORAGE = 'fuel_and_flow_gemini_key';
+let aiParsedMeal = null;
+let aiSelectedImageBase64 = null;
+
+function openAiMealModal() {
+  let modal = document.getElementById('aiMealModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'aiMealModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+    modal.innerHTML = `
+      <div style="background:#18181b;color:#f4f4f5;border:1px solid #27272a;border-radius:16px;max-width:480px;width:100%;max-height:92vh;overflow-y:auto;padding:20px;box-shadow:0 20px 40px rgba(0,0,0,0.6);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;font-size:1.1rem;">✨ KI-Mahlzeit scannen</h3>
+          <button onclick="closeAiMealModal()" style="background:none;border:none;color:#a1a1aa;font-size:1.3rem;cursor:pointer;">✕</button>
+        </div>
+
+        <details id="aiKeyDetails" style="margin-bottom:12px;background:#09090b;border:1px solid #27272a;border-radius:10px;padding:8px 12px;">
+          <summary style="cursor:pointer;font-size:0.8rem;color:#a1a1aa;">🔑 Gemini API Key konfigurieren</summary>
+          <div style="display:flex;gap:6px;margin-top:8px;">
+            <input type="password" id="aiApiKeyInput" placeholder="AIzaSy..."
+              style="flex:1;background:#18181b;color:#fff;border:1px solid #3f3f46;border-radius:6px;padding:6px 8px;font-size:0.8rem;">
+            <button onclick="saveGeminiApiKey()" style="background:#27272a;color:#fff;border:1px solid #3f3f46;border-radius:6px;padding:6px 10px;font-size:0.8rem;cursor:pointer;">
+              Speichern
+            </button>
+          </div>
+        </details>
+
+        <label style="display:flex;align-items:center;justify-content:center;gap:8px;background:#27272a;hover:background:#3f3f46;color:#fff;border:1px dashed #52525b;border-radius:12px;padding:14px;cursor:pointer;font-weight:600;font-size:0.9rem;margin-bottom:10px;">
+          <span>📸 Foto aufnehmen oder auswählen</span>
+          <input type="file" id="aiPhotoInput" accept="image/*" capture="environment" onchange="handleAiPhotoSelect(event)" style="display:none;">
+        </label>
+
+        <div id="aiPhotoPreviewWrap" style="display:none;margin-bottom:10px;text-align:center;">
+          <img id="aiPhotoPreviewImg" style="max-height:180px;border-radius:10px;border:1px solid #3f3f46;object-fit:cover;" />
+        </div>
+
+        <input type="text" id="aiMealHintInput" placeholder="Optionaler Hinweis (z. B. 'in 1 EL Olivenöl gebraten' oder nur Text)"
+          style="width:100%;box-sizing:border-box;background:#09090b;color:#e4e4e7;border:1px solid #3f3f46;border-radius:10px;padding:10px;font-size:0.85rem;margin-bottom:10px;">
+
+        <button id="aiAnalyzeBtn" onclick="analyzeMealWithGemini()"
+          style="width:100%;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:10px;padding:11px;font-weight:600;font-size:0.92rem;cursor:pointer;">
+          ✨ Jetzt analysieren
+        </button>
+
+        <div id="aiMealPreview" style="margin-top:14px;"></div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+
+  const savedKey = localStorage.getItem(GEMINI_KEY_STORAGE) || '';
+  document.getElementById('aiApiKeyInput').value = savedKey;
+  document.getElementById('aiKeyDetails').open = !savedKey;
+
+  aiParsedMeal = null;
+  aiSelectedImageBase64 = null;
+  document.getElementById('aiPhotoInput').value = '';
+  document.getElementById('aiPhotoPreviewWrap').style.display = 'none';
+  document.getElementById('aiMealHintInput').value = '';
+  document.getElementById('aiMealPreview').innerHTML = '';
+  modal.style.display = 'flex';
+}
+
+function closeAiMealModal() {
+  const modal = document.getElementById('aiMealModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function saveGeminiApiKey() {
+  const val = document.getElementById('aiApiKeyInput').value.trim();
+  if (!val) return;
+  localStorage.setItem(GEMINI_KEY_STORAGE, val);
+  document.getElementById('aiKeyDetails').open = false;
+  document.getElementById('aiMealPreview').innerHTML = '<div style="color:#4ade80;font-size:0.82rem;">✓ API Key lokal gespeichert.</div>';
+}
+
+function handleAiPhotoSelect(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    const img = new Image();
+    img.onload = function () {
+      const maxDim = 1024;
+      let w = img.width;
+      let h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round((h * maxDim) / w); w = maxDim; }
+        else { w = Math.round((w * maxDim) / h); h = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      aiSelectedImageBase64 = dataUrl.split(',')[1];
+
+      const previewImg = document.getElementById('aiPhotoPreviewImg');
+      previewImg.src = dataUrl;
+      document.getElementById('aiPhotoPreviewWrap').style.display = 'block';
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function analyzeMealWithGemini() {
+  const apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+  const preview = document.getElementById('aiMealPreview');
+  const btn = document.getElementById('aiAnalyzeBtn');
+  const hint = document.getElementById('aiMealHintInput').value.trim();
+
+  if (!apiKey) {
+    document.getElementById('aiKeyDetails').open = true;
+    preview.innerHTML = '<div style="color:#f87171;font-size:0.84rem;">Bitte zuerst deinen Gemini API Key oben speichern.</div>';
+    return;
+  }
+  if (!aiSelectedImageBase64 && !hint) {
+    preview.innerHTML = '<div style="color:#f87171;font-size:0.84rem;">Bitte ein Foto aufnehmen oder zumindest kurz beschreiben, was du gegessen hast.</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Analysiere Gericht...';
+  preview.innerHTML = '';
+
+  const promptText = `Du bist ein präziser Ernährungs-Tracker. Analysiere diese Mahlzeit${hint ? ` (Hinweis des Nutzers: "${hint}")` : ''}.
+Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Bratöl, Sauce, Dressing) mit ungefährem Gewicht in Gramm sowie Kalorien (kcal), Protein (p), Kohlenhydraten (c) und Fett (f) für diese Portionsgröße. Antworte auf Deutsch.`;
+
+  const parts = [{ text: promptText }];
+  if (aiSelectedImageBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: 'image/jpeg',
+        data: aiSelectedImageBase64
+      }
+    });
+  }
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseJsonSchema: {
+            type: 'object',
+            properties: {
+              mealName: { type: 'string' },
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string' },
+                    grams: { type: 'number' },
+                    kcal: { type: 'number' },
+                    p: { type: 'number' },
+                    c: { type: 'number' },
+                    f: { type: 'number' }
+                  },
+                  required: ['name', 'grams', 'kcal', 'p', 'c', 'f']
+                }
+              }
+            },
+            required: ['mealName', 'items']
+          }
+        }
+      })
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error?.message || `HTTP ${res.status}`);
+    }
+
+    const result = await res.json();
+    const rawJson = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    const data = JSON.parse(rawJson);
+
+    aiParsedMeal = {
+      mealName: data.mealName || 'KI-Mahlzeit',
+      items: (data.items || []).map(it => ({
+        name: it.name || 'Zutat',
+        grams: Math.round(Number(it.grams) || 100),
+        baseGrams: Math.round(Number(it.grams) || 100),
+        kcal: Math.round(Number(it.kcal) || 0),
+        p: Math.round((Number(it.p) || 0) * 10) / 10,
+        c: Math.round((Number(it.c) || 0) * 10) / 10,
+        f: Math.round((Number(it.f) || 0) * 10) / 10
+      }))
+    };
+
+    renderAiMealPreview();
+  } catch (err) {
+    preview.innerHTML = `<div style="color:#f87171;font-size:0.83rem;">Fehler bei der Analyse: ${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✨ Jetzt analysieren';
+  }
+}
+
+function updateAiItemGrams(idx, newGrams) {
+  if (!aiParsedMeal || !aiParsedMeal.items[idx]) return;
+  const item = aiParsedMeal.items[idx];
+  const g = Math.max(0, Number(newGrams) || 0);
+  const ratio = item.baseGrams > 0 ? g / item.baseGrams : 0;
+  item.grams = g;
+  item.kcal = Math.round(item.kcal * ratio);
+  item.p = Math.round(item.p * ratio * 10) / 10;
+  item.c = Math.round(item.c * ratio * 10) / 10;
+  item.f = Math.round(item.f * ratio * 10) / 10;
+  item.baseGrams = g > 0 ? g : item.baseGrams;
+  renderAiMealPreview();
+}
+
+function renderAiMealPreview() {
+  const preview = document.getElementById('aiMealPreview');
+  if (!aiParsedMeal) return;
+
+  const totals = aiParsedMeal.items.reduce((acc, it) => ({
+    kcal: acc.kcal + it.kcal,
+    p: acc.p + it.p,
+    c: acc.c + it.c,
+    f: acc.f + it.f
+  }), { kcal: 0, p: 0, c: 0, f: 0 });
+
+  const rowsHtml = aiParsedMeal.items.map((it, idx) => `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #27272a;font-size:0.84rem;">
+      <div style="flex:1;">
+        <div style="font-weight:600;">${it.name}</div>
+        <div style="color:#a1a1aa;font-size:0.76rem;">${it.kcal} kcal · P ${it.p}g · C ${it.c}g · F ${it.f}g</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <input type="number" value="${it.grams}" onchange="updateAiItemGrams(${idx}, this.value)"
+          style="width:62px;background:#09090b;color:#fff;border:1px solid #3f3f46;border-radius:6px;padding:4px 6px;text-align:right;font-size:0.82rem;">
+        <span style="color:#a1a1aa;font-size:0.78rem;">g</span>
+      </div>
+    </div>
+  `).join('');
+
+  preview.innerHTML = `
+    <div style="background:#09090b;border:1px solid #27272a;border-radius:10px;padding:12px;">
+      <div style="font-weight:700;margin-bottom:6px;">${aiParsedMeal.mealName}</div>
+      ${rowsHtml}
+      <div style="margin-top:10px;font-size:0.85rem;font-weight:600;color:#a5b4fc;">
+        Gesamt: ${Math.round(totals.kcal)} kcal · P ${totals.p.toFixed(1)}g · C ${totals.c.toFixed(1)}g · F ${totals.f.toFixed(1)}g
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button onclick="saveAiMealToLog(false)" style="flex:1;background:#6366f1;color:#fff;border:none;border-radius:8px;padding:9px;font-weight:600;cursor:pointer;">
+          Als Einzelzutaten
+        </button>
+        <button onclick="saveAiMealToLog(true)" style="flex:1;background:#27272a;color:#f4f4f5;border:1px solid #3f3f46;border-radius:8px;padding:9px;font-weight:600;cursor:pointer;">
+          Als 1 Gericht
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function saveAiMealToLog(asSingleEntry) {
+  if (!aiParsedMeal || !aiParsedMeal.items.length) return;
+  const log = ensureDayLog(state.selectedDate);
+  const now = Date.now();
+
+  if (asSingleEntry) {
+    const totals = aiParsedMeal.items.reduce((acc, it) => ({
+      kcal: acc.kcal + it.kcal,
+      p: acc.p + it.p,
+      c: acc.c + it.c,
+      f: acc.f + it.f
+    }), { kcal: 0, p: 0, c: 0, f: 0 });
+
+    log.entries.push({
+      id: 'ent_' + now,
+      name: `✨ ${aiParsedMeal.mealName}`,
+      kcal: Math.round(totals.kcal),
+      p: Math.round(totals.p * 10) / 10,
+      c: Math.round(totals.c * 10) / 10,
+      f: Math.round(totals.f * 10) / 10
+    });
+  } else {
+    aiParsedMeal.items.forEach((it, idx) => {
+      log.entries.push({
+        id: 'ent_' + (now + idx),
+        name: `${it.name} (${it.grams}g)`,
+        kcal: Math.round(it.kcal),
+        p: Math.round(it.p * 10) / 10,
+        c: Math.round(it.c * 10) / 10,
+        f: Math.round(it.f * 10) / 10
+      });
+    });
+  }
+
+  saveState();
+  closeAiMealModal();
+  switchTab('dashboard');
+}
+
 render();

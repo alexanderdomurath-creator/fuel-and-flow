@@ -62,10 +62,10 @@
         <button onclick="openBarcodeModal()" class="px-2.5 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-medium transition flex items-center gap-1" title="Barcode scannen">
           <span>📷</span><span>Scan</span>
         </button>
-        <button onclick="openPwaModal()" class="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium transition">
-          Installieren
-        </button>
-        <button onclick="openBackupModal()" class="px-2.5 py-1.5 rounded-xl bg-card hover:bg-cardHover border border-border text-zinc-300 text-xs transition" title="Daten sichern / wiederherstellen">
+      <button id="aiMealBtn" class="btn-ai-header" onclick="openAiMealModal()" title="Gericht per KI-JSON importieren">
+  ✨ KI-Gericht
+</button>
+        <button id="headerBackupBtn" onclick="openBackupModal()" class="relative px-2.5 py-1.5 rounded-xl bg-card hover:bg-cardHover border border-border text-zinc-300 text-xs transition" title="Daten sichern / wiederherstellen">
           Backup
         </button>
       </div>
