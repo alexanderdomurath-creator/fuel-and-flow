@@ -1917,17 +1917,26 @@ async function triggerNativeInstall() {
 }
 
 function openBackupModal() {
+  const status = getBackupReminderStatus();
+  const badgeHtml = status.isDue
+    ? `<div class="rounded-xl bg-amber-500/15 border border-amber-500/30 px-3 py-2 text-[11px] text-amber-300">${status.message}</div>`
+    : `<div class="rounded-xl bg-zinc-900 border border-zinc-800 px-3 py-2 text-[11px] text-zinc-400">${status.message}</div>`;
+
   openModal(`
-    <div class="space-y-4">
+    <div class="space-y-3">
       <div class="flex items-center justify-between">
-        <h3 class="text-base font-semibold text-white">Daten-Backup (JSON)</h3>
+        <h3 class="text-base font-semibold text-white">Daten-Backup & Export</h3>
         <button onclick="closeModal()" class="text-zinc-400 hover:text-white">✕</button>
       </div>
-      <button onclick="exportJsonBackup()" class="w-full py-2.5 rounded-2xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
-        Backup herunterladen
+      ${badgeHtml}
+      <button onclick="exportCsvExcel()" class="w-full py-2.5 rounded-2xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-semibold text-xs transition">
+        Als Excel-Tabelle exportieren (.csv)
       </button>
-      <label class="block w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-center text-zinc-200 font-medium text-xs cursor-pointer">
-        Backup-Datei wiederherstellen
+      <button onclick="exportJsonBackup()" class="w-full py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+        Komplett-Backup herunterladen (.json)
+      </button>
+      <label class="block w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-center text-zinc-200 font-medium text-xs cursor-pointer transition">
+        JSON-Backup wiederherstellen
         <input type="file" accept=".json" onchange="importJsonBackup(event)" class="hidden" />
       </label>
     </div>
@@ -1940,6 +1949,8 @@ function exportJsonBackup() {
   a.href = URL.createObjectURL(blob);
   a.download = `fuel_and_flow_backup_${getTodayStr()}.json`;
   a.click();
+  localStorage.setItem('fuel_and_flow_last_backup', String(Date.now()));
+  updateBackupReminderBadge();
 }
 
 function importJsonBackup(event) {
@@ -2157,6 +2168,175 @@ function confirmScannedFood(target) {
   saveState();
   closeBarcodeModal();
   switchTab('dashboard');
+}
+
+// === PERSISTENT STORAGE & BACKUP-ERINNERUNG ===
+const BACKUP_REMINDER_DAYS = 14;
+const LAST_BACKUP_KEY = 'fuel_and_flow_last_backup';
+
+function getBackupReminderStatus() {
+  const raw = localStorage.getItem(LAST_BACKUP_KEY);
+  if (!raw) {
+    return {
+      isDue: true,
+      message: 'Noch kein JSON-Backup erstellt – sichere deine Daten regelmäßig.'
+    };
+  }
+  const daysAgo = Math.floor((Date.now() - Number(raw)) / (1000 * 60 * 60 * 24));
+  if (daysAgo >= BACKUP_REMINDER_DAYS) {
+    return {
+      isDue: true,
+      message: `Letztes Backup vor ${daysAgo} Tagen – Zeit für eine neue Sicherung.`
+    };
+  }
+  const label = daysAgo === 0 ? 'heute' : daysAgo === 1 ? 'gestern' : `vor ${daysAgo} Tagen`;
+  return {
+    isDue: false,
+    message: `Letztes Backup: ${label} (alle ${BACKUP_REMINDER_DAYS} Tage empfohlen).`
+  };
+}
+
+function updateBackupReminderBadge() {
+  const btn = document.getElementById('headerBackupBtn');
+  if (!btn) return;
+  const { isDue, message } = getBackupReminderStatus();
+  btn.title = message;
+
+  let dot = document.getElementById('backupReminderDot');
+  if (isDue) {
+    if (!dot) {
+      dot = document.createElement('span');
+      dot.id = 'backupReminderDot';
+      dot.className = 'absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-zinc-950';
+      btn.appendChild(dot);
+    }
+  } else if (dot) {
+    dot.remove();
+  }
+}
+
+async function initStorageProtection() {
+  if (navigator.storage && navigator.storage.persist) {
+    try {
+      await navigator.storage.persist();
+    } catch (_) {}
+  }
+  updateBackupReminderBadge();
+}
+
+document.addEventListener('DOMContentLoaded', initStorageProtection);
+
+// === EXCEL-KOMPATIBLER CSV-EXPORT ===
+function exportCsvExcel() {
+  const daysMap = state.days || state.logs || {};
+  const fitDaysMap = state.fitDays || state.weights || {};
+  const allDates = Array.from(new Set([
+    ...Object.keys(daysMap),
+    ...Object.keys(fitDaysMap)
+  ])).sort();
+
+  const fmtNum = (val) => {
+    if (val === null || val === undefined || val === '' || Number.isNaN(Number(val))) return '';
+    return String(Number(val)).replace('.', ',');
+  };
+
+  const escCsv = (val) => {
+    const str = val === null || val === undefined ? '' : String(val);
+    return `"${str.replace(/"/g, '""')}"`;
+  };
+
+  const mapTrafficLight = (v) => {
+    if (!v) return '';
+    const s = String(v).toLowerCase();
+    if (s === 'green' || s === 'gruen' || s === 'grün' || s === 'none' || s === '0') return 'Grün';
+    if (s === 'yellow' || s === 'gelb' || s === '1') return 'Gelb';
+    if (s === 'red' || s === 'rot' || s === '2') return 'Rot';
+    return String(v);
+  };
+
+  const headers = [
+    'Datum',
+    'Kalorien (kcal)',
+    'Protein (g)',
+    'Kohlenhydrate (g)',
+    'Fett (g)',
+    'Gewicht (kg)',
+    'Bio-Alter',
+    'Alkohol',
+    'Zigaretten',
+    'Vape',
+    'Habits / Check-ins',
+    'Mahlzeiten (Anzahl)',
+    'Mahlzeiten (Details)'
+  ];
+
+  const rows = [headers.map(escCsv).join(';')];
+
+  allDates.forEach((dateKey) => {
+    const day = daysMap[dateKey] || {};
+    const fit = fitDaysMap[dateKey] || {};
+    const entries = Array.isArray(day.entries) ? day.entries : [];
+
+    const totals = entries.reduce((acc, item) => {
+      acc.kcal += Number(item.kcal) || 0;
+      acc.p += Number(item.p) || 0;
+      acc.c += Number(item.c) || 0;
+      acc.f += Number(item.f) || 0;
+      return acc;
+    }, { kcal: 0, p: 0, c: 0, f: 0 });
+
+    const weight = day.weight ?? fit.weight ?? '';
+    const bioAge = day.bioAge ?? fit.bioAge ?? '';
+
+    const bh = day.badHabits || day.vices || {};
+    const alcohol = mapTrafficLight(bh.alcohol ?? day.alcohol);
+    const cigarettes = mapTrafficLight(bh.cigarettes ?? bh.cigs ?? day.cigarettes);
+    const vape = mapTrafficLight(bh.vape ?? day.vape);
+
+    let habitsText = '';
+    if (Array.isArray(day.habits)) {
+      habitsText = day.habits.join(', ');
+    } else if (day.habits && typeof day.habits === 'object') {
+      habitsText = Object.entries(day.habits)
+        .filter(([, done]) => Boolean(done))
+        .map(([k]) => k)
+        .join(', ');
+    }
+
+    const mealDetails = entries
+      .map(e => `${e.name || 'Eintrag'} (${Math.round(Number(e.kcal) || 0)} kcal)`)
+      .join(' | ');
+
+    const row = [
+      escCsv(dateKey),
+      fmtNum(entries.length ? Math.round(totals.kcal) : ''),
+      fmtNum(entries.length ? Math.round(totals.p * 10) / 10 : ''),
+      fmtNum(entries.length ? Math.round(totals.c * 10) / 10 : ''),
+      fmtNum(entries.length ? Math.round(totals.f * 10) / 10 : ''),
+      fmtNum(weight),
+      fmtNum(bioAge),
+      escCsv(alcohol),
+      escCsv(cigarettes),
+      escCsv(vape),
+      escCsv(habitsText),
+      entries.length ? String(entries.length) : '0',
+      escCsv(mealDetails)
+    ];
+
+    rows.push(row.join(';'));
+  });
+
+  const csvContent = '\uFEFF' + rows.join('\r\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const todayStr = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `fuel-and-flow-export-${todayStr}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 render();
