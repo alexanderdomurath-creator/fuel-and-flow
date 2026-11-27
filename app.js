@@ -199,6 +199,18 @@ function setSyncStatusText(msg, isError = false) {
   el.className = isError ? 'text-[11px] text-rose-400' : 'text-[11px] text-emerald-400';
 }
 
+function buildSyncHeaders(cfg, extra = {}) {
+  const headers = {
+    'apikey': cfg.anonKey,
+    'x-sync-key': cfg.syncKey,
+    ...extra
+  };
+  if (cfg.anonKey.startsWith('eyJ')) {
+    headers['Authorization'] = `Bearer ${cfg.anonKey}`;
+  }
+  return headers;
+}
+
 async function pushStateToCloud() {
   const cfg = getSyncConfig();
   if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) return;
@@ -207,24 +219,24 @@ async function pushStateToCloud() {
   try {
     const res = await fetch(`${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync`, {
       method: 'POST',
-      headers: {
+      headers: buildSyncHeaders(cfg, {
         'Content-Type': 'application/json',
-        'apikey': cfg.anonKey,
-        'Authorization': `Bearer ${cfg.anonKey}`,
-        'x-sync-key': cfg.syncKey,
         'Prefer': 'resolution=merge-duplicates'
-      },
+      }),
       body: JSON.stringify({
         sync_key: cfg.syncKey,
         payload: state,
         updated_at: updatedAt
       })
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.message || `HTTP ${res.status}`);
+    }
     lastRemoteTimestamp = updatedAt;
     setSyncStatusText(`Synchronisiert (${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
   } catch (err) {
-    setSyncStatusText('Sync-Fehler (offline?)', true);
+    setSyncStatusText(`Push-Fehler: ${err.message}`, true);
   }
 }
 
@@ -236,17 +248,15 @@ async function pullStateFromCloud(forceOverwrite = false) {
     const url = `${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync?sync_key=eq.${encodeURIComponent(cfg.syncKey)}&select=payload,updated_at`;
     const res = await fetch(url, {
       method: 'GET',
-      headers: {
-        'apikey': cfg.anonKey,
-        'Authorization': `Bearer ${cfg.anonKey}`,
-        'x-sync-key': cfg.syncKey
-      }
+      headers: buildSyncHeaders(cfg)
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.message || `HTTP ${res.status}`);
+    }
     const rows = await res.json();
 
     if (!rows.length) {
-      // Erstes Gerät: lokalen Stand direkt initial in die Cloud laden
       await pushStateToCloud();
       return;
     }
@@ -262,7 +272,7 @@ async function pullStateFromCloud(forceOverwrite = false) {
     }
     setSyncStatusText(`Cloud aktuell (${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
   } catch (err) {
-    setSyncStatusText('Cloud nicht erreichbar', true);
+    setSyncStatusText(`Pull-Fehler: ${err.message}`, true);
   }
 }
 
