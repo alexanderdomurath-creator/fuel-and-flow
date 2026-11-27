@@ -789,6 +789,13 @@ const FITDAYS_METRICS = [
   { key: 'cardiacIndex',    label: 'Herzindex',        unit: 'L/min/m²', decimals: 1, color: '#ec4899', cols: ['Cardiac Index', 'Herzindex'] }
 ];
 
+const FITDAYS_METRIC_GROUPS = [
+  { id: 'basis',  label: 'Basis',               keys: ['weight', 'bioAge', 'bmi'] },
+  { id: 'fett',   label: 'Körperfett',          keys: ['bodyFat', 'subcutaneousFat', 'visceralFat'] },
+  { id: 'muskel', label: 'Muskel & Wasser',     keys: ['muscle', 'skeletalMuscle', 'bodyWater', 'boneMass', 'protein'] },
+  { id: 'herz',   label: 'Herz & Stoffwechsel', keys: ['bmr', 'heartRate', 'cardiacIndex'] }
+];
+
 function getVisibleMetrics() {
   if (!Array.isArray(state.visibleMetrics)) {
     state.visibleMetrics = ['weight', 'bioAge'];
@@ -807,6 +814,58 @@ function toggleChartMetric(key) {
   state.visibleMetrics = [...current];
   saveState();
   render();
+}
+
+function toggleChartMetricInModal(key) {
+  toggleChartMetric(key);
+  openChartMetricsModal();
+}
+
+function openChartMetricsModal() {
+  const visibleKeys = getVisibleMetrics();
+  const hist = state.weightHistory || [];
+  const bodyHtml = FITDAYS_METRIC_GROUPS.map(grp => {
+    const chips = grp.keys.map(k => {
+      const m = FITDAYS_METRICS.find(x => x.key === k);
+      if (!m) return '';
+      const isOn = visibleKeys.includes(m.key);
+      const hasData = hist.some(h => h[m.key] !== null && h[m.key] !== undefined);
+      return `
+        <button onclick="toggleChartMetricInModal('${m.key}')"
+          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition border ${
+            isOn
+              ? 'bg-zinc-800 text-white border-emerald-500/50'
+              : 'bg-zinc-950 text-zinc-400 border-border hover:text-zinc-200'
+          } ${!hasData ? 'opacity-50' : ''}">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${isOn ? m.color : '#52525b'}"></span>
+          <span>${m.label}</span>
+          ${!hasData ? '<span class="text-[10px] text-zinc-500">(leer)</span>' : ''}
+        </button>
+      `;
+    }).join('');
+    return `
+      <div class="space-y-1.5">
+        <div class="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide">${grp.label}</div>
+        <div class="flex flex-wrap gap-1.5">${chips}</div>
+      </div>
+    `;
+  }).join('');
+
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold text-white">Kennzahlen im Chart</h3>
+          <p class="text-[11px] text-zinc-400">${visibleKeys.length} von ${FITDAYS_METRICS.length} aktiv (mind. 1 bleibt sichtbar)</p>
+        </div>
+        <button onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+      <div class="space-y-3.5">${bodyHtml}</div>
+      <button onclick="closeModal()" class="w-full py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+        Fertig
+      </button>
+    </div>
+  `);
 }
 
 function renderWeightCalorieChart() {
@@ -947,6 +1006,27 @@ function renderWeightCalorieChart() {
     return `${Number(val).toFixed(m.decimals)}${m.unit ? ' ' + m.unit : ''}`;
   };
 
+  const canRemoveMetric = activeMetrics.length > 1;
+  const legendHtml = `
+    <div class="flex items-center gap-1.5 pt-1.5 border-t border-zinc-900">
+      <div class="flex-1 flex items-center gap-1.5 overflow-x-auto pb-0.5">
+        ${activeMetrics.map(m => `
+          <button onclick="toggleChartMetric('${m.key}')" title="${canRemoveMetric ? m.label + ' ausblenden' : 'Mindestens 1 Kennzahl bleibt aktiv'}"
+            class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-zinc-900 text-zinc-100 border border-zinc-700 transition">
+            <span class="w-2 h-2 rounded-full" style="background:${m.color}"></span>
+            <span>${m.label}</span>
+            ${canRemoveMetric ? '<span class="text-zinc-500 hover:text-zinc-200 ml-0.5">×</span>' : ''}
+          </button>
+        `).join('')}
+      </div>
+      <button onclick="openChartMetricsModal()"
+        class="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/35 transition">
+        <span>+ Kennzahlen</span>
+        <span class="text-[10px] opacity-80">(${visibleKeys.length}/${FITDAYS_METRICS.length})</span>
+      </button>
+    </div>
+  `;
+
   return `
     <div class="bg-zinc-950/70 border border-border rounded-2xl p-3 space-y-2.5">
       <div class="flex flex-wrap items-start justify-between gap-2">
@@ -1056,24 +1136,7 @@ function renderWeightCalorieChart() {
         }).join('')}
       </svg>
 
-      <div class="flex flex-wrap gap-1.5 pt-1 border-t border-zinc-900">
-        ${FITDAYS_METRICS.map(m => {
-          const isOn = visibleKeys.includes(m.key);
-          const hasAnyData = sortedHistory.some(h => h[m.key] !== null && h[m.key] !== undefined);
-          return `
-            <button onclick="toggleChartMetric('${m.key}')"
-              title="${hasAnyData ? m.label + ' ein-/ausblenden' : m.label + ' (noch keine Messwerte – Datei einmal neu importieren)'}"
-              class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium transition border ${
-                isOn
-                  ? 'bg-zinc-900 text-zinc-100 border-zinc-700'
-                  : 'bg-zinc-950/60 text-zinc-500 border-zinc-900 hover:text-zinc-300 hover:border-zinc-800'
-              } ${!hasAnyData ? 'opacity-50' : ''}">
-              <span class="w-2 h-2 rounded-full" style="background:${isOn ? m.color : '#52525b'}"></span>
-              <span>${m.label}</span>
-            </button>
-          `;
-        }).join('')}
-      </div>
+      ${legendHtml}
     </div>
   `;
 }
