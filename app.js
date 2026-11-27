@@ -209,6 +209,9 @@ let editingRecipe = null;
 let searchResultsCache = [];
 let selectedHeatmapMetric = 'alcohol'; // 'alcohol' | 'nicotine' | 'sport'
 
+let chartRangeDays = 14; // 7 | 14 | 30
+let selectedChartDate = null;
+
 function switchTab(tab, pushHistory = true) {
   if (pushHistory && currentTab !== tab) {
     navHistory.push(tab);
@@ -562,6 +565,154 @@ function deleteDayEntry(entryId) {
   render();
 }
 
+// ---------- FEATURE 1: GEWICHTS- & KALORIEN-VERLAUFSCHART ----------
+function setChartRange(days) {
+  chartRangeDays = days;
+  selectedChartDate = null;
+  render();
+}
+
+function selectChartDay(dateStr) {
+  selectedChartDate = selectedChartDate === dateStr ? null : dateStr;
+  render();
+}
+
+function renderWeightCalorieChart() {
+  const days = getLastNDays(chartRangeDays);
+  const weightMap = {};
+  [...state.weightHistory]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .forEach(w => { weightMap[w.date] = Number(w.weight); });
+
+  // Letztes bekanntes Gewicht vor dem Zeitfenster als Ausgangswert ermitteln
+  const priorWeights = [...state.weightHistory]
+    .filter(w => w.date < days[0].dateStr)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  let carryWeight = priorWeights.length
+    ? Number(priorWeights[priorWeights.length - 1].weight)
+    : (state.weightHistory.length ? Number(state.weightHistory[0].weight) : 74.0);
+
+  const series = days.map(d => {
+    const exactWeight = weightMap[d.dateStr] !== undefined ? weightMap[d.dateStr] : null;
+    if (exactWeight !== null) carryWeight = exactWeight;
+    const log = state.logs[d.dateStr];
+    const kcal = log && Array.isArray(log.entries)
+      ? log.entries.reduce((sum, e) => sum + (Number(e.kcal) || 0), 0)
+      : 0;
+    return {
+      dateStr: d.dateStr,
+      shortLabel: `${d.dayNum}.${d.monthNum}`,
+      weight: carryWeight,
+      exactWeight,
+      kcal
+    };
+  });
+
+  const weights = series.map(s => s.weight);
+  const minW = Math.min(...weights) - 0.4;
+  const maxW = Math.max(...weights) + 0.4;
+  const spanW = Math.max(0.5, maxW - minW);
+  const maxKcal = Math.max(state.calorieGoal * 1.15, ...series.map(s => s.kcal), 2500);
+
+  const W = 560, H = 175;
+  const padL = 34, padR = 12, padT = 16, padB = 24;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const stepX = series.length > 1 ? plotW / (series.length - 1) : plotW;
+  const barW = Math.max(4, Math.min(16, (plotW / series.length) * 0.55));
+
+  const getX = (idx) => padL + idx * stepX;
+  const getWeightY = (w) => padT + plotH - ((w - minW) / spanW) * plotH;
+  const getKcalH = (k) => (k / maxKcal) * (plotH * 0.75);
+
+  const linePoints = series.map((s, idx) => `${getX(idx).toFixed(1)},${getWeightY(s.weight).toFixed(1)}`).join(' ');
+  const goalY = padT + plotH - getKcalH(state.calorieGoal);
+
+  const activePoint = series.find(s => s.dateStr === selectedChartDate) || series[series.length - 1];
+  const labelInterval = chartRangeDays === 7 ? 1 : (chartRangeDays === 14 ? 2 : 5);
+
+  return `
+    <div class="bg-zinc-950/70 border border-border rounded-2xl p-3 space-y-2.5">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="text-xs text-zinc-300">
+          <span class="font-semibold text-white">${activePoint.shortLabel}:</span>
+          <span class="text-emerald-400 font-semibold">${activePoint.weight.toFixed(1)} kg</span>
+          ${activePoint.exactWeight === null ? '<span class="text-[10px] text-zinc-500">(fortgeschrieben)</span>' : ''}
+          · <span class="text-sky-400 font-semibold">${Math.round(activePoint.kcal)} kcal</span>
+        </div>
+        <div class="flex gap-1">
+          ${[7, 14, 30].map(r => `
+            <button onclick="setChartRange(${r})"
+              class="px-2 py-0.5 rounded-lg text-[11px] font-medium transition ${
+                chartRangeDays === r
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                  : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-border'
+              }">
+              ${r}T
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
+      <svg viewBox="0 0 ${W} ${H}" class="w-full h-44 overflow-visible select-none">
+        <!-- Y-Achsen-Hilfslinien Gewicht -->
+        <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#27272a" stroke-dasharray="3 3" />
+        <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="#27272a" />
+        <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" fill="#71717a" font-size="9">${maxW.toFixed(1)}</text>
+        <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="#71717a" font-size="9">${minW.toFixed(1)}</text>
+
+        <!-- Kalorienziel-Referenzlinie -->
+        <line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" stroke="#0ea5e9" stroke-opacity="0.35" stroke-dasharray="4 4" />
+
+        <!-- Kalorienbalken -->
+        ${series.map((s, idx) => {
+          const x = getX(idx);
+          const bh = getKcalH(s.kcal);
+          const by = padT + plotH - bh;
+          const isSelected = s.dateStr === activePoint.dateStr;
+          return `
+            <g class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')">
+              <rect x="${(x - barW / 2).toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, bh).toFixed(1)}"
+                rx="2" fill="${isSelected ? '#38bdf8' : '#0284c7'}" fill-opacity="${isSelected ? '0.65' : '0.3'}" />
+              ${idx % labelInterval === 0 ? `
+                <text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="#71717a" font-size="9">${s.shortLabel}</text>
+              ` : ''}
+            </g>
+          `;
+        }).join('')}
+
+        <!-- Gewichtslinie -->
+        <polyline fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${linePoints}" />
+
+        <!-- Datenpunkte -->
+        ${series.map((s, idx) => {
+          const x = getX(idx);
+          const y = getWeightY(s.weight);
+          const isSelected = s.dateStr === activePoint.dateStr;
+          const hasMeasurement = s.exactWeight !== null;
+          return `
+            <g class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')">
+              <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="10" fill="transparent" />
+              ${(hasMeasurement || isSelected) ? `
+                <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${isSelected ? 4.5 : 3}"
+                  fill="${isSelected ? '#34d399' : '#10b981'}" stroke="#09090b" stroke-width="1.5" />
+              ` : ''}
+            </g>
+          `;
+        }).join('')}
+      </svg>
+
+      <div class="flex items-center justify-between text-[10px] text-zinc-400 pt-0.5">
+        <div class="flex items-center gap-3">
+          <span class="flex items-center gap-1 text-emerald-300"><span class="w-2.5 h-0.5 bg-emerald-400 inline-block"></span> Gewicht (kg)</span>
+          <span class="flex items-center gap-1 text-sky-300"><span class="w-2 h-2 rounded-sm bg-sky-500/50 inline-block"></span> Kalorien (kcal)</span>
+        </div>
+        <span>Tag antippen für Details</span>
+      </div>
+    </div>
+  `;
+}
+
 // ---------- RENDERING ----------
 function render() {
   const backBtn = document.getElementById('back-btn');
@@ -850,7 +1001,8 @@ function renderDashboard() {
           <div class="text-[11px] text-zinc-500">Stand ${latestW.date.slice(5)}</div>
         </div>
       </div>
-    </section>
+    ${renderWeightCalorieChart()}
+      </section>
   `;
 }
 
