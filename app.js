@@ -3210,75 +3210,88 @@ function renderHabitsTab() {
 
   const mainCounts = getCountsForMetric(selectedHeatmapMetric);
 
+  const weekHeaderLabels = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+  const leadingEmptyDays = days30.length ? (days30[0].weekdayIdx + 6) % 7 : 0;
+  const todayIso = getTodayStr();
+
   const renderHeatmapGrid = (metricKey, compact = false) => `
-    <div class="grid grid-cols-6 sm:grid-cols-10 gap-1.5">
-      ${days30.map(d => {
-        const log = state.logs[d.dateStr];
-        let tileStyle = 'bg-amber-400/15 border-amber-400/45 text-amber-300 hover:bg-amber-400/25';
-        let statusIcon = '?';
-        let clickHandler = '';
+    <div class="space-y-1">
+      <div class="grid grid-cols-7 gap-1 text-center">
+        ${weekHeaderLabels.map((wd, idx) => `
+          <div class="text-[10px] font-semibold ${idx >= 5 ? 'text-zinc-400' : 'text-zinc-500'} pb-0.5">${wd}</div>
+        `).join('')}
+      </div>
+      <div class="grid grid-cols-7 gap-1">
+        ${Array.from({ length: leadingEmptyDays }).map(() => `<div class="rounded-xl"></div>`).join('')}
+        ${days30.map(d => {
+          const log = state.logs[d.dateStr];
+          let tileStyle = 'bg-amber-400/15 border-amber-400/45 text-amber-300 hover:bg-amber-400/25';
+          let statusIcon = '?';
+          let clickHandler = '';
 
-        if (metricKey === 'sport') {
-          const done = log && Array.isArray(log.sportDone) && log.sportDone.length > 0;
-          tileStyle = done
-            ? 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30'
-            : 'bg-amber-400/15 border-amber-400/40 text-amber-300 hover:bg-amber-400/25';
-          statusIcon = done ? '✓' : '?';
-          clickHandler = `toggleHeatmapSportDay('${d.dateStr}')`;
-        } else if (metricKey === 'routine') {
-          const st = getCombinedRoutineStatus(log);
-          if (st === 'yes') {
-            tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
-            statusIcon = '✓';
-          } else if (st === 'no') {
-            tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
-            statusIcon = '✕';
-          } else if (st === 'partial') {
-            tileStyle = 'bg-amber-400/20 border-amber-400/50 text-amber-300 hover:bg-amber-400/30';
-            statusIcon = '½';
+          if (metricKey === 'sport') {
+            const done = log && Array.isArray(log.sportDone) && log.sportDone.length > 0;
+            tileStyle = done
+              ? 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30'
+              : 'bg-amber-400/15 border-amber-400/40 text-amber-300 hover:bg-amber-400/25';
+            statusIcon = done ? '✓' : '?';
+            clickHandler = `toggleHeatmapSportDay('${d.dateStr}')`;
+          } else if (metricKey === 'routine') {
+            const st = getCombinedRoutineStatus(log);
+            if (st === 'yes') {
+              tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
+              statusIcon = '✓';
+            } else if (st === 'no') {
+              tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
+              statusIcon = '✕';
+            } else if (st === 'partial') {
+              tileStyle = 'bg-amber-400/20 border-amber-400/50 text-amber-300 hover:bg-amber-400/30';
+              statusIcon = '½';
+            }
+            clickHandler = `toggleHeatmapRoutineDay('routine', '${d.dateStr}')`;
+          } else if (metricKey === 'creatine' || metricKey === 'skincare' || metricKey === 'sertraline') {
+            const val = normalizeRoutineStatus(log?.routines?.[metricKey]);
+            if (val === true) {
+              tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
+              statusIcon = '✓';
+            } else if (val === false) {
+              tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
+              statusIcon = '✕';
+            }
+            clickHandler = `toggleHeatmapRoutineDay('${metricKey}', '${d.dateStr}')`;
+          } else if (metricKey === 'nicotine') {
+            const st = getCombinedNicotineStatus(log);
+            if (st === 'clean') {
+              tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
+              statusIcon = '✕';
+            } else if (st === 'consumed') {
+              tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
+              statusIcon = '✓';
+            }
+            clickHandler = `cycleCombinedNicotineDay('${d.dateStr}')`;
+          } else {
+            const st = log && log.badHabits ? normalizeHabitStatus(log.badHabits[metricKey]) : null;
+            if (st === 'clean') {
+              tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
+              statusIcon = '✕';
+            } else if (st === 'consumed') {
+              tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
+              statusIcon = '✓';
+            }
+            clickHandler = `cycleBadHabitDay('${metricKey}', '${d.dateStr}')`;
           }
-          clickHandler = `toggleHeatmapRoutineDay('routine', '${d.dateStr}')`;
-        } else if (metricKey === 'creatine' || metricKey === 'skincare' || metricKey === 'sertraline') {
-          const val = normalizeRoutineStatus(log?.routines?.[metricKey]);
-          if (val === true) {
-            tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
-            statusIcon = '✓';
-          } else if (val === false) {
-            tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
-            statusIcon = '✕';
-          }
-          clickHandler = `toggleHeatmapRoutineDay('${metricKey}', '${d.dateStr}')`;
-        } else if (metricKey === 'nicotine') {
-          const st = getCombinedNicotineStatus(log);
-          if (st === 'clean') {
-            tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
-            statusIcon = '✕';
-          } else if (st === 'consumed') {
-            tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
-            statusIcon = '✓';
-          }
-          clickHandler = `cycleCombinedNicotineDay('${d.dateStr}')`;
-        } else {
-          const st = log && log.badHabits ? normalizeHabitStatus(log.badHabits[metricKey]) : null;
-          if (st === 'clean') {
-            tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
-            statusIcon = '✕';
-          } else if (st === 'consumed') {
-            tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
-            statusIcon = '✓';
-          }
-          clickHandler = `cycleBadHabitDay('${metricKey}', '${d.dateStr}')`;
-        }
 
-        return `
-          <button onclick="${clickHandler}"
-            title="${d.dayNum}.${d.monthNum}. (${d.weekdayShort})"
-            class="${compact ? 'p-1' : 'p-1.5'} rounded-xl border text-center transition ${tileStyle}">
-            <div class="text-[9px] opacity-80 leading-none">${d.dayNum}.${d.monthNum}</div>
-            <div class="text-xs font-bold mt-1 leading-none">${statusIcon}</div>
-          </button>
-        `;
-      }).join('')}
+          const isToday = d.dateStr === todayIso;
+          return `
+            <button onclick="${clickHandler}"
+              title="${d.weekdayShort}, ${d.dayNum}.${d.monthNum}."
+              class="${compact ? 'py-1 px-0.5' : 'py-1.5 px-0.5'} rounded-xl border text-center transition ${tileStyle} ${isToday ? 'ring-1 ring-white/50' : ''}">
+              <div class="text-[9px] opacity-80 leading-none">${d.dayNum}.${d.monthNum}</div>
+              <div class="text-xs font-bold mt-1 leading-none">${statusIcon}</div>
+            </button>
+          `;
+        }).join('')}
+      </div>
     </div>
   `;
 
