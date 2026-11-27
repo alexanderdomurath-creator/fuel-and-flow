@@ -3284,9 +3284,10 @@ function renderHabitsTab() {
           const isToday = d.dateStr === todayIso;
           return `
             <button onclick="${clickHandler}"
-              title="${d.weekdayShort}, ${d.dayNum}.${d.monthNum}."
-              class="${compact ? 'py-1 px-0.5' : 'py-1.5 px-0.5'} rounded-xl border text-center transition ${tileStyle} ${isToday ? 'ring-1 ring-white/50' : ''}">
-              <div class="text-[9px] opacity-80 leading-none">${d.dayNum}.${d.monthNum}</div>
+              title="${isToday ? 'Heute · ' : ''}${d.weekdayShort}, ${d.dayNum}.${d.monthNum}."
+              class="relative ${compact ? 'py-1 px-0.5' : 'py-1.5 px-0.5'} rounded-xl border text-center transition ${tileStyle} ${isToday ? 'ring-2 ring-sky-400 ring-offset-1 ring-offset-zinc-950 shadow-[0_0_12px_rgba(56,189,248,0.45)] z-10' : ''}">
+              ${isToday ? '<span class="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-sky-400 ring-2 ring-zinc-950"></span>' : ''}
+              <div class="text-[9px] leading-none ${isToday ? 'font-bold text-white' : 'opacity-80'}">${isToday ? 'Heute' : `${d.dayNum}.${d.monthNum}`}</div>
               <div class="text-xs font-bold mt-1 leading-none">${statusIcon}</div>
             </button>
           `;
