@@ -1140,12 +1140,15 @@ function renderRecipesTab() {
                   ${Math.round(tot.kcal)} kcal · P ${Math.round(tot.p)}g · C ${Math.round(tot.c)}g · F ${Math.round(tot.f)}g
                 </p>
               </div>
-              <div class="flex gap-1.5">
+              <div class="flex gap-1.5 shrink-0">
                 <button onclick="editRecipeById('${rec.id}')" class="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200">
                   Anpassen
                 </button>
                 <button onclick="logRecipeToDay('${rec.id}', 1)" class="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 text-emerald-300 font-medium text-xs">
                   + Heute loggen
+                </button>
+                <button onclick="deleteRecipeById('${rec.id}')" title="Rezept löschen" class="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-400 text-xs">
+                  🗑
                 </button>
               </div>
             </div>
@@ -1482,6 +1485,15 @@ function saveEditedRecipe(asCopy) {
   }
   saveState();
   editingRecipe = null;
+  render();
+}
+
+function deleteRecipeById(id) {
+  const rec = state.recipes.find(r => r.id === id);
+  if (!rec) return;
+  if (!confirm(`Rezept "${rec.name}" wirklich löschen?`)) return;
+  state.recipes = state.recipes.filter(r => r.id !== id);
+  saveState();
   render();
 }
 
