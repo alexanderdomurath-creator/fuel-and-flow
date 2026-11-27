@@ -1,14 +1,7 @@
 // ============================================================
-// SPORT-TAB: Workouts (Kraft / Ausdauer / Sonstiges) & RepCount-Import
+// SPORT-TAB: Flexible Workout-Erfassung, Vorlagen & RepCount-Import
 // Nutzt globale Helfer aus app.js (state, saveState, render, openModal, ...)
 // ============================================================
-
-const DEFAULT_EXERCISES = [
-  'Bankdrücken', 'Schrägbankdrücken', 'Kniebeuge', 'Kreuzheben', 'Rumänisches Kreuzheben',
-  'Schulterdrücken', 'Seitheben', 'Klimmzüge', 'Latzug', 'Rudern (Langhantel)', 'Rudern (Kabel)',
-  'Dips', 'Liegestütze', 'Bizeps-Curls', 'Trizeps-Drücken', 'Beinpresse', 'Ausfallschritte',
-  'Hip Thrust', 'Wadenheben', 'Face Pulls', 'Plank'
-];
 
 const MUSCLE_GROUPS = [
   { id: 'Back',      label: 'Rücken',     color: '#10b981' },
@@ -21,7 +14,292 @@ const MUSCLE_GROUPS = [
   { id: 'Other',     label: 'Sonstige',   color: '#71717a' }
 ];
 
+// Konsolidierter Standard-Übungskatalog (einheitliche Namen & Muskelgruppen)
+const EXERCISE_CATALOG = [
+  // Rücken
+  { name: 'Klimmzüge', category: 'Back' },
+  { name: 'Klimmzüge (Ringe)', category: 'Back' },
+  { name: 'Klimmzüge (Neutralgriff)', category: 'Back' },
+  { name: 'Klimmzüge (Untergriff)', category: 'Back' },
+  { name: 'Klimmzüge (Kommando)', category: 'Back' },
+  { name: 'Klimmzüge (False Grip)', category: 'Back' },
+  { name: 'Klimmzüge (Explosiv)', category: 'Back' },
+  { name: 'Muscle-ups', category: 'Back' },
+  { name: 'Ring Muscle-ups', category: 'Back' },
+  { name: 'Kurzhantel-Rudern', category: 'Back' },
+  { name: 'Langhantel-Rudern', category: 'Back' },
+  { name: 'Ring-Rudern', category: 'Back' },
+  { name: 'Archer Rows', category: 'Back' },
+  { name: 'Rudern', category: 'Back' },
+  { name: 'Rudern (Maschine)', category: 'Back' },
+  { name: 'Rudern (Kabel)', category: 'Back' },
+  { name: 'Rudern (Bauchlage)', category: 'Back' },
+  { name: 'Rudern (Unterstützt)', category: 'Back' },
+  { name: 'Latzug', category: 'Back' },
+  { name: 'Kreuzheben', category: 'Back' },
+  { name: 'Kreuzheben (Trap Bar)', category: 'Back' },
+  { name: 'Hyperextensions', category: 'Back' },
+  { name: 'Back Leg Extensions', category: 'Back' },
+  { name: 'Reverse Butterfly', category: 'Back' },
+  { name: 'Überzüge (Pullover)', category: 'Back' },
+  { name: 'Power Cleans', category: 'Back' },
+
+  // Brust
+  { name: 'Bankdrücken', category: 'Chest' },
+  { name: 'Kurzhantel-Bankdrücken', category: 'Chest' },
+  { name: 'Schrägbankdrücken', category: 'Chest' },
+  { name: 'Schrägbankdrücken (Maschine)', category: 'Chest' },
+  { name: 'Brustpresse', category: 'Chest' },
+  { name: 'Liegestütze', category: 'Chest' },
+  { name: 'Liegestütze (Eng)', category: 'Chest' },
+  { name: 'Liegestütze (Einarmig)', category: 'Chest' },
+  { name: 'Liegestütze (Explosiv)', category: 'Chest' },
+  { name: 'Ring-Liegestütze', category: 'Chest' },
+  { name: 'Ring-Liegestütze + Rollout', category: 'Chest' },
+  { name: 'Star Push-ups', category: 'Chest' },
+  { name: 'Cable Crossovers', category: 'Chest' },
+  { name: 'Kurzhantel-Fliegende', category: 'Chest' },
+  { name: 'Butterfly (Maschine)', category: 'Chest' },
+  { name: 'Ring-Fliegende', category: 'Chest' },
+
+  // Beine
+  { name: 'Kniebeugen', category: 'Legs' },
+  { name: 'Frontkniebeugen', category: 'Legs' },
+  { name: 'Frontkniebeugen (Kettlebell)', category: 'Legs' },
+  { name: 'Goblet Squats', category: 'Legs' },
+  { name: 'Pistol Squats', category: 'Legs' },
+  { name: 'Bulgarian Split Squats', category: 'Legs' },
+  { name: 'Hackenschmidt-Kniebeuge', category: 'Legs' },
+  { name: 'Beinpresse', category: 'Legs' },
+  { name: 'Rumänisches Kreuzheben', category: 'Legs' },
+  { name: 'Einbeiniges Kreuzheben', category: 'Legs' },
+  { name: 'Einbeiniges Kreuzheben (Sprung)', category: 'Legs' },
+  { name: 'Beinbeuger', category: 'Legs' },
+  { name: 'Nordic Curls', category: 'Legs' },
+  { name: 'Beinstrecker', category: 'Legs' },
+  { name: 'Hip Thrusts', category: 'Legs' },
+  { name: 'Hip Thrusts (Einbeinig)', category: 'Legs' },
+  { name: 'Ausfallschritte', category: 'Legs' },
+  { name: 'Wadenheben', category: 'Legs' },
+  { name: 'Wandsitz Wadenheben', category: 'Legs' },
+  { name: 'Box Jumps', category: 'Legs' },
+  { name: 'Seilspringen (Single Under)', category: 'Legs' },
+
+  // Schultern
+  { name: 'Kurzhantel-Schulterdrücken', category: 'Shoulders' },
+  { name: 'Langhantel-Schulterdrücken', category: 'Shoulders' },
+  { name: 'Schulterdrücken (Sitzend)', category: 'Shoulders' },
+  { name: 'Schulterdrücken (Maschine)', category: 'Shoulders' },
+  { name: 'Pike Push-ups', category: 'Shoulders' },
+  { name: 'Pike Push-ups (Ringe)', category: 'Shoulders' },
+  { name: 'Seitheben', category: 'Shoulders' },
+  { name: 'Vorgebeugtes Seitheben', category: 'Shoulders' },
+  { name: 'Face Pulls', category: 'Shoulders' },
+  { name: 'Außenrotation (Sitzend)', category: 'Shoulders' },
+  { name: 'Planche (Tuck)', category: 'Shoulders' },
+  { name: 'Seated Dips (Einarmig)', category: 'Shoulders' },
+  { name: 'Shoulder Walk (Einarmig)', category: 'Shoulders' },
+
+  // Trizeps
+  { name: 'Dips', category: 'Triceps' },
+  { name: 'Ring Dips', category: 'Triceps' },
+  { name: 'Bank-Dips', category: 'Triceps' },
+  { name: 'L-Sit Dips', category: 'Triceps' },
+  { name: 'Pseudo Planche Push-ups (PPPU)', category: 'Triceps' },
+  { name: 'Trizeps-Drücken (Kabel)', category: 'Triceps' },
+  { name: 'Trizeps-Strecken', category: 'Triceps' },
+
+  // Bizeps
+  { name: 'Bizeps 21s', category: 'Biceps' },
+  { name: 'Scott-Curls', category: 'Biceps' },
+  { name: 'Kurzhantel-Curls', category: 'Biceps' },
+  { name: 'Kabel-Curls', category: 'Biceps' },
+  { name: 'Ring-Curls', category: 'Biceps' },
+
+  // Bauch / Core
+  { name: 'Ring Rollouts', category: 'Abs' },
+  { name: 'Hollow Body Hold', category: 'Abs', timed: true },
+  { name: 'Beinheben', category: 'Abs' },
+  { name: 'Ring Pallof Press', category: 'Abs' },
+  { name: 'Pallof Press', category: 'Abs' },
+  { name: 'Back Lever (Tuck)', category: 'Abs', timed: true },
+  { name: 'Front Lever (Adv. Tuck)', category: 'Abs', timed: true },
+  { name: 'Windshield Wiper (Stange)', category: 'Abs' },
+  { name: 'Windshield Wiper (Angewinkelt)', category: 'Abs' },
+  { name: 'Dragon Flags', category: 'Abs' },
+  { name: 'Plank', category: 'Abs', timed: true },
+  { name: 'Side Plank', category: 'Abs', timed: true },
+  { name: 'Plank Hip Taps', category: 'Abs' },
+  { name: 'Plank Push-Outs', category: 'Abs' },
+  { name: 'Toes to Bar', category: 'Abs' },
+  { name: 'Reverse Crunches', category: 'Abs' },
+  { name: 'Schräge Crunches', category: 'Abs' },
+  { name: 'Ring L-Sit', category: 'Abs', timed: true },
+  { name: 'Straight Arm Frog Stand', category: 'Abs', timed: true },
+  { name: 'Radfahrer', category: 'Abs' },
+  { name: 'Bergsteiger', category: 'Abs' },
+  { name: 'Bauchbeugen', category: 'Abs' },
+  { name: 'Leg Pulls', category: 'Abs' },
+  { name: 'Scissors (Kurzhantel)', category: 'Abs' },
+  { name: 'Hollow Ball Throws', category: 'Abs' }
+];
+
+// Alias-Mapping zur Vereinheitlichung (RepCount DE/EN, Schreibweisen, Tippfehler)
+const EXERCISE_ALIASES = {
+  // Rücken
+  'pull up':                        { name: 'Klimmzüge', category: 'Back' },
+  'pull-up':                        { name: 'Klimmzüge', category: 'Back' },
+  'pull ups':                       { name: 'Klimmzüge', category: 'Back' },
+  'pull-ups':                       { name: 'Klimmzüge', category: 'Back' },
+  'pullup':                         { name: 'Klimmzüge', category: 'Back' },
+  'pullups':                        { name: 'Klimmzüge', category: 'Back' },
+  'klimmzug':                       { name: 'Klimmzüge', category: 'Back' },
+  'klimmzüge ringe':                { name: 'Klimmzüge (Ringe)', category: 'Back' },
+  'klimmzug (neutralgriff)':        { name: 'Klimmzüge (Neutralgriff)', category: 'Back' },
+  'chin up':                        { name: 'Klimmzüge (Untergriff)', category: 'Back' },
+  'chin ups':                       { name: 'Klimmzüge (Untergriff)', category: 'Back' },
+  'chin-up':                        { name: 'Klimmzüge (Untergriff)', category: 'Back' },
+  'chin-ups':                       { name: 'Klimmzüge (Untergriff)', category: 'Back' },
+  'klimmzug kommando':              { name: 'Klimmzüge (Kommando)', category: 'Back' },
+  'klimmzug false grip':            { name: 'Klimmzüge (False Grip)', category: 'Back' },
+  'klimmzug explosiv':              { name: 'Klimmzüge (Explosiv)', category: 'Back' },
+  'muscle ups':                     { name: 'Muscle-ups', category: 'Back' },
+  'ring muscle up':                 { name: 'Ring Muscle-ups', category: 'Back' },
+  'muscle ups rings':               { name: 'Ring Muscle-ups', category: 'Back' },
+  'rows dumbbell':                  { name: 'Kurzhantel-Rudern', category: 'Back' },
+  'dumbbell row':                   { name: 'Kurzhantel-Rudern', category: 'Back' },
+  'dumbbell rows':                  { name: 'Kurzhantel-Rudern', category: 'Back' },
+  'rows barbell':                   { name: 'Langhantel-Rudern', category: 'Back' },
+  'rudern (langhantel)':            { name: 'Langhantel-Rudern', category: 'Back' },
+  'rudern ringe':                   { name: 'Ring-Rudern', category: 'Back' },
+  'rudern frei':                    { name: 'Rudern', category: 'Back' },
+  'rows machine':                   { name: 'Rudern (Maschine)', category: 'Back' },
+  'iso lateral dy row':             { name: 'Rudern (Maschine)', category: 'Back' },
+  'iso lateral high row':           { name: 'Rudern (Maschine)', category: 'Back' },
+  'rows assisted':                  { name: 'Rudern (Unterstützt)', category: 'Back' },
+  'rudern (auf dem bauch)':         { name: 'Rudern (Bauchlage)', category: 'Back' },
+  'latzug maschine':                { name: 'Latzug', category: 'Back' },
+  'pulldowns':                      { name: 'Latzug', category: 'Back' },
+  'latzug divergierend':            { name: 'Latzug', category: 'Back' },
+  'iso lateral front lat pull down':{ name: 'Latzug', category: 'Back' },
+  'deadlift':                       { name: 'Kreuzheben', category: 'Back' },
+  'deadlifts':                      { name: 'Kreuzheben', category: 'Back' },
+  'deadlifts cage bar':             { name: 'Kreuzheben (Trap Bar)', category: 'Back' },
+  'back leg extensions':            { name: 'Back Leg Extensions', category: 'Back' },
+  'reverse butterfly':              { name: 'Reverse Butterfly', category: 'Back' },
+  'pull over':                      { name: 'Überzüge (Pullover)', category: 'Back' },
+  'power cleans':                   { name: 'Power Cleans', category: 'Back' },
+
+  // Brust
+  'bench press':                    { name: 'Bankdrücken', category: 'Chest' },
+  'dumbbell press':                 { name: 'Kurzhantel-Bankdrücken', category: 'Chest' },
+  'bench press schräg':             { name: 'Schrägbankdrücken', category: 'Chest' },
+  'bankdrücken schräg maschine':    { name: 'Schrägbankdrücken (Maschine)', category: 'Chest' },
+  'lateral incline press':          { name: 'Schrägbankdrücken (Maschine)', category: 'Chest' },
+  'iso lateral horizontal bench press': { name: 'Brustpresse', category: 'Chest' },
+  'ring push ups':                  { name: 'Ring-Liegestütze', category: 'Chest' },
+  'ring pushups rollouts':          { name: 'Ring-Liegestütze + Rollout', category: 'Chest' },
+  'pushups narrow':                 { name: 'Liegestütze (Eng)', category: 'Chest' },
+  'push up one armed':              { name: 'Liegestütze (Einarmig)', category: 'Chest' },
+  'one armed pushup':               { name: 'Liegestütze (Einarmig)', category: 'Chest' },
+  'power push ups':                 { name: 'Liegestütze (Explosiv)', category: 'Chest' },
+  'star push up':                   { name: 'Star Push-ups', category: 'Chest' },
+  'dumbbell flies':                 { name: 'Kurzhantel-Fliegende', category: 'Chest' },
+  'fliegende maschine':             { name: 'Butterfly (Maschine)', category: 'Chest' },
+  'butterfly kombi machine':        { name: 'Butterfly (Maschine)', category: 'Chest' },
+  'ring flies':                     { name: 'Ring-Fliegende', category: 'Chest' },
+
+  // Beine
+  'squat':                          { name: 'Kniebeugen', category: 'Legs' },
+  'squats':                         { name: 'Kniebeugen', category: 'Legs' },
+  'kniebeuge':                      { name: 'Kniebeugen', category: 'Legs' },
+  'front squat':                    { name: 'Frontkniebeugen', category: 'Legs' },
+  'front squat kettle bells':       { name: 'Frontkniebeugen (Kettlebell)', category: 'Legs' },
+  'goblin squats':                  { name: 'Goblet Squats', category: 'Legs' },
+  'single leg squat':               { name: 'Pistol Squats', category: 'Legs' },
+  'pistol squats':                  { name: 'Pistol Squats', category: 'Legs' },
+  'bulgarian split squats':         { name: 'Bulgarian Split Squats', category: 'Legs' },
+  'hackenschmitt':                  { name: 'Hackenschmidt-Kniebeuge', category: 'Legs' },
+  'leg press':                      { name: 'Beinpresse', category: 'Legs' },
+  'beinpresse 45 grad':             { name: 'Beinpresse', category: 'Legs' },
+  'rumänisches kreuzheben':         { name: 'Rumänisches Kreuzheben', category: 'Legs' },
+  'deadlift single legged':         { name: 'Einbeiniges Kreuzheben', category: 'Legs' },
+  'one legged dead lift with jump': { name: 'Einbeiniges Kreuzheben (Sprung)', category: 'Legs' },
+  'leg curls':                      { name: 'Beinbeuger', category: 'Legs' },
+  'beinbeuge sitzend':              { name: 'Beinbeuger', category: 'Legs' },
+  'nordic curls':                   { name: 'Nordic Curls', category: 'Legs' },
+  'leg extensions':                 { name: 'Beinstrecker', category: 'Legs' },
+  'hip thrust':                     { name: 'Hip Thrusts', category: 'Legs' },
+  'hip thrusts':                    { name: 'Hip Thrusts', category: 'Legs' },
+  'single leg hip raise':           { name: 'Hip Thrusts (Einbeinig)', category: 'Legs' },
+  'lunges':                         { name: 'Ausfallschritte', category: 'Legs' },
+  'calf raises':                    { name: 'Wadenheben', category: 'Legs' },
+  'wall seat heel lifts':           { name: 'Wandsitz Wadenheben', category: 'Legs' },
+  'box jump over':                  { name: 'Box Jumps', category: 'Legs' },
+  'single under':                   { name: 'Seilspringen (Single Under)', category: 'Legs' },
+
+  // Schultern
+  'shoulder dumbbell press':        { name: 'Kurzhantel-Schulterdrücken', category: 'Shoulders' },
+  'cf dum bell press':              { name: 'Kurzhantel-Schulterdrücken', category: 'Shoulders' },
+  'overhead press bar bell':        { name: 'Langhantel-Schulterdrücken', category: 'Shoulders' },
+  'schulterdrücken':                { name: 'Langhantel-Schulterdrücken', category: 'Shoulders' },
+  'overhead press seated':          { name: 'Schulterdrücken (Sitzend)', category: 'Shoulders' },
+  'overhead press machine':         { name: 'Schulterdrücken (Maschine)', category: 'Shoulders' },
+  'pike push ups rings':            { name: 'Pike Push-ups (Ringe)', category: 'Shoulders' },
+  'pike push ups':                  { name: 'Pike Push-ups', category: 'Shoulders' },
+  'pike push ups (zirkel)':         { name: 'Pike Push-ups', category: 'Shoulders' },
+  'horizontal abduction dumbbell':  { name: 'Vorgebeugtes Seitheben', category: 'Shoulders' },
+  'face pulls':                     { name: 'Face Pulls', category: 'Shoulders' },
+  'seated external rotation':       { name: 'Außenrotation (Sitzend)', category: 'Shoulders' },
+  'planche tuck':                   { name: 'Planche (Tuck)', category: 'Shoulders' },
+  'seated dip one armed':           { name: 'Seated Dips (Einarmig)', category: 'Shoulders' },
+  'shoulder walk one armed':        { name: 'Shoulder Walk (Einarmig)', category: 'Shoulders' },
+
+  // Trizeps
+  'dips benched':                   { name: 'Bank-Dips', category: 'Triceps' },
+  'l-sit dips':                     { name: 'L-Sit Dips', category: 'Triceps' },
+  'pppu':                           { name: 'Pseudo Planche Push-ups (PPPU)', category: 'Triceps' },
+  'triceps pull downs':             { name: 'Trizeps-Drücken (Kabel)', category: 'Triceps' },
+  'trizeps-drücken':                { name: 'Trizeps-Drücken (Kabel)', category: 'Triceps' },
+  'triceps extensions':             { name: 'Trizeps-Strecken', category: 'Triceps' },
+
+  // Bizeps
+  '21s':                            { name: 'Bizeps 21s', category: 'Biceps' },
+  'scott curls':                    { name: 'Scott-Curls', category: 'Biceps' },
+  'dumbbell bicep curl':            { name: 'Kurzhantel-Curls', category: 'Biceps' },
+  'bizeps-curls':                   { name: 'Kurzhantel-Curls', category: 'Biceps' },
+  'cable curls':                    { name: 'Kabel-Curls', category: 'Biceps' },
+  'ring curls':                     { name: 'Ring-Curls', category: 'Biceps' },
+
+  // Bauch / Core
+  'ring roll outs':                 { name: 'Ring Rollouts', category: 'Abs' },
+  'hollow body hold':               { name: 'Hollow Body Hold', category: 'Abs' },
+  'leg raises':                     { name: 'Beinheben', category: 'Abs' },
+  'ring pallof press':              { name: 'Ring Pallof Press', category: 'Abs' },
+  'pallof press':                   { name: 'Pallof Press', category: 'Abs' },
+  'back lever tuck':                { name: 'Back Lever (Tuck)', category: 'Abs' },
+  'front lever adv tuck':           { name: 'Front Lever (Adv. Tuck)', category: 'Abs' },
+  'windshield wiper bar':           { name: 'Windshield Wiper (Stange)', category: 'Abs' },
+  'hanging bent knee wiper':        { name: 'Windshield Wiper (Angewinkelt)', category: 'Abs' },
+  'dragon flags':                   { name: 'Dragon Flags', category: 'Abs' },
+  'plank elbow':                    { name: 'Plank', category: 'Abs' },
+  'plank side':                     { name: 'Side Plank', category: 'Abs' },
+  'plank hip taps':                 { name: 'Plank Hip Taps', category: 'Abs' },
+  'plank push outs alternating':    { name: 'Plank Push-Outs', category: 'Abs' },
+  'toes to bar':                    { name: 'Toes to Bar', category: 'Abs' },
+  'reverse crunch':                 { name: 'Reverse Crunches', category: 'Abs' },
+  'abdominal oblique crunch':       { name: 'Schräge Crunches', category: 'Abs' },
+  'ring l sit':                     { name: 'Ring L-Sit', category: 'Abs' },
+  'scissors dumbbell':              { name: 'Scissors (Kurzhantel)', category: 'Abs' },
+  'hollow ball throws':             { name: 'Hollow Ball Throws', category: 'Abs' }
+};
+
+const SPORT_DRAFT_KEY = 'fuel_and_flow_workout_draft';
+
 let sportDraft = null;
+let sportPickerState = null; // { targetIndex: number | 'add', query: '', group: 'ALL' }
+let sportRestEndMs = 0;
+let sportRestInterval = null;
 let sportProgressEx = null;
 let sportProgressGroup = 'ALL';
 let sportProgressRange = 'ALL'; // '90' | '365' | 'ALL'
@@ -35,12 +313,14 @@ const ICON_PLUS = '<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="
 const ICON_CHECK = '<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 const ICON_X = '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 const ICON_UPLOAD = '<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>';
+const ICON_COPY = '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+const ICON_SWAP = '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg>';
 
 const SPORT_ICON_BTN = 'w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition';
 const SPORT_DEL_BTN = 'w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-zinc-900 hover:bg-rose-500/15 border border-border hover:border-rose-500/30 text-zinc-400 hover:text-rose-400 transition';
 const SPORT_INPUT = 'w-full px-2.5 py-2 rounded-xl bg-zinc-950 border border-border text-xs text-white focus:outline-none focus:border-emerald-500';
 
-// ---------- HELFER ----------
+// ---------- HELFER & KONSOLIDIERUNG ----------
 function sportEsc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -65,6 +345,70 @@ function normalizeMuscleGroup(raw) {
 
 function muscleGroupInfo(id) {
   return MUSCLE_GROUPS.find(g => g.id === id) || MUSCLE_GROUPS[MUSCLE_GROUPS.length - 1];
+}
+
+function canonicalizeExercise(rawName, rawCategory) {
+  const trimmed = String(rawName || '').trim().replace(/\s+/g, ' ');
+  const normCat = normalizeMuscleGroup(rawCategory);
+  if (!trimmed) return { name: '', category: normCat };
+
+  const key = trimmed.toLowerCase();
+  if (EXERCISE_ALIASES[key]) {
+    const mapped = EXERCISE_ALIASES[key];
+    return { name: mapped.name, category: mapped.category || normCat };
+  }
+  const catHit = EXERCISE_CATALOG.find(c => c.name.toLowerCase() === key);
+  if (catHit) {
+    return { name: catHit.name, category: catHit.category || normCat };
+  }
+  return { name: trimmed, category: normCat };
+}
+
+function countUnconsolidatedExercises() {
+  let n = 0;
+  getWorkouts().forEach(w => {
+    (w.exercises || []).forEach(ex => {
+      const c = canonicalizeExercise(ex.name, ex.category);
+      if (c.name !== ex.name || (c.category !== 'Other' && c.category !== normalizeMuscleGroup(ex.category))) {
+        n++;
+      }
+    });
+  });
+  return n;
+}
+
+function consolidateAllWorkouts(silent = false) {
+  let changed = 0;
+  getWorkouts().forEach(w => {
+    if (!Array.isArray(w.exercises)) return;
+    const merged = [];
+    const byKey = new Map();
+    w.exercises.forEach(ex => {
+      const c = canonicalizeExercise(ex.name, ex.category);
+      if (c.name !== ex.name || c.category !== normalizeMuscleGroup(ex.category)) changed++;
+      const k = c.name.toLowerCase();
+      if (byKey.has(k)) {
+        const target = byKey.get(k);
+        target.sets = target.sets.concat(ex.sets || []);
+        changed++;
+      } else {
+        const copy = { ...ex, name: c.name, category: c.category, sets: [...(ex.sets || [])] };
+        byKey.set(k, copy);
+        merged.push(copy);
+      }
+    });
+    w.exercises = merged;
+  });
+  if (changed > 0) {
+    saveState();
+    render();
+  }
+  if (!silent) {
+    alert(changed > 0
+      ? `✅ ${changed} Übungseinträge erfolgreich vereinheitlicht & konsolidiert.`
+      : 'Alle Übungsnamen sind bereits einheitlich.');
+  }
+  return changed;
 }
 
 function sportKindFromName(name) {
@@ -134,10 +478,12 @@ function fmtSetCompact(s) {
   return kg > 0 ? `${badge}${fmtNum(kg, 1)}×${reps}` : `${badge}BW×${reps}`;
 }
 
-function allExerciseNames() {
-  const set = new Set(DEFAULT_EXERCISES);
-  getWorkouts().forEach(w => (w.exercises || []).forEach(ex => { if (ex.name) set.add(ex.name); }));
-  return [...set].sort((a, b) => a.localeCompare(b, 'de'));
+function isExerciseTimed(ex) {
+  if (ex.timed !== undefined) return Boolean(ex.timed);
+  const sets = ex.sets || [];
+  if (sets.length && sets.some(s => Number(s.sec) > 0) && sets.every(s => !(Number(s.reps) > 0))) return true;
+  const catHit = EXERCISE_CATALOG.find(c => c.name.toLowerCase() === String(ex.name || '').toLowerCase());
+  return Boolean(catHit && catHit.timed);
 }
 
 function getExerciseMetaMap() {
@@ -154,19 +500,59 @@ function getExerciseMetaMap() {
   return map;
 }
 
+function getAllCatalogExercises() {
+  const metaMap = getExerciseMetaMap();
+  const byKey = new Map();
+  EXERCISE_CATALOG.forEach(c => {
+    const used = metaMap.get(c.name);
+    byKey.set(c.name.toLowerCase(), {
+      name: c.name,
+      category: c.category,
+      timed: Boolean(c.timed),
+      count: used ? used.count : 0
+    });
+  });
+  metaMap.forEach(m => {
+    const k = m.name.toLowerCase();
+    if (!byKey.has(k)) {
+      byKey.set(k, { name: m.name, category: m.category, timed: false, count: m.count });
+    }
+  });
+  return [...byKey.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'de'));
+}
+
 function lastSetsFor(name, excludeId) {
-  const key = String(name).trim().toLowerCase();
+  const canon = canonicalizeExercise(name, 'Other').name.toLowerCase();
+  if (!canon) return null;
   const list = [...getWorkouts()].filter(w => w.id !== excludeId).sort((a, b) => b.date.localeCompare(a.date));
   for (const w of list) {
-    const ex = (w.exercises || []).find(e => String(e.name).trim().toLowerCase() === key);
+    const ex = (w.exercises || []).find(e => canonicalizeExercise(e.name, e.category).name.toLowerCase() === canon);
     if (ex && ex.sets && ex.sets.length) {
       return {
-        category: ex.category ? normalizeMuscleGroup(ex.category) : 'Other',
-        sets: ex.sets.map(s => ({ kg: s.kg ?? '', reps: s.reps ?? '', sec: s.sec ?? '', t: s.t || '' }))
+        category: ex.category ? normalizeMuscleGroup(ex.category) : canonicalizeExercise(name, 'Other').category,
+        timed: isExerciseTimed(ex),
+        sets: ex.sets.map(s => ({ kg: s.kg ?? '', reps: s.reps ?? '', sec: s.sec ?? '', t: s.t || '', done: false }))
       };
     }
   }
   return null;
+}
+
+function getRecentWorkoutTemplates(limit = 5) {
+  const sorted = [...getWorkouts()]
+    .filter(w => w.type === 'strength' && (w.exercises || []).length > 0)
+    .sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
+  const seen = new Set();
+  const out = [];
+  for (const w of sorted) {
+    const label = (w.title || getActivityName(w.activityId) || 'Training').trim();
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ workout: w, label });
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 function syncSportDoneAfterRemoval(date, activityId, exceptId) {
@@ -175,6 +561,68 @@ function syncSportDoneAfterRemoval(date, activityId, exceptId) {
   if (still) return;
   const log = state.logs[date];
   if (log && Array.isArray(log.sportDone)) log.sportDone = log.sportDone.filter(id => id !== activityId);
+}
+
+// ---------- ENTWURF-PERSISTENZ (LIVE-WORKOUT IM GYM) ----------
+function saveSportDraftLocal() {
+  try {
+    if (sportDraft && !sportDraft.id) {
+      localStorage.setItem(SPORT_DRAFT_KEY, JSON.stringify(sportDraft));
+    }
+  } catch (e) {}
+}
+
+function loadSportDraftLocal() {
+  try {
+    const raw = localStorage.getItem(SPORT_DRAFT_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearSportDraftLocal() {
+  try { localStorage.removeItem(SPORT_DRAFT_KEY); } catch (e) {}
+}
+
+// ---------- PAUSEN-TIMER ----------
+function startSportRestTimer(seconds) {
+  sportRestEndMs = Date.now() + seconds * 1000;
+  if (sportRestInterval) clearInterval(sportRestInterval);
+  updateSportRestTimerDom();
+  sportRestInterval = setInterval(updateSportRestTimerDom, 500);
+}
+
+function stopSportRestTimer() {
+  sportRestEndMs = 0;
+  if (sportRestInterval) {
+    clearInterval(sportRestInterval);
+    sportRestInterval = null;
+  }
+  updateSportRestTimerDom();
+}
+
+function updateSportRestTimerDom() {
+  const el = document.getElementById('sport-rest-display');
+  if (!el) return;
+  if (!sportRestEndMs) {
+    el.textContent = 'Pause';
+    el.className = 'text-[11px] font-medium text-zinc-400 tabular-nums';
+    return;
+  }
+  const rem = Math.ceil((sportRestEndMs - Date.now()) / 1000);
+  if (rem <= 0) {
+    sportRestEndMs = 0;
+    if (sportRestInterval) { clearInterval(sportRestInterval); sportRestInterval = null; }
+    el.textContent = 'Los!';
+    el.className = 'text-[11px] font-bold text-emerald-400 animate-pulse';
+    try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch (e) {}
+    return;
+  }
+  const m = Math.floor(rem / 60);
+  const s = rem % 60;
+  el.textContent = `${m}:${String(s).padStart(2, '0')}`;
+  el.className = 'text-[11px] font-bold text-amber-300 tabular-nums';
 }
 
 // ---------- REPCOUNT CSV PARSER & IMPORT ----------
@@ -237,7 +685,6 @@ function parseRepCountCsvText(csvText, activityId) {
   const iWeight = idx('weight');
   const iReps = idx('reps');
   const iNotes = idx('notes');
-  const iDist = idx('distance');
   const iDur = idx('duration');
   const iCat = idx('category');
   const iName = idx('name');
@@ -255,8 +702,8 @@ function parseRepCountCsvText(csvText, activityId) {
     if (!cols || cols.length < 3) continue;
 
     const wsRaw = String(cols[iStart] || '').trim();
-    const exName = String(cols[iEx] || '').trim();
-    if (!wsRaw || !exName) continue;
+    const rawExName = String(cols[iEx] || '').trim();
+    if (!wsRaw || !rawExName) continue;
 
     const dateMatch = wsRaw.match(/^(\d{4}-\d{2}-\d{2})(?:[\sT](\d{2}:\d{2}))?/);
     if (!dateMatch) continue;
@@ -270,12 +717,11 @@ function parseRepCountCsvText(csvText, activityId) {
     const reps = repsRaw !== '' && !isNaN(Number(repsRaw)) ? Math.round(Number(repsRaw)) : 0;
     const sec = durRaw !== '' && !isNaN(Number(durRaw)) ? Math.round(Number(durRaw)) : 0;
 
-    // Leere Platzhalter-Sätze überspringen (z. B. ohne Wdh. und ohne Dauer)
     if (reps <= 0 && sec <= 0) continue;
 
     const workoutTitle = iName >= 0 ? String(cols[iName] || '').trim() : '';
     const weRaw = iEnd >= 0 ? String(cols[iEnd] || '').trim() : '';
-    const category = iCat >= 0 ? normalizeMuscleGroup(cols[iCat]) : 'Other';
+    const canon = canonicalizeExercise(rawExName, iCat >= 0 ? cols[iCat] : 'Other');
     const noteText = iNotes >= 0 ? String(cols[iNotes] || '').trim() : '';
     const setTypeRaw = iSetType >= 0 ? String(cols[iSetType] || '').trim().toLowerCase() : '';
     const setTypeShort = setTypeRaw === 'dropset' ? 'd' : (setTypeRaw === 'warmup' ? 'w' : '');
@@ -313,14 +759,14 @@ function parseRepCountCsvText(csvText, activityId) {
       wo._notesSet.add(noteText);
     }
 
-    const exKey = exName.toLowerCase();
+    const exKey = canon.name.toLowerCase();
     let exObj = wo._exMap.get(exKey);
     if (!exObj) {
-      exObj = { name: exName, category, sets: [] };
+      exObj = { name: canon.name, category: canon.category, sets: [] };
       wo._exMap.set(exKey, exObj);
       wo.exercises.push(exObj);
-    } else if (exObj.category === 'Other' && category !== 'Other') {
-      exObj.category = category;
+    } else if (exObj.category === 'Other' && canon.category !== 'Other') {
+      exObj.category = canon.category;
     }
 
     const setObj = { kg, reps };
@@ -347,13 +793,14 @@ function openRepCountImportModal() {
   const habits = Array.isArray(state.sportHabits) ? state.sportHabits : [];
   const defaultAct = getDefaultStrengthActivityId();
   const importedCount = getWorkouts().filter(w => w.source === 'repcount' || String(w.id).startsWith('rc_')).length;
+  const unconsolidated = countUnconsolidatedExercises();
 
   openModal(`
     <div class="space-y-4">
       <div class="flex items-center justify-between">
         <div>
           <h3 class="text-base font-semibold text-white">RepCount CSV-Import</h3>
-          <p class="text-[11px] text-zinc-400">Importiert Workouts, Muskelgruppen, Sätze, Haltezeiten &amp; Dropsets</p>
+          <p class="text-[11px] text-zinc-400">Importiert Workouts und vereinheitlicht Übungsnamen automatisch</p>
         </div>
         <button onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
       </div>
@@ -370,9 +817,16 @@ function openRepCountImportModal() {
       <label class="flex flex-col items-center justify-center gap-2 w-full py-6 px-4 rounded-2xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-dashed border-emerald-500/40 text-emerald-300 cursor-pointer transition text-center">
         <div class="w-10 h-10 rounded-2xl bg-emerald-500/20 flex items-center justify-center">${ICON_UPLOAD}</div>
         <span class="text-xs font-semibold">RepCount-Exportdatei auswählen (.csv)</span>
-        <span class="text-[11px] text-zinc-400">Bereits importierte Einheiten werden aktualisiert, nicht dupliziert.</span>
+        <span class="text-[11px] text-zinc-400">Doppelte DE/EN-Übungsnamen (z. B. Pull Up → Klimmzüge) werden konsolidiert.</span>
         <input type="file" accept=".csv,text/csv" onchange="handleRepCountCsvImport(event)" class="hidden" />
       </label>
+
+      ${unconsolidated > 0 ? `
+        <button onclick="consolidateAllWorkouts(false); closeModal();"
+          class="w-full py-2.5 rounded-2xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 text-xs font-semibold transition">
+          ✨ ${unconsolidated} bestehende Übungseinträge jetzt vereinheitlichen
+        </button>
+      ` : ''}
 
       ${importedCount > 0 ? `
         <div class="text-[11px] text-zinc-400 bg-zinc-900/70 border border-border rounded-xl px-3 py-2">
@@ -416,11 +870,11 @@ async function handleRepCountCsvImport(event) {
     });
 
     state.workouts = [...map.values()].sort((a, b) => a.date.localeCompare(b.date) || String(a.id).localeCompare(String(b.id)));
-    sportSummaryDays = 0; // Gesamt-Übersicht zeigen, damit historische Daten sofort sichtbar sind
+    sportSummaryDays = 0;
     saveState();
     closeModal();
     render();
-    alert(`✅ RepCount-Import erfolgreich: ${added} neu, ${updated} aktualisiert (${totalSets} Sätze, gesamt ${state.workouts.length} Einheiten).`);
+    alert(`✅ RepCount-Import erfolgreich: ${added} neu, ${updated} aktualisiert (${totalSets} Sätze, Übungsnamen konsolidiert).`);
   } catch (err) {
     console.error('RepCount Import Fehler:', err);
     alert('Fehler beim RepCount-Import: ' + (err.message || err));
@@ -446,6 +900,21 @@ function loadMoreSportHistory() {
   render();
 }
 
+function resumeSavedWorkoutDraft() {
+  const saved = loadSportDraftLocal();
+  if (!saved) return;
+  sportDraft = saved;
+  sportPickerState = null;
+  renderWorkoutModal();
+}
+
+function discardSavedWorkoutDraft() {
+  if (!confirm('Ungespeichertes Training verwerfen?')) return;
+  clearSportDraftLocal();
+  sportDraft = null;
+  render();
+}
+
 function renderSportTab() {
   const workouts = [...getWorkouts()].sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
   const cutoff = sportSummaryDays > 0 ? getPastDateStr(sportSummaryDays - 1) : '';
@@ -454,6 +923,9 @@ function renderSportTab() {
   const periodSets = period.reduce((a, w) => a + workoutSetCount(w), 0);
   const periodKm = period.reduce((a, w) => a + (w.type === 'cardio' ? Number(w.distance) || 0 : 0), 0);
   const periodMin = period.reduce((a, w) => a + (Number(w.duration) || 0), 0);
+  const templates = getRecentWorkoutTemplates(6);
+  const savedDraft = loadSportDraftLocal();
+  const unconsolidated = countUnconsolidatedExercises();
 
   const rangeBtns = [
     { d: 7, label: '7T' },
@@ -468,7 +940,6 @@ function renderSportTab() {
       <div class="text-sm font-bold ${color} mt-0.5 truncate">${value}</div>
     </div>`;
 
-  // Verlauf filtern
   const q = sportHistoryQuery.trim().toLowerCase();
   const filtered = q
     ? workouts.filter(w => {
@@ -482,31 +953,81 @@ function renderSportTab() {
   const shown = filtered.slice(0, sportHistoryLimit);
 
   return `
+    ${savedDraft ? `
+      <section class="bg-emerald-500/15 border border-emerald-500/40 rounded-3xl p-3.5 flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <div class="text-xs font-semibold text-emerald-300 truncate">🏋️ Laufendes Training: ${sportEsc(savedDraft.title || 'Krafttraining')}</div>
+          <div class="text-[11px] text-zinc-300">${(savedDraft.exercises || []).length} Übungen · zwischengespeichert</div>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button onclick="discardSavedWorkoutDraft()" title="Verwerfen" class="px-2.5 py-1.5 rounded-xl bg-zinc-900 text-zinc-400 hover:text-rose-400 text-xs border border-border transition">✕</button>
+          <button onclick="resumeSavedWorkoutDraft()" class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-semibold transition">Fortsetzen</button>
+        </div>
+      </section>
+    ` : ''}
+
+    ${unconsolidated > 0 ? `
+      <section class="bg-sky-500/10 border border-sky-500/35 rounded-3xl p-3.5 flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <div class="text-xs font-semibold text-sky-300">Übungsnamen konsolidieren</div>
+          <div class="text-[11px] text-zinc-400">${unconsolidated} Einträge mit DE/EN-Varianten gefunden (z. B. Pull Up → Klimmzüge)</div>
+        </div>
+        <button onclick="consolidateAllWorkouts(false)" class="shrink-0 px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 text-xs font-semibold transition">Bereinigen</button>
+      </section>
+    ` : ''}
+
+    <!-- Schnellstart & Vorlagen -->
     <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
       <div class="flex items-center justify-between gap-2">
         <div>
-          <h2 class="text-sm font-semibold text-white">Trainingsübersicht</h2>
-          <p class="text-[11px] text-zinc-400">${sportSummaryDays > 0 ? `Letzte ${sportSummaryDays} Tage` : 'Gesamter Verlauf'}</p>
+          <h2 class="text-sm font-semibold text-white">Training starten</h2>
+          <p class="text-[11px] text-zinc-400">Frei starten oder letztes Workout als Vorlage nehmen</p>
         </div>
         <div class="flex items-center gap-1.5">
           <button onclick="openRepCountImportModal()" title="RepCount CSV importieren" aria-label="RepCount CSV importieren"
             class="h-9 px-2.5 flex items-center gap-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-200 text-xs font-medium transition">
             ${ICON_UPLOAD}<span>CSV</span>
           </button>
-          <button onclick="openWorkoutModal()" title="Neue Einheit" aria-label="Neue Einheit"
-            class="w-9 h-9 flex items-center justify-center rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 transition">${ICON_PLUS}</button>
+          <button onclick="openWorkoutModal()" title="Freie Einheit starten" aria-label="Neue Einheit"
+            class="h-9 px-3 flex items-center gap-1 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-semibold transition">
+            ${ICON_PLUS}<span>Neu</span>
+          </button>
         </div>
       </div>
 
-      <div class="flex gap-1">
-        ${rangeBtns.map(r => `
-          <button onclick="setSportSummaryDays(${r.d})"
-            class="flex-1 py-1 rounded-xl text-[11px] font-medium transition border ${
-              sportSummaryDays === r.d
-                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
-                : 'bg-zinc-900 text-zinc-400 border-border hover:text-zinc-200'
-            }">${r.label}</button>
-        `).join('')}
+      ${templates.length > 0 ? `
+        <div class="space-y-1.5">
+          <div class="text-[11px] text-zinc-400">Schnellstart aus letzten Workouts (Vorlagen)</div>
+          <div class="flex gap-1.5 overflow-x-auto pb-1">
+            ${templates.map(t => `
+              <button onclick="startWorkoutFromTemplate('${t.workout.id}')"
+                class="shrink-0 text-left px-3 py-2 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border hover:border-emerald-500/40 transition min-w-[125px]">
+                <div class="text-xs font-semibold text-white truncate">🏋️ ${sportEsc(t.label)}</div>
+                <div class="text-[10px] text-zinc-400 mt-0.5">${t.workout.exercises.length} Übungen · ${workoutSetCount(t.workout)} Sätze</div>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+    </section>
+
+    <!-- Übersicht -->
+    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-semibold text-white">Trainingsübersicht</h2>
+          <p class="text-[11px] text-zinc-400">${sportSummaryDays > 0 ? `Letzte ${sportSummaryDays} Tage` : 'Gesamter Verlauf'}</p>
+        </div>
+        <div class="flex gap-1">
+          ${rangeBtns.map(r => `
+            <button onclick="setSportSummaryDays(${r.d})"
+              class="px-2 py-1 rounded-lg text-[11px] font-medium transition border ${
+                sportSummaryDays === r.d
+                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                  : 'bg-zinc-900 text-zinc-400 border-border hover:text-zinc-200'
+              }">${r.label}</button>
+          `).join('')}
+        </div>
       </div>
 
       <div class="grid grid-cols-4 gap-2">
@@ -523,6 +1044,7 @@ function renderSportTab() {
 
     ${renderSportProgress()}
 
+    <!-- Verlauf -->
     <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
       <div class="flex items-center justify-between gap-2">
         <h2 class="text-sm font-semibold text-white">Verlauf <span class="text-xs font-normal text-zinc-500">(${filtered.length})</span></h2>
@@ -533,7 +1055,7 @@ function renderSportTab() {
         ` : ''}
       </div>
       ${shown.length === 0
-        ? '<p class="text-xs text-zinc-500">Noch keine Einheiten erfasst. Tippe oben auf <b>CSV</b> für deinen RepCount-Import oder auf <b>+</b> für eine neue Einheit.</p>'
+        ? '<p class="text-xs text-zinc-500">Noch keine Einheiten erfasst. Tippe oben auf <b>CSV</b> für deinen RepCount-Import oder auf <b>+ Neu</b>.</p>'
         : shown.map(renderWorkoutCard).join('')}
       ${filtered.length > shown.length ? `
         <button onclick="loadMoreSportHistory()"
@@ -632,7 +1154,9 @@ function renderWorkoutCard(w) {
             <span class="text-zinc-500 font-normal ml-1">${formatDisplayDate(w.date)}</span></div>
           <div class="text-[11px] text-zinc-400 mt-0.5">${summary}</div>
         </div>
-        <div class="flex items-center gap-1.5 shrink-0">
+        <div class="flex items-center gap-1 shrink-0">
+          <button onclick="startWorkoutFromTemplate('${w.id}')" title="Als Vorlage für neues Training nutzen" aria-label="Als Vorlage nutzen"
+            class="w-8 h-8 shrink-0 flex items-center justify-center rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-400 transition">${ICON_COPY}</button>
           <button onclick="openWorkoutModal('${w.id}')" title="Bearbeiten" aria-label="Bearbeiten" class="${SPORT_ICON_BTN}">${ICON_EDIT}</button>
           <button onclick="deleteWorkout('${w.id}')" title="Löschen" aria-label="Löschen" class="${SPORT_DEL_BTN}">${ICON_TRASH}</button>
         </div>
@@ -695,7 +1219,7 @@ function renderSportProgress() {
     const key = sportProgressEx.toLowerCase();
     const cutoff = sportProgressRange === '90' ? getPastDateStr(89) : (sportProgressRange === '365' ? getPastDateStr(364) : '');
     const perDay = {};
-    let prKg = 0, pr1rm = 0, prReps = 0, prSec = 0, prSetVol = 0;
+    let prKg = 0, pr1rm = 0, prReps = 0, prSec = 0;
 
     getWorkouts().forEach(w => {
       (w.exercises || []).forEach(ex => {
@@ -708,7 +1232,6 @@ function renderSportProgress() {
           pr1rm = Math.max(pr1rm, epley1RM(kg, reps));
           prReps = Math.max(prReps, reps);
           prSec = Math.max(prSec, sec);
-          prSetVol = Math.max(prSetVol, kg * reps);
         });
         if (cutoff && w.date < cutoff) return;
         const d = perDay[w.date] || (perDay[w.date] = { maxKg: 0, rm: 0, maxReps: 0, maxSec: 0 });
@@ -822,26 +1345,75 @@ function renderSportProgress() {
     </section>`;
 }
 
-// ---------- EINHEIT ERFASSEN / BEARBEITEN ----------
+// ---------- FLEXIBLE EINHEIT ERFASSEN / VORLAGE / BEARBEITEN ----------
+function startWorkoutFromTemplate(sourceId) {
+  const src = getWorkouts().find(w => w.id === sourceId);
+  if (!src) return;
+  sportDraft = {
+    id: null,
+    date: state.selectedDate,
+    startedAt: Date.now(),
+    title: src.title || getActivityName(src.activityId) || '',
+    activityId: src.activityId || getDefaultStrengthActivityId(),
+    type: src.type || 'strength',
+    duration: '',
+    notes: '',
+    distance: src.distance || '',
+    hr: '',
+    elev: src.elev || '',
+    exercises: (src.exercises || []).map(ex => {
+      const c = canonicalizeExercise(ex.name, ex.category);
+      const timed = isExerciseTimed(ex);
+      return {
+        name: c.name,
+        category: c.category,
+        timed,
+        sets: (ex.sets || []).map(s => ({
+          kg: s.kg ?? '',
+          reps: s.reps ?? '',
+          sec: s.sec ?? '',
+          t: s.t || '',
+          done: false
+        }))
+      };
+    })
+  };
+  sportPickerState = null;
+  saveSportDraftLocal();
+  renderWorkoutModal();
+}
+
 function openWorkoutModal(id) {
+  sportPickerState = null;
   if (id) {
     const found = getWorkouts().find(w => w.id === id);
     if (!found) return;
     sportDraft = JSON.parse(JSON.stringify(found));
-    sportDraft.exercises = (sportDraft.exercises || []).map(ex => ({
-      name: ex.name || '',
-      category: normalizeMuscleGroup(ex.category),
-      sets: (ex.sets || []).map(s => ({ kg: s.kg ?? '', reps: s.reps ?? '', sec: s.sec ?? '', t: s.t || '' }))
-    }));
+    sportDraft.exercises = (sportDraft.exercises || []).map(ex => {
+      const c = canonicalizeExercise(ex.name, ex.category);
+      return {
+        name: c.name,
+        category: c.category,
+        timed: isExerciseTimed(ex),
+        sets: (ex.sets || []).map(s => ({
+          kg: s.kg ?? '',
+          reps: s.reps ?? '',
+          sec: s.sec ?? '',
+          t: s.t || '',
+          done: true
+        }))
+      };
+    });
     sportDraft.title = sportDraft.title || '';
   } else {
-    const first = (state.sportHabits || [])[0];
+    const defAct = getDefaultStrengthActivityId();
     sportDraft = {
       id: null,
       date: state.selectedDate,
+      startedAt: Date.now(),
       title: '',
-      activityId: first ? first.id : null,
-      type: first ? sportKindFromName(first.name) : 'strength',
+      activityId: defAct,
+      type: defAct ? sportKindFromName(getActivityName(defAct)) : 'strength',
       duration: '',
       notes: '',
       exercises: [],
@@ -849,12 +1421,21 @@ function openWorkoutModal(id) {
       hr: '',
       elev: ''
     };
+    saveSportDraftLocal();
   }
   renderWorkoutModal();
 }
 
+function closeWorkoutModalKeepDraft() {
+  saveSportDraftLocal();
+  sportPickerState = null;
+  closeModal();
+  render();
+}
+
 function sportDraftSet(field, val) {
   sportDraft[field] = val;
+  saveSportDraftLocal();
   if (field === 'distance' || field === 'duration') updateSportLivePace();
 }
 
@@ -868,123 +1449,348 @@ function updateSportLivePace() {
 function sportSetActivity(id) {
   sportDraft.activityId = id;
   sportDraft.type = sportKindFromName(getActivityName(id));
-  renderWorkoutModal();
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
 }
 
 function sportSetType(type) {
   sportDraft.type = type;
-  renderWorkoutModal();
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
 }
 
-function sportAddExercise() {
-  sportDraft.exercises.push({ name: '', category: 'Other', sets: [{ kg: '', reps: '', sec: '', t: '' }] });
-  renderWorkoutModal();
-  setTimeout(() => {
-    const els = document.querySelectorAll('.sport-ex-name');
-    if (els.length) els[els.length - 1].focus();
-  }, 30);
+function sportMoveExercise(i, delta) {
+  const j = i + delta;
+  if (j < 0 || j >= sportDraft.exercises.length) return;
+  const arr = sportDraft.exercises;
+  [arr[i], arr[j]] = [arr[j], arr[i]];
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
 }
 
 function sportRemoveExercise(i) {
   sportDraft.exercises.splice(i, 1);
-  renderWorkoutModal();
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
 }
 
-function sportSetExName(i, val) {
+function sportToggleExTimed(i) {
   const ex = sportDraft.exercises[i];
-  ex.name = val.trim();
-  const empty = ex.sets.every(s => s.kg === '' && s.reps === '' && !s.sec);
-  if (ex.name) {
-    const prev = lastSetsFor(ex.name, sportDraft.id);
-    if (prev) {
-      if (ex.category === 'Other' && prev.category) ex.category = prev.category;
-      if (empty) ex.sets = prev.sets;
-    }
-  }
-  renderWorkoutModal();
+  ex.timed = !ex.timed;
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
 }
 
 function sportSetExCategory(i, val) {
   sportDraft.exercises[i].category = normalizeMuscleGroup(val);
+  saveSportDraftLocal();
 }
 
 function sportCycleSetType(i, j) {
   const s = sportDraft.exercises[i].sets[j];
   s.t = s.t === '' ? 'w' : (s.t === 'w' ? 'd' : '');
-  renderWorkoutModal();
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
+}
+
+function sportToggleSetDone(i, j) {
+  const s = sportDraft.exercises[i].sets[j];
+  s.done = !s.done;
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
 }
 
 function sportAddSet(i) {
   const sets = sportDraft.exercises[i].sets;
   const last = sets[sets.length - 1];
-  sets.push(last ? { kg: last.kg, reps: last.reps, sec: last.sec || '', t: '' } : { kg: '', reps: '', sec: '', t: '' });
-  renderWorkoutModal();
+  sets.push(last
+    ? { kg: last.kg, reps: last.reps, sec: last.sec || '', t: '', done: false }
+    : { kg: '', reps: '', sec: '', t: '', done: false });
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
 }
 
 function sportRemoveSet(i, j) {
   sportDraft.exercises[i].sets.splice(j, 1);
-  renderWorkoutModal();
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
 }
 
 function sportSetField(i, j, field, val) {
   sportDraft.exercises[i].sets[j][field] = val === '' ? '' : Number(val);
+  saveSportDraftLocal();
 }
 
-function renderWorkoutModal() {
+// ---------- ÜBUNGS-PICKER (HINZUFÜGEN & AUSTAUSCHEN) ----------
+function openSportExercisePicker(targetIndex) {
+  const existingGroup = typeof targetIndex === 'number' && sportDraft.exercises[targetIndex]
+    ? sportDraft.exercises[targetIndex].category
+    : 'ALL';
+  sportPickerState = {
+    targetIndex,
+    query: '',
+    group: existingGroup && existingGroup !== 'Other' ? existingGroup : 'ALL'
+  };
+  renderWorkoutModal(false);
+  setTimeout(() => {
+    const inp = document.getElementById('sport-picker-search');
+    if (inp) inp.focus();
+  }, 40);
+}
+
+function closeSportExercisePicker() {
+  sportPickerState = null;
+  renderWorkoutModal(true);
+}
+
+function setSportPickerGroup(grp) {
+  if (!sportPickerState) return;
+  sportPickerState.group = grp;
+  renderWorkoutModal(false);
+}
+
+function updateSportPickerQuery(val) {
+  if (!sportPickerState) return;
+  sportPickerState.query = val;
+  const listEl = document.getElementById('sport-picker-list');
+  if (listEl) listEl.innerHTML = renderSportPickerListHtml();
+}
+
+function pickSportExercise(name, category, timedHint) {
+  if (!sportDraft || !sportPickerState) return;
+  const c = canonicalizeExercise(name, category);
+  if (!c.name) return;
+  const prev = lastSetsFor(c.name, sportDraft.id);
+  const resolvedCat = c.category !== 'Other' ? c.category : (prev ? prev.category : 'Other');
+  const resolvedTimed = prev ? prev.timed : Boolean(timedHint);
+  const nextSets = prev
+    ? prev.sets
+    : [{ kg: '', reps: resolvedTimed ? '' : 10, sec: resolvedTimed ? 30 : '', t: '', done: false }];
+
+  if (sportPickerState.targetIndex === 'add') {
+    sportDraft.exercises.push({
+      name: c.name,
+      category: resolvedCat,
+      timed: resolvedTimed,
+      sets: nextSets
+    });
+  } else if (typeof sportPickerState.targetIndex === 'number') {
+    const idx = sportPickerState.targetIndex;
+    sportDraft.exercises[idx] = {
+      name: c.name,
+      category: resolvedCat,
+      timed: resolvedTimed,
+      sets: nextSets
+    };
+  }
+  sportPickerState = null;
+  saveSportDraftLocal();
+  renderWorkoutModal(true);
+}
+
+function pickCustomSportExercise() {
+  if (!sportPickerState) return;
+  const raw = String(sportPickerState.query || '').trim();
+  if (!raw) return;
+  const grp = sportPickerState.group !== 'ALL' ? sportPickerState.group : 'Other';
+  pickSportExercise(raw, grp, false);
+}
+
+function renderSportPickerListHtml() {
+  const st = sportPickerState;
+  const q = String(st.query || '').trim().toLowerCase();
+  const all = getAllCatalogExercises();
+  const filtered = all.filter(item => {
+    if (st.group !== 'ALL' && item.category !== st.group) return false;
+    if (q && !item.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  const exactMatch = q && all.some(item => item.name.toLowerCase() === q);
+  const customBtn = (q && !exactMatch) ? `
+    <button onclick="pickCustomSportExercise()"
+      class="w-full text-left px-3 py-2.5 rounded-2xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center justify-between transition">
+      <span>+ Neue Übung „${sportEsc(st.query.trim())}“ anlegen</span>
+      <span class="text-[10px] opacity-80">${st.group !== 'ALL' ? muscleGroupInfo(st.group).label : 'Sonstige'}</span>
+    </button>
+  ` : '';
+
+  const rows = filtered.slice(0, 60).map(item => {
+    const info = muscleGroupInfo(item.category);
+    const safeName = item.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `
+      <button onclick="pickSportExercise('${safeName}', '${item.category}', ${item.timed ? 'true' : 'false'})"
+        class="w-full text-left px-3 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-border flex items-center justify-between gap-2 transition">
+        <div class="min-w-0 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${info.color}"></span>
+          <span class="text-xs font-medium text-white truncate">${sportEsc(item.name)}</span>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0 text-[10px] text-zinc-400">
+          ${item.count > 0 ? `<span class="px-1.5 py-0.5 rounded-md bg-zinc-950 text-zinc-300">${item.count} S.</span>` : ''}
+          <span>${info.label}</span>
+        </div>
+      </button>
+    `;
+  }).join('');
+
+  return `${customBtn}${rows || '<p class="text-xs text-zinc-500 text-center py-4">Keine Übung gefunden – gib einfach einen eigenen Namen ein.</p>'}`;
+}
+
+function renderWorkoutModal(preserveScroll = false) {
+  const modalBox = document.getElementById('modal-box');
+  const prevScroll = preserveScroll && modalBox ? modalBox.scrollTop : 0;
+
+  if (sportPickerState) {
+    const isSwap = typeof sportPickerState.targetIndex === 'number';
+    openModal(`
+      <div class="space-y-3.5">
+        <div class="flex items-center justify-between gap-2">
+          <div>
+            <h3 class="text-base font-semibold text-white">${isSwap ? 'Übung austauschen' : 'Übung hinzufügen'}</h3>
+            <p class="text-[11px] text-zinc-400">Aus deinem konsolidierten Katalog wählen oder neu tippen</p>
+          </div>
+          <button onclick="closeSportExercisePicker()" class="px-2.5 py-1 rounded-xl bg-zinc-900 border border-border text-xs text-zinc-300 hover:text-white">← Zurück</button>
+        </div>
+
+        <input id="sport-picker-search" type="search" value="${sportEsc(sportPickerState.query)}"
+          placeholder="Übung suchen oder neu eingeben…"
+          oninput="updateSportPickerQuery(this.value)"
+          class="${SPORT_INPUT}" />
+
+        <div class="flex gap-1 overflow-x-auto pb-0.5">
+          <button onclick="setSportPickerGroup('ALL')"
+            class="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium border transition ${
+              sportPickerState.group === 'ALL' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-zinc-900 text-zinc-400 border-border'
+            }">Alle</button>
+          ${MUSCLE_GROUPS.map(g => `
+            <button onclick="setSportPickerGroup('${g.id}')"
+              class="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium border transition ${
+                sportPickerState.group === g.id ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-zinc-900 text-zinc-400 border-border'
+              }">${g.label}</button>
+          `).join('')}
+        </div>
+
+        <div id="sport-picker-list" class="space-y-1.5 max-h-[52vh] overflow-y-auto pr-0.5">
+          ${renderSportPickerListHtml()}
+        </div>
+      </div>
+    `);
+    return;
+  }
+
   const d = sportDraft;
   const typeBtn = (t, icon, label) => `
     <button onclick="sportSetType('${t}')" title="${label}" aria-label="${label}"
       class="flex-1 py-2 rounded-xl text-base transition ${d.type === t ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40' : 'bg-zinc-900 border border-border text-zinc-400 hover:text-zinc-200'}">${icon}</button>`;
 
+  const totalSets = (d.exercises || []).reduce((a, e) => a + (e.sets || []).length, 0);
+  const doneSets = (d.exercises || []).reduce((a, e) => a + (e.sets || []).filter(s => s.done).length, 0);
+
   let body = '';
   if (d.type === 'strength') {
     body = `
-      <datalist id="sport-ex-list">${allExerciseNames().map(n => `<option value="${sportEsc(n)}"></option>`).join('')}</datalist>
+      <div class="flex items-center justify-between gap-2 bg-zinc-900/70 border border-border rounded-2xl px-3 py-2">
+        <div class="flex items-center gap-2">
+          <span id="sport-rest-display" class="text-[11px] font-medium text-zinc-400 tabular-nums">Pause</span>
+          ${totalSets > 0 ? `<span class="text-[11px] text-zinc-500">· ${doneSets}/${totalSets} Sätze ✓</span>` : ''}
+        </div>
+        <div class="flex items-center gap-1">
+          <button type="button" onclick="startSportRestTimer(60)" class="px-2 py-0.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[10px] text-zinc-300">60s</button>
+          <button type="button" onclick="startSportRestTimer(90)" class="px-2 py-0.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[10px] text-zinc-300">90s</button>
+          <button type="button" onclick="startSportRestTimer(120)" class="px-2 py-0.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[10px] text-zinc-300">2m</button>
+          ${sportRestEndMs ? '<button type="button" onclick="stopSportRestTimer()" class="px-1.5 py-0.5 rounded-lg bg-rose-500/15 text-rose-300 text-[10px]">✕</button>' : ''}
+        </div>
+      </div>
+
       <div>
-        <label class="text-[11px] text-zinc-400">Trainingsname / Studio (optional)</label>
+        <label class="text-[11px] text-zinc-400">Trainingsname / Vorlage (optional)</label>
         <input type="text" value="${sportEsc(d.title)}" placeholder="z. B. Hygia, Calisthenics, Push…" oninput="sportDraftSet('title', this.value)" class="${SPORT_INPUT} mt-1" />
       </div>
+
       <div class="space-y-3">
         ${d.exercises.map((ex, i) => {
           const prev = ex.name ? lastSetsFor(ex.name, d.id) : null;
+          const catInfo = muscleGroupInfo(ex.category);
+          const timed = Boolean(ex.timed);
           return `
           <div class="bg-zinc-900/80 border border-border rounded-2xl p-2.5 space-y-2">
-            <div class="flex items-center gap-1.5">
-              <input type="text" list="sport-ex-list" value="${sportEsc(ex.name)}" placeholder="Übung wählen oder tippen…"
-                onchange="sportSetExName(${i}, this.value)" class="sport-ex-name ${SPORT_INPUT} font-medium flex-1" />
-              <select onchange="sportSetExCategory(${i}, this.value)" class="px-2 py-2 rounded-xl bg-zinc-950 border border-border text-[11px] text-zinc-300 focus:outline-none">
+            <div class="flex items-center justify-between gap-1.5">
+              <div class="min-w-0 flex items-center gap-1.5 flex-1">
+                <span class="w-2 h-2 rounded-full shrink-0" style="background:${catInfo.color}"></span>
+                <span class="text-xs font-semibold text-white truncate">${sportEsc(ex.name || 'Übung wählen')}</span>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <button type="button" onclick="sportMoveExercise(${i}, -1)" ${i === 0 ? 'disabled' : ''} title="Nach oben"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-950 border border-border text-[11px] ${i === 0 ? 'text-zinc-700' : 'text-zinc-300 hover:text-white'}">↑</button>
+                <button type="button" onclick="sportMoveExercise(${i}, 1)" ${i === d.exercises.length - 1 ? 'disabled' : ''} title="Nach unten"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-950 border border-border text-[11px] ${i === d.exercises.length - 1 ? 'text-zinc-700' : 'text-zinc-300 hover:text-white'}">↓</button>
+                <button type="button" onclick="openSportExercisePicker(${i})" title="Übung austauschen" aria-label="Übung austauschen"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-sky-400 transition">${ICON_SWAP}</button>
+                <button type="button" onclick="sportRemoveExercise(${i})" title="Übung entfernen" aria-label="Übung entfernen"
+                  class="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-950 hover:bg-rose-500/15 border border-border text-zinc-400 hover:text-rose-400 transition">${ICON_TRASH}</button>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between gap-2">
+              <select onchange="sportSetExCategory(${i}, this.value)" class="px-2 py-1 rounded-lg bg-zinc-950 border border-border text-[10px] text-zinc-300 focus:outline-none">
                 ${MUSCLE_GROUPS.map(g => `<option value="${g.id}" ${g.id === ex.category ? 'selected' : ''}>${g.label}</option>`).join('')}
               </select>
-              <button onclick="sportRemoveExercise(${i})" title="Übung entfernen" aria-label="Übung entfernen" class="${SPORT_DEL_BTN}">${ICON_TRASH}</button>
+              <button type="button" onclick="sportToggleExTimed(${i})"
+                class="px-2 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-border text-[10px] text-zinc-300 transition">
+                Modus: ${timed ? '⏱ Sek.' : '🔢 Wdh.'}
+              </button>
             </div>
-            ${prev ? `<div class="text-[10px] text-zinc-500 px-0.5">Vorher: ${prev.sets.map(fmtSetCompact).join(' · ')}</div>` : ''}
-            <div class="grid grid-cols-[2rem_1fr_1fr_2rem] gap-1.5 text-[10px] text-zinc-500 px-0.5">
-              <span class="text-center">Satz</span><span>Gewicht (kg)</span><span>Wdh.</span><span></span>
+
+            ${prev ? `<div class="text-[10px] text-zinc-500 px-0.5 truncate">Vorher: ${prev.sets.map(fmtSetCompact).join(' · ')}</div>` : ''}
+
+            <div class="grid grid-cols-[1.85rem_1fr_1fr_2rem_1.75rem] gap-1 text-[10px] text-zinc-500 px-0.5">
+              <span class="text-center">Satz</span>
+              <span>Gewicht (kg)</span>
+              <span>${timed ? 'Zeit (s)' : 'Wdh.'}</span>
+              <span class="text-center">✓</span>
+              <span></span>
             </div>
+
             ${ex.sets.map((s, j) => {
               const badgeLbl = s.t === 'w' ? 'W' : (s.t === 'd' ? 'D' : String(j + 1));
               const badgeCls = s.t === 'w'
                 ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
                 : (s.t === 'd' ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-zinc-950 text-zinc-400 border-border');
               return `
-              <div class="grid grid-cols-[2rem_1fr_1fr_2rem] gap-1.5 items-center">
+              <div class="grid grid-cols-[1.85rem_1fr_1fr_2rem_1.75rem] gap-1 items-center ${s.done ? 'opacity-90' : ''}">
                 <button type="button" onclick="sportCycleSetType(${i}, ${j})" title="Satz-Typ wechseln (Normal / Warm-up / Dropset)"
-                  class="h-8 rounded-xl border text-[11px] font-semibold transition ${badgeCls}">${badgeLbl}</button>
-                <input type="number" inputmode="decimal" step="0.5" min="0" value="${s.kg}" placeholder="0 = BW" oninput="sportSetField(${i}, ${j}, 'kg', this.value)" class="${SPORT_INPUT}" />
-                <input type="number" inputmode="numeric" step="1" min="0" value="${s.reps}" oninput="sportSetField(${i}, ${j}, 'reps', this.value)" class="${SPORT_INPUT}" />
-                <button onclick="sportRemoveSet(${i}, ${j})" title="Satz entfernen" aria-label="Satz entfernen"
-                  class="w-8 h-8 flex items-center justify-center rounded-xl text-zinc-500 hover:text-rose-400 transition">${ICON_X}</button>
+                  class="h-8 rounded-lg border text-[11px] font-semibold transition ${badgeCls}">${badgeLbl}</button>
+                <input type="number" inputmode="decimal" step="0.5" min="0" value="${s.kg}" placeholder="0 = BW"
+                  oninput="sportSetField(${i}, ${j}, 'kg', this.value)" class="${SPORT_INPUT}" />
+                ${timed
+                  ? `<input type="number" inputmode="numeric" step="1" min="0" value="${s.sec}" placeholder="Sek."
+                      oninput="sportSetField(${i}, ${j}, 'sec', this.value)" class="${SPORT_INPUT}" />`
+                  : `<input type="number" inputmode="numeric" step="1" min="0" value="${s.reps}" placeholder="Wdh."
+                      oninput="sportSetField(${i}, ${j}, 'reps', this.value)" class="${SPORT_INPUT}" />`}
+                <button type="button" onclick="sportToggleSetDone(${i}, ${j})" title="Satz abhaken"
+                  class="h-8 rounded-lg border flex items-center justify-center transition ${
+                    s.done
+                      ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
+                      : 'bg-zinc-950 text-zinc-500 border-border hover:text-zinc-200'
+                  }">${ICON_CHECK}</button>
+                <button type="button" onclick="sportRemoveSet(${i}, ${j})" title="Satz entfernen" aria-label="Satz entfernen"
+                  class="h-8 flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 transition">${ICON_X}</button>
               </div>`;
             }).join('')}
-            <button onclick="sportAddSet(${i})" title="Satz hinzufügen (kopiert letzten Satz)" aria-label="Satz hinzufügen"
-              class="w-full py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-dashed border-border text-zinc-400 hover:text-emerald-400 flex items-center justify-center transition">${ICON_PLUS}</button>
+
+            <button type="button" onclick="sportAddSet(${i})" title="Satz hinzufügen (kopiert letzten Satz)" aria-label="Satz hinzufügen"
+              class="w-full py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-dashed border-border text-zinc-400 hover:text-emerald-400 flex items-center justify-center gap-1 text-[11px] transition">${ICON_PLUS} Satz</button>
           </div>`;
         }).join('')}
-        <button onclick="sportAddExercise()" title="Übung hinzufügen" aria-label="Übung hinzufügen"
-          class="w-full py-2.5 rounded-2xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-400 flex items-center justify-center gap-1.5 text-xs font-medium transition">${ICON_PLUS} Übung hinzufügen</button>
+
+        <button type="button" onclick="openSportExercisePicker('add')"
+          class="w-full py-2.5 rounded-2xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 flex items-center justify-center gap-1.5 text-xs font-semibold transition">
+          ${ICON_PLUS} Übung hinzufügen
+        </button>
       </div>
+
       <div>
-        <label class="text-[11px] text-zinc-400">Dauer (min)</label>
+        <label class="text-[11px] text-zinc-400">Dauer (min, leer = automatisch aus Startzeit)</label>
         <input type="number" inputmode="numeric" min="0" value="${d.duration}" oninput="sportDraftSet('duration', this.value === '' ? '' : Number(this.value))" class="${SPORT_INPUT} mt-1" />
       </div>`;
   } else if (d.type === 'cardio') {
@@ -1022,8 +1828,8 @@ function renderWorkoutModal() {
   openModal(`
     <div class="space-y-4">
       <div class="flex items-center justify-between">
-        <h3 class="text-base font-semibold text-white">${d.id ? 'Einheit bearbeiten' : 'Neue Einheit'}</h3>
-        <button onclick="closeModal()" class="text-zinc-400 hover:text-white">✕</button>
+        <h3 class="text-base font-semibold text-white">${d.id ? 'Einheit bearbeiten' : 'Training erfassen'}</h3>
+        <button onclick="${d.id ? 'closeModal()' : 'closeWorkoutModalKeepDraft()'}" title="${d.id ? 'Schließen' : 'Zwischenspeichern & schließen'}" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
       </div>
       <div class="grid grid-cols-2 gap-2.5">
         <div>
@@ -1046,14 +1852,16 @@ function renderWorkoutModal() {
         <input type="text" value="${sportEsc(d.notes)}" oninput="sportDraftSet('notes', this.value)" class="${SPORT_INPUT} mt-1" />
       </div>
       <div class="flex gap-2">
-        <button onclick="closeModal()" title="Abbrechen" aria-label="Abbrechen"
-          class="w-11 h-11 flex items-center justify-center rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition">${ICON_X}</button>
-        <button onclick="saveWorkout()" title="Speichern" aria-label="Speichern"
-          class="flex-1 h-11 flex items-center justify-center rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 transition">${ICON_CHECK}</button>
+        <button onclick="${d.id ? 'closeModal()' : 'closeWorkoutModalKeepDraft()'}" title="${d.id ? 'Abbrechen' : 'Später fortsetzen'}"
+          class="px-3.5 h-11 flex items-center justify-center rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-300 text-xs font-medium transition">${d.id ? 'Abbrechen' : 'Parken'}</button>
+        <button onclick="saveWorkout()" title="Training abschließen & speichern" aria-label="Speichern"
+          class="flex-1 h-11 flex items-center justify-center gap-1.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">${ICON_CHECK} Speichern</button>
       </div>
     </div>
   `);
   if (d.type === 'cardio') updateSportLivePace();
+  if (d.type === 'strength') updateSportRestTimerDom();
+  if (preserveScroll && modalBox) modalBox.scrollTop = prevScroll;
 }
 
 function saveWorkout() {
@@ -1061,12 +1869,18 @@ function saveWorkout() {
   if (!d.date) return alert('Bitte ein Datum wählen.');
   if (!d.activityId) return alert('Bitte zuerst unter Habits eine Aktivität anlegen.');
 
+  let dur = Number(d.duration) || 0;
+  if (!dur && d.startedAt) {
+    const mins = Math.round((Date.now() - d.startedAt) / 60000);
+    if (mins >= 2 && mins <= 300) dur = mins;
+  }
+
   const w = {
     id: d.id || 'wo_' + Date.now(),
     date: d.date,
     activityId: d.activityId,
     type: d.type,
-    duration: Number(d.duration) || 0,
+    duration: dur,
     notes: (d.notes || '').trim()
   };
   if (d.source) w.source = d.source;
@@ -1074,20 +1888,24 @@ function saveWorkout() {
 
   if (d.type === 'strength') {
     w.exercises = d.exercises
-      .map(ex => ({
-        name: String(ex.name || '').trim(),
-        category: normalizeMuscleGroup(ex.category),
-        sets: ex.sets
-          .filter(s => Number(s.reps) > 0 || Number(s.sec) > 0)
-          .map(s => {
-            const out = { kg: Number(s.kg) || 0, reps: Number(s.reps) || 0 };
-            if (Number(s.sec) > 0) out.sec = Number(s.sec);
-            if (s.t) out.t = s.t;
-            return out;
-          })
-      }))
+      .map(ex => {
+        const c = canonicalizeExercise(ex.name, ex.category);
+        return {
+          name: c.name,
+          category: c.category,
+          sets: (ex.sets || [])
+            .filter(s => Number(s.reps) > 0 || Number(s.sec) > 0)
+            .map(s => {
+              const out = { kg: Number(s.kg) || 0, reps: ex.timed ? 0 : (Number(s.reps) || 0) };
+              if (ex.timed && Number(s.sec) > 0) out.sec = Number(s.sec);
+              else if (!ex.timed && Number(s.sec) > 0) out.sec = Number(s.sec);
+              if (s.t) out.t = s.t;
+              return out;
+            })
+        };
+      })
       .filter(ex => ex.name && ex.sets.length > 0);
-    if (w.exercises.length === 0) return alert('Bitte mindestens eine Übung mit Name und einem Satz (Wdh. > 0) erfassen.');
+    if (w.exercises.length === 0) return alert('Bitte mindestens eine Übung mit einem gültigen Satz (Wdh. oder Sek. > 0) erfassen.');
   } else if (d.type === 'cardio') {
     w.distance = Number(d.distance) || 0;
     w.hr = Number(d.hr) || 0;
@@ -1113,9 +1931,12 @@ function saveWorkout() {
   if (!Array.isArray(log.sportDone)) log.sportDone = [];
   if (!log.sportDone.includes(w.activityId)) log.sportDone.push(w.activityId);
 
+  stopSportRestTimer();
+  clearSportDraftLocal();
   saveState();
   closeModal();
   sportDraft = null;
+  sportPickerState = null;
   render();
 }
 
