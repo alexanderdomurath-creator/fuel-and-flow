@@ -1372,6 +1372,32 @@ function renderWorkoutCard(w) {
 // ---------- FORTSCHRITT ----------
 let sportChartPointsMeta = [];
 
+const SPORT_CHART_LINES = [
+  { key: 'maxKg',  label: 'Max kg',  color: '#38bdf8' },
+  { key: 'volume', label: 'Volumen', color: '#f59e0b' },
+  { key: 'rm',     label: '1RM',     color: '#34d399' }
+];
+
+function getSportChartMetrics() {
+  if (!Array.isArray(state.sportChartMetrics) || state.sportChartMetrics.length === 0) {
+    state.sportChartMetrics = ['maxKg'];
+  }
+  return state.sportChartMetrics;
+}
+
+function toggleSportChartMetric(key) {
+  const cur = new Set(getSportChartMetrics());
+  if (cur.has(key)) {
+    if (cur.size === 1) return; // Mindestens 1 Linie bleibt sichtbar
+    cur.delete(key);
+  } else {
+    cur.add(key);
+  }
+  state.sportChartMetrics = [...cur];
+  saveState();
+  render();
+}
+
 function showSportChartPoint(idx) {
   const meta = sportChartPointsMeta[idx];
   if (!meta) return;
@@ -1393,52 +1419,77 @@ function showSportChartPoint(idx) {
   });
 }
 
-function sportLineChart(series, labels, tooltips) {
-  const W = 320, H = 140, pl = 32, pr = 8, pt = 10, pb = 18;
-  const ys = series.flatMap(s => s.points.map(p => p.y));
-  if (ys.length === 0) return '';
-  let min = Math.min(...ys), max = Math.max(...ys);
-  if (min === max) { min -= 1; max += 1; }
-  const pad = (max - min) * 0.1; min -= pad; max += pad;
+function sportLineChart(series, labels, tooltips, independentScales = false) {
+  const hasRightAxis = independentScales && series.length > 1;
+  const W = 320, H = 140, pl = 34, pr = hasRightAxis ? 34 : 8, pt = 10, pb = 18;
+  const allYs = series.flatMap(s => s.points.map(p => p.y));
+  if (allYs.length === 0) return '';
+
+  const makeScale = (ys) => {
+    let min = Math.min(...ys), max = Math.max(...ys);
+    if (min === max) { min = Math.max(0, min - 1); max += 1; }
+    const pad = (max - min) * 0.1;
+    const lo = Math.max(0, min - pad);
+    const hi = max + pad;
+    return {
+      min, max, lo, hi,
+      Y: v => pt + (1 - (v - lo) / Math.max(0.001, hi - lo)) * (H - pt - pb)
+    };
+  };
+
+  const sharedScale = makeScale(allYs);
+  const scales = series.map(s => independentScales ? makeScale(s.points.map(p => p.y)) : sharedScale);
+
   const n = Math.max(1, labels.length - 1);
   const X = i => pl + (labels.length === 1 ? (W - pl - pr) / 2 : (i / n) * (W - pl - pr));
-  const Y = v => pt + (1 - (v - min) / (max - min)) * (H - pt - pb);
   const showDots = labels.length <= 45;
 
   sportChartPointsMeta = labels.map((lbl, i) => ({
     x: X(i),
     html: tooltips[i] || '',
-    dots: series.map(s => ({ y: Y(s.points[i]?.y ?? min), color: s.color }))
+    dots: series.map((s, sIdx) => ({ y: scales[sIdx].Y(s.points[i]?.y ?? scales[sIdx].lo), color: s.color }))
   }));
 
   const lastIdx = labels.length - 1;
   const lastMeta = sportChartPointsMeta[lastIdx];
   const stepW = labels.length > 1 ? (W - pl - pr) / (labels.length - 1) : (W - pl - pr);
 
+  const leftScale = scales[0];
+  const fmtAxis = v => v >= 1000 ? `${fmtNum(v / 1000, 1)}k` : String(Math.round(v));
+
   let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full h-36 select-none overflow-visible">`;
-  [min + pad, (min + max) / 2, max - pad].forEach(v => {
-    svg += `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="#24242b" stroke-width="1"/>`;
-    svg += `<text x="${pl - 4}" y="${Y(v) + 3}" text-anchor="end" font-size="9" fill="#71717a">${Math.round(v)}</text>`;
+  [leftScale.min, (leftScale.min + leftScale.max) / 2, leftScale.max].forEach(v => {
+    const y = leftScale.Y(v);
+    svg += `<line x1="${pl}" x2="${W - pr}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#24242b" stroke-width="1"/>`;
+    svg += `<text x="${pl - 4}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="${independentScales ? series[0].color : '#71717a'}">${fmtAxis(v)}</text>`;
   });
 
-  // Vertikale Hover-/Auswahl-Linie
+  if (hasRightAxis) {
+    const volIdx = series.findIndex(s => s.key === 'volume');
+    const rIdx = volIdx >= 0 ? volIdx : 1;
+    const rScale = scales[rIdx];
+    [rScale.min, rScale.max].forEach(v => {
+      const y = rScale.Y(v);
+      svg += `<text x="${W - pr + 4}" y="${(y + 3).toFixed(1)}" text-anchor="start" font-size="9" fill="${series[rIdx].color}">${fmtAxis(v)}</text>`;
+    });
+  }
+
   svg += `<line id="sport-chart-cursor" x1="${lastMeta.x.toFixed(1)}" x2="${lastMeta.x.toFixed(1)}" y1="${pt}" y2="${H - pb}" stroke="#52525b" stroke-dasharray="3 3" stroke-width="1" opacity="0.8"/>`;
 
-  series.forEach(s => {
-    const pts = s.points.map(p => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ');
+  series.forEach((s, sIdx) => {
+    const sc = scales[sIdx];
+    const pts = s.points.map(p => `${X(p.x).toFixed(1)},${sc.Y(p.y).toFixed(1)}`).join(' ');
     svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
     if (showDots) {
-      s.points.forEach(p => { svg += `<circle cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="2.2" fill="${s.color}"/>`; });
+      s.points.forEach(p => { svg += `<circle cx="${X(p.x).toFixed(1)}" cy="${sc.Y(p.y).toFixed(1)}" r="2.2" fill="${s.color}"/>`; });
     }
   });
 
-  // Aktiver Punkt-Marker pro Serie
   series.forEach((s, sIdx) => {
     const ly = lastMeta.dots[sIdx]?.y ?? pt;
     svg += `<circle id="sport-chart-dot-${sIdx}" cx="${lastMeta.x.toFixed(1)}" cy="${ly.toFixed(1)}" r="4" fill="${s.color}" stroke="#09090b" stroke-width="1.5" opacity="1"/>`;
   });
 
-  // Unsichtbare Hit-Zonen für flüssiges Mouseover (Desktop) & Tippen (Handy)
   labels.forEach((_, i) => {
     const cx = X(i);
     const rx = Math.max(pl, cx - stepW / 2);
@@ -1482,11 +1533,12 @@ function renderSportProgress() {
     const key = sportProgressEx.toLowerCase();
     const cutoff = sportProgressRange === '90' ? getPastDateStr(89) : (sportProgressRange === '365' ? getPastDateStr(364) : '');
     const perDay = {};
-    let prKg = 0, pr1rm = 0, prReps = 0, prSec = 0;
+    let prKg = 0, pr1rm = 0, prReps = 0, prSec = 0, prVol = 0;
 
     getWorkouts().forEach(w => {
       (w.exercises || []).forEach(ex => {
         if (String(ex.name).trim().toLowerCase() !== key) return;
+        let dayVol = 0;
         (ex.sets || []).forEach(s => {
           const kg = Number(s.kg) || 0;
           const reps = Number(s.reps) || 0;
@@ -1495,15 +1547,18 @@ function renderSportProgress() {
           pr1rm = Math.max(pr1rm, epley1RM(kg, reps));
           prReps = Math.max(prReps, reps);
           prSec = Math.max(prSec, sec);
+          dayVol += kg * reps;
         });
+        prVol = Math.max(prVol, dayVol);
         if (cutoff && w.date < cutoff) return;
-        const d = perDay[w.date] || (perDay[w.date] = { maxKg: 0, rm: 0, maxReps: 0, maxSec: 0, sets: [] });
+        const d = perDay[w.date] || (perDay[w.date] = { maxKg: 0, rm: 0, volume: 0, maxReps: 0, maxSec: 0, sets: [] });
         (ex.sets || []).forEach(s => {
           const kg = Number(s.kg) || 0;
           const reps = Number(s.reps) || 0;
           const sec = Number(s.sec) || 0;
           d.maxKg = Math.max(d.maxKg, kg);
           d.rm = Math.max(d.rm, epley1RM(kg, reps));
+          d.volume += kg * reps;
           d.maxReps = Math.max(d.maxReps, reps);
           d.maxSec = Math.max(d.maxSec, sec);
           d.sets.push(s);
@@ -1514,9 +1569,12 @@ function renderSportProgress() {
     const dates = Object.keys(perDay).sort();
     const isTimed = prSec > 0 && prReps === 0;
     const isBodyweightOnly = !isTimed && prKg === 0;
+    const activeChartLines = getSportChartMetrics();
 
     let series = [];
-    let legendLine = '';
+    let controlsLine = '';
+    let useIndependent = false;
+
     const tooltips = dates.map(dt => {
       const p = perDay[dt];
       const dLbl = dt.split('-').reverse().join('.');
@@ -1527,28 +1585,52 @@ function renderSportProgress() {
       if (isBodyweightOnly) {
         return `<span class="font-semibold text-white">${dLbl}:</span> <span class="text-emerald-300 font-semibold">${p.maxReps} Wdh.</span> <span class="text-zinc-500">(${setsTxt})</span>`;
       }
-      return `<span class="font-semibold text-white">${dLbl}:</span> <span class="text-sky-300 font-semibold">${fmtNum(p.maxKg, 1)} kg</span> · <span class="text-emerald-300">1RM ${fmtNum(p.rm, 1)} kg</span> <span class="text-zinc-500">(${setsTxt})</span>`;
+      const parts = [
+        `<span class="font-semibold text-white">${dLbl}:</span>`,
+        `<span class="text-sky-300 font-semibold">${fmtNum(p.maxKg, 1)} kg</span>`,
+        `<span class="text-amber-300">Vol. ${Math.round(p.volume)} kg</span>`
+      ];
+      if (activeChartLines.includes('rm')) {
+        parts.push(`<span class="text-emerald-300">1RM ${fmtNum(p.rm, 1)} kg</span>`);
+      }
+      parts.push(`<span class="text-zinc-500">(${setsTxt})</span>`);
+      return parts.join(' ');
     });
 
     if (isTimed) {
-      series = [{ color: '#14b8a6', points: dates.map((d, i) => ({ x: i, y: perDay[d].maxSec })) }];
-      legendLine = `
+      series = [{ key: 'sec', color: '#14b8a6', points: dates.map((d, i) => ({ x: i, y: perDay[d].maxSec })) }];
+      controlsLine = `
         <span class="flex items-center gap-1.5 text-teal-300"><span class="w-2 h-2 rounded-full bg-teal-400"></span>Max. Dauer (s)</span>
         <span class="ml-auto text-amber-300">🏆 PR ${prSec} s</span>`;
     } else if (isBodyweightOnly) {
-      series = [{ color: '#34d399', points: dates.map((d, i) => ({ x: i, y: perDay[d].maxReps })) }];
-      legendLine = `
+      series = [{ key: 'reps', color: '#34d399', points: dates.map((d, i) => ({ x: i, y: perDay[d].maxReps })) }];
+      controlsLine = `
         <span class="flex items-center gap-1.5 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>Max. Wdh.</span>
         <span class="ml-auto text-amber-300">🏆 PR ${prReps} Wdh.</span>`;
     } else {
-      series = [
-        { color: '#34d399', points: dates.map((d, i) => ({ x: i, y: perDay[d].rm })) },
-        { color: '#38bdf8', points: dates.map((d, i) => ({ x: i, y: perDay[d].maxKg })) }
-      ];
-      legendLine = `
-        <span class="flex items-center gap-1.5 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>1RM</span>
-        <span class="flex items-center gap-1.5 text-sky-300"><span class="w-2 h-2 rounded-full bg-sky-400"></span>Max kg</span>
-        <span class="ml-auto text-amber-300">🏆 ${fmtNum(prKg, 1)} kg · 1RM ${fmtNum(pr1rm, 1)}</span>`;
+      series = SPORT_CHART_LINES
+        .filter(l => activeChartLines.includes(l.key))
+        .map(l => ({
+          key: l.key,
+          color: l.color,
+          points: dates.map((d, i) => ({ x: i, y: perDay[d][l.key] }))
+        }));
+      useIndependent = activeChartLines.includes('volume') && activeChartLines.length > 1;
+      controlsLine = `
+        <div class="flex flex-wrap items-center gap-1.5">
+          ${SPORT_CHART_LINES.map(l => {
+            const isOn = activeChartLines.includes(l.key);
+            return `
+              <button type="button" onclick="toggleSportChartMetric('${l.key}')"
+                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border transition ${
+                  isOn ? 'bg-zinc-900 text-white border-zinc-600' : 'bg-zinc-950/60 text-zinc-500 border-zinc-900 hover:text-zinc-300'
+                }">
+                <span class="w-2 h-2 rounded-full" style="background:${isOn ? l.color : '#52525b'}"></span>
+                <span>${l.label}</span>
+              </button>`;
+          }).join('')}
+        </div>
+        <span class="ml-auto text-[11px] text-amber-300 shrink-0">🏆 ${fmtNum(prKg, 1)} kg · Vol. ${Math.round(prVol)} kg</span>`;
     }
 
     const fmtDateLbl = d => dates.length > 20 ? `${d.slice(5, 7)}/${d.slice(2, 4)}` : d.slice(5).split('-').reverse().join('.');
@@ -1584,9 +1666,9 @@ function renderSportProgress() {
           </div>
         </div>
 
-        <div class="flex items-center gap-3 text-[11px]">${legendLine}</div>
+        <div class="flex flex-wrap items-center gap-2 text-[11px]">${controlsLine}</div>
         ${dates.length > 0
-          ? sportLineChart(series, dates.map(fmtDateLbl), tooltips)
+          ? sportLineChart(series, dates.map(fmtDateLbl), tooltips, useIndependent)
           : '<p class="text-[11px] text-zinc-500 py-3 text-center">Keine Einträge in diesem Zeitraum.</p>'}
       </div>`;
   }
