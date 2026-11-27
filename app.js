@@ -796,6 +796,26 @@ const FITDAYS_METRIC_GROUPS = [
   { id: 'herz',   label: 'Herz & Stoffwechsel', keys: ['bmr', 'heartRate', 'cardiacIndex'] }
 ];
 
+const CHART_LAYOUT_VARIANTS = [
+  { id: 'v1', label: 'V1 Modal' },
+  { id: 'v2', label: 'V2 Wischleiste' },
+  { id: 'v3', label: 'V3 Presets' },
+  { id: 'v4', label: 'V4 Groß+Modal' }
+];
+
+function getChartLayoutVariant() {
+  const valid = CHART_LAYOUT_VARIANTS.some(v => v.id === state.chartLayoutVariant);
+  if (!valid) state.chartLayoutVariant = 'v1';
+  return state.chartLayoutVariant;
+}
+
+function setChartLayoutVariant(variant) {
+  if (!CHART_LAYOUT_VARIANTS.some(v => v.id === variant)) return;
+  state.chartLayoutVariant = variant;
+  saveState();
+  render();
+}
+
 function getVisibleMetrics() {
   if (!Array.isArray(state.visibleMetrics)) {
     state.visibleMetrics = ['weight', 'bioAge'];
@@ -819,6 +839,16 @@ function toggleChartMetric(key) {
 function toggleChartMetricInModal(key) {
   toggleChartMetric(key);
   openChartMetricsModal();
+}
+
+function applyChartPreset(groupId) {
+  const grp = FITDAYS_METRIC_GROUPS.find(g => g.id === groupId);
+  if (!grp) return;
+  const hist = state.weightHistory || [];
+  const withData = grp.keys.filter(k => hist.some(h => h[k] !== null && h[k] !== undefined));
+  state.visibleMetrics = withData.length > 0 ? withData : grp.keys.slice(0, 2);
+  saveState();
+  render();
 }
 
 function openChartMetricsModal() {
@@ -973,8 +1003,11 @@ function renderWeightCalorieChart() {
   const maxKcal = Math.max(chartBaseGoal * 1.15, ...series.map(s => s.kcal), 2500);
   const showKcalBars = chartRangeDays <= 30;
 
-  const W = 560, H = 180;
-  const padL = 36, padR = 12, padT = 16, padB = 24;
+  const layoutVariant = getChartLayoutVariant();
+  const isTallMobile = layoutVariant === 'v4';
+  const W = isTallMobile ? 380 : 560;
+  const H = isTallMobile ? 210 : 180;
+  const padL = isTallMobile ? 32 : 36, padR = 10, padT = 14, padB = 22;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const stepX = series.length > 1 ? plotW / (series.length - 1) : plotW;
@@ -990,7 +1023,7 @@ function renderWeightCalorieChart() {
   const goalY = padT + plotH - getKcalH(chartBaseGoal);
 
   const activePoint = series.find(s => s.dateStr === selectedChartDate) || series[series.length - 1];
-  const labelInterval = Math.max(1, Math.ceil(series.length / 7));
+  const labelInterval = Math.max(1, Math.ceil(series.length / (isTallMobile ? 5 : 7)));
 
   const rangeOptions = [
     { days: 7, label: '7T' },
@@ -1006,29 +1039,102 @@ function renderWeightCalorieChart() {
     return `${Number(val).toFixed(m.decimals)}${m.unit ? ' ' + m.unit : ''}`;
   };
 
-  const canRemoveMetric = activeMetrics.length > 1;
-  const legendHtml = `
-    <div class="flex items-center gap-1.5 pt-1.5 border-t border-zinc-900">
-      <div class="flex-1 flex items-center gap-1.5 overflow-x-auto pb-0.5">
-        ${activeMetrics.map(m => `
-          <button onclick="toggleChartMetric('${m.key}')" title="${canRemoveMetric ? m.label + ' ausblenden' : 'Mindestens 1 Kennzahl bleibt aktiv'}"
-            class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-zinc-900 text-zinc-100 border border-zinc-700 transition">
-            <span class="w-2 h-2 rounded-full" style="background:${m.color}"></span>
-            <span>${m.label}</span>
-            ${canRemoveMetric ? '<span class="text-zinc-500 hover:text-zinc-200 ml-0.5">×</span>' : ''}
-          </button>
-        `).join('')}
+  const metricHasData = (key) => sortedHistory.some(h => h[key] !== null && h[key] !== undefined);
+
+  let legendHtml = '';
+  if (layoutVariant === 'v1' || layoutVariant === 'v4') {
+    const canRemoveMetric = activeMetrics.length > 1;
+    legendHtml = `
+      <div class="flex items-center gap-1.5 pt-1.5 border-t border-zinc-900">
+        <div class="flex-1 flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          ${activeMetrics.map(m => `
+            <button onclick="toggleChartMetric('${m.key}')" title="${canRemoveMetric ? m.label + ' ausblenden' : 'Mindestens 1 Kennzahl bleibt aktiv'}"
+              class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-zinc-900 text-zinc-100 border border-zinc-700 transition">
+              <span class="w-2 h-2 rounded-full" style="background:${m.color}"></span>
+              <span>${m.label}</span>
+              ${canRemoveMetric ? '<span class="text-zinc-500 hover:text-zinc-200 ml-0.5">×</span>' : ''}
+            </button>
+          `).join('')}
+        </div>
+        <button onclick="openChartMetricsModal()"
+          class="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/35 transition">
+          <span>+ Kennzahlen</span>
+          <span class="text-[10px] opacity-80">(${visibleKeys.length}/${FITDAYS_METRICS.length})</span>
+        </button>
       </div>
-      <button onclick="openChartMetricsModal()"
-        class="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/35 transition">
-        <span>+ Kennzahlen</span>
-        <span class="text-[10px] opacity-80">(${visibleKeys.length}/${FITDAYS_METRICS.length})</span>
-      </button>
-    </div>
-  `;
+    `;
+  } else if (layoutVariant === 'v2') {
+    const orderedMetrics = [...FITDAYS_METRICS].sort((a, b) => {
+      const aOn = visibleKeys.includes(a.key) ? 0 : 1;
+      const bOn = visibleKeys.includes(b.key) ? 0 : 1;
+      if (aOn !== bOn) return aOn - bOn;
+      const aData = metricHasData(a.key) ? 0 : 1;
+      const bData = metricHasData(b.key) ? 0 : 1;
+      return aData - bData;
+    });
+    legendHtml = `
+      <div class="flex flex-nowrap items-center gap-1.5 overflow-x-auto pt-1.5 pb-1 border-t border-zinc-900">
+        ${orderedMetrics.map(m => {
+          const isOn = visibleKeys.includes(m.key);
+          const hasAnyData = metricHasData(m.key);
+          return `
+            <button onclick="toggleChartMetric('${m.key}')"
+              class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition border ${
+                isOn
+                  ? 'bg-zinc-900 text-zinc-100 border-zinc-700'
+                  : 'bg-zinc-950/60 text-zinc-500 border-zinc-900 hover:text-zinc-300'
+              } ${!hasAnyData ? 'opacity-45' : ''}">
+              <span class="w-2 h-2 rounded-full" style="background:${isOn ? m.color : '#52525b'}"></span>
+              <span>${m.label}</span>
+            </button>
+          `;
+        }).join('')}
+      </div>
+    `;
+  } else {
+    legendHtml = `
+      <div class="flex items-center gap-1.5 pt-1.5 border-t border-zinc-900">
+        <div class="flex-1 flex items-center gap-1 overflow-x-auto pb-0.5">
+          ${FITDAYS_METRIC_GROUPS.map(grp => {
+            const isActivePreset = visibleKeys.length > 0 && visibleKeys.every(k => grp.keys.includes(k));
+            return `
+              <button onclick="applyChartPreset('${grp.id}')"
+                class="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium transition border ${
+                  isActivePreset
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-zinc-900 text-zinc-400 border-border hover:text-zinc-200'
+                }">
+                ${grp.label}
+              </button>
+            `;
+          }).join('')}
+        </div>
+        <button onclick="openChartMetricsModal()" title="Einzelne Kennzahlen wählen"
+          class="shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-border transition">
+          ⚙ ${visibleKeys.length}
+        </button>
+      </div>
+    `;
+  }
 
   return `
     <div class="bg-zinc-950/70 border border-border rounded-2xl p-3 space-y-2.5">
+      <div class="flex items-center justify-between gap-1.5 pb-1.5 border-b border-zinc-900/90">
+        <span class="text-[10px] uppercase tracking-wider text-zinc-500 shrink-0">Ansicht</span>
+        <div class="flex items-center gap-1 overflow-x-auto">
+          ${CHART_LAYOUT_VARIANTS.map(v => `
+            <button onclick="setChartLayoutVariant('${v.id}')"
+              class="shrink-0 px-2 py-0.5 rounded-lg text-[10px] font-medium transition border ${
+                layoutVariant === v.id
+                  ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                  : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border-border'
+              }">
+              ${v.label}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
       <div class="flex flex-wrap items-start justify-between gap-2">
         <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-zinc-300">
           <span class="font-semibold text-white">${activePoint.fullLabel}:</span>
@@ -1066,12 +1172,12 @@ function renderWeightCalorieChart() {
         </div>
       </div>
 
-      <svg viewBox="0 0 ${W} ${H}" class="w-full h-44 overflow-visible select-none">
+      <svg viewBox="0 0 ${W} ${H}" class="w-full ${isTallMobile ? 'h-56' : 'h-44'} overflow-visible select-none">
         <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#27272a" stroke-dasharray="3 3" />
         <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="#27272a" />
         ${primaryScale && primaryScale.hasData ? `
-          <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" fill="${primaryMetric.color}" font-size="9">${primaryScale.max.toFixed(primaryMetric.decimals)}</text>
-          <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="${primaryMetric.color}" font-size="9">${primaryScale.min.toFixed(primaryMetric.decimals)}</text>
+          <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" fill="${primaryMetric.color}" font-size="${isTallMobile ? '10' : '9'}">${primaryScale.max.toFixed(primaryMetric.decimals)}</text>
+          <text x="${padL - 5}" y="${padT + plotH}" text-anchor="end" fill="${primaryMetric.color}" font-size="${isTallMobile ? '10' : '9'}">${primaryScale.min.toFixed(primaryMetric.decimals)}</text>
         ` : ''}
         ${showKcalBars ? `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" stroke="#0ea5e9" stroke-opacity="0.35" stroke-dasharray="4 4" />` : ''}
 
@@ -1087,7 +1193,7 @@ function renderWeightCalorieChart() {
                   rx="2" fill="${isSelected ? '#38bdf8' : '#0284c7'}" fill-opacity="${isSelected ? '0.65' : '0.3'}" />
               ` : ''}
               ${idx % labelInterval === 0 ? `
-                <text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="#71717a" font-size="9">${s.shortLabel}</text>
+                <text x="${x.toFixed(1)}" y="${H - 5}" text-anchor="middle" fill="#71717a" font-size="${isTallMobile ? '10' : '9'}">${s.shortLabel}</text>
               ` : ''}
             </g>
           `;
@@ -1118,7 +1224,7 @@ function renderWeightCalorieChart() {
                 if (!hasMeasurement && !isSelected) return '';
                 return `
                   <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}"
-                    r="${isSelected ? 4.2 : (chartRangeDays > 90 ? 2.0 : 2.6)}"
+                    r="${isSelected ? 4.4 : (chartRangeDays > 90 ? 2.2 : 2.8)}"
                     fill="${m.color}" stroke="#09090b" stroke-width="1.1"
                     class="cursor-pointer" onclick="selectChartDay('${s.dateStr}')" />
                 `;
