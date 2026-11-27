@@ -2524,101 +2524,26 @@ function renderDashboard() {
   const dynTarget = getDynamicCalorieTarget(state.selectedDate);
   const effectiveCalorieGoal = dynTarget.total;
   const kcalPct = Math.min(100, Math.round((totals.kcal / effectiveCalorieGoal) * 100));
-  const days7 = getLast7Days();
-  const creatineStreak = getRoutineStreak('creatine');
-  const skincareStreak = getRoutineStreak('skincare');
-  const sertralineStreak = getRoutineStreak('sertraline');
 
   const sortedW = [...state.weightHistory].sort((a, b) => a.date.localeCompare(b.date));
-  const latestW = sortedW[sortedW.length - 1] || { weight: 74.0, bodyFat: 15.9, muscle: 59.4, bioAge: 34, date: getTodayStr() };
+  const latestW = sortedW[sortedW.length - 1] || { weight: 74.0, bodyFat: null, muscle: null, bioAge: null, date: getTodayStr() };
   const prevW = sortedW.length > 1 ? sortedW[sortedW.length - 2] : latestW;
   const deltaW = Math.round((latestW.weight - prevW.weight) * 10) / 10;
 
-  const renderConsumptionRow = (key, title, subtitle) => {
-    const streak = calcCleanStreak(key);
-    const todayStatus = normalizeHabitStatus(ensureDayLog(getTodayStr()).badHabits[key]);
-
-    let badgeClass = 'bg-amber-400/15 text-amber-300 border border-amber-400/35';
-    let badgeText = 'Heute offen';
-    if (todayStatus === 'consumed') {
-      badgeClass = 'bg-rose-500/20 text-rose-300 border border-rose-500/40';
-      badgeText = 'Heute konsumiert';
-    } else if (todayStatus === 'clean') {
-      badgeClass = 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
-      badgeText = `${streak}d clean`;
-    } else if (streak > 0) {
-      badgeText = `${streak}d clean · Heute offen`;
-    }
-
-    return `
-      <div class="bg-zinc-900/80 border border-border rounded-2xl p-3.5 space-y-2.5">
-        <div class="flex items-center justify-between gap-2">
-          <div>
-            <div class="text-sm font-medium text-white">${title}</div>
-            <div class="text-[11px] text-zinc-400">${subtitle}</div>
-          </div>
-          <div class="text-right shrink-0">
-            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-medium ${badgeClass}">
-              ${badgeText}
-            </span>
-          </div>
-        </div>
-        <div class="grid grid-cols-7 gap-1.5">
-          ${days7.map(d => {
-            const status = normalizeHabitStatus(ensureDayLog(d.dateStr).badHabits[key]);
-            let tileStyle = 'bg-amber-400/15 border-amber-400/45 text-amber-300 hover:bg-amber-400/25';
-            let icon = '?';
-            let stateLabel = 'Nicht erfasst';
-
-            if (status === 'clean') {
-              tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
-              icon = '✕';
-              stateLabel = 'Kein Konsum (Clean)';
-            } else if (status === 'consumed') {
-              tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
-              icon = '✓';
-              stateLabel = 'Konsumiert';
-            }
-
-            return `
-              <button onclick="cycleBadHabitDay('${key}', '${d.dateStr}')"
-                title="${d.label}: ${stateLabel} (Tippen zum Wechseln)"
-                class="py-1.5 rounded-xl text-center border transition ${tileStyle}">
-                <div class="text-[10px] opacity-85 font-medium">${d.label}</div>
-                <div class="text-xs font-bold mt-0.5">${icon}</div>
-              </button>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    `;
-  };
-
-  const nicTodayStatus = getCombinedNicotineStatus(ensureDayLog(getTodayStr()));
-  const nicStreak = calcCleanStreak('nicotine');
-
-  let nicBadgeClass = 'bg-amber-400/15 text-amber-300 border border-amber-400/35';
-  let nicBadgeText = nicStreak > 0 ? `${nicStreak}d clean · Heute offen` : 'Heute offen';
-  if (nicTodayStatus === 'consumed') {
-    nicBadgeClass = 'bg-rose-500/20 text-rose-300 border border-rose-500/40';
-    nicBadgeText = 'Heute Konsum erfasst';
-  } else if (nicTodayStatus === 'clean') {
-    nicBadgeClass = 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
-    nicBadgeText = `${nicStreak}d clean`;
+  if (dashboardSection !== 'bilanz' && dashboardSection !== 'koerper') {
+    dashboardSection = 'bilanz';
   }
 
   const dashTabs = [
-    { id: 'bilanz', icon: '🔥', label: 'Bilanz' },
-    { id: 'koerper', icon: '⚖️', label: 'Körper' },
-    { id: 'konsum', icon: '🛡️', label: 'Konsum' },
-    { id: 'sport', icon: '🏃', label: 'Sport' }
+    { id: 'bilanz', icon: '🔥', label: 'Tagesbilanz' },
+    { id: 'koerper', icon: '⚖️', label: 'Gewicht & Körperwerte' }
   ];
 
   const dashSwitcherHtml = `
-    <div class="grid grid-cols-4 gap-1 bg-card border border-border rounded-2xl p-1">
+    <div class="grid grid-cols-2 gap-1.5 bg-card border border-border rounded-2xl p-1">
       ${dashTabs.map(t => `
         <button onclick="setDashboardSection('${t.id}')"
-          class="py-2 px-1 rounded-xl text-[11px] font-semibold transition flex items-center justify-center gap-1 ${
+          class="py-2 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5 ${
             dashboardSection === t.id
               ? 'bg-emerald-500 text-zinc-950 shadow-sm'
               : 'text-zinc-400 hover:text-white hover:bg-zinc-800/70'
@@ -2756,216 +2681,8 @@ function renderDashboard() {
     </section>
   `;
 
-  const konsumSectionHtml = `
-    <!-- Konsum / Bad Habits -->
-    <section class="bg-card border border-border rounded-3xl p-4 space-y-3.5">
-      <div class="flex items-start justify-between gap-2">
-        <div>
-          <h2 class="text-sm font-semibold text-white">Konsum & Verzicht</h2>
-          <p class="text-[11px] text-zinc-400">Tippen wechselt Status: Offen → Clean → Konsumiert</p>
-        </div>
-        <button onclick="openManageHabits('sec-heatmap')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium shrink-0">
-          30d-Heatmap →
-        </button>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-3 text-[11px] px-1">
-        <span class="flex items-center gap-1.5 text-emerald-300">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span> Clean
-        </span>
-        <span class="flex items-center gap-1.5 text-rose-300">
-          <span class="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block"></span> Konsumiert
-        </span>
-        <span class="flex items-center gap-1.5 text-amber-300">
-          <span class="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block"></span> Nicht erfasst
-        </span>
-      </div>
-
-      ${renderConsumptionRow('alcohol', '🍷 Alkohol', '7-Tage-Übersicht')}
-
-      <div class="border border-border rounded-2xl p-3.5 bg-zinc-950/50 space-y-3">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-semibold uppercase tracking-wider text-zinc-300">💨 Nikotin</span>
-          <span class="text-[11px] px-2.5 py-0.5 rounded-full font-medium ${nicBadgeClass}">
-            ${nicBadgeText}
-          </span>
-        </div>
-        <div class="space-y-2.5 pl-1 border-l-2 border-zinc-800">
-          ${renderConsumptionRow('cigarettes', 'Zigaretten', 'Unterpunkt Nikotin')}
-          ${renderConsumptionRow('vape', 'Vape', 'Unterpunkt Nikotin')}
-        </div>
-      </div>
-    </section>
-
-    <!-- Routine & Supplements (Sneak Peek) -->
-    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="text-sm font-semibold text-white">Routine & Supplements</h2>
-          <p class="text-[11px] text-zinc-400">Daily Basics für ${formatDisplayDate(state.selectedDate)}</p>
-        </div>
-        <button onclick="openManageHabits('sec-routines')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
-          30d-Verlauf →
-        </button>
-      </div>
-
-      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-        <button onclick="toggleRoutine('creatine')"
-          class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
-            log.routines.creatine
-              ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
-              : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
-          }">
-          <div class="min-w-0">
-            <div class="text-xs font-semibold truncate">Kreatin</div>
-            <div class="text-[11px] mt-0.5 ${log.routines.creatine ? 'text-emerald-400' : 'text-zinc-500'}">
-              ${creatineStreak > 0 ? `${creatineStreak}d Streak` : 'Heute offen'}
-            </div>
-          </div>
-          <div class="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 border ${
-            log.routines.creatine
-              ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
-              : 'bg-zinc-950/60 border-border text-zinc-500'
-          }">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20 6 9 17l-5-5"/>
-            </svg>
-          </div>
-        </button>
-
-        <button onclick="toggleRoutine('skincare')"
-          class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
-            log.routines.skincare
-              ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
-              : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
-          }">
-          <div class="min-w-0">
-            <div class="text-xs font-semibold truncate">Skincare</div>
-            <div class="text-[11px] mt-0.5 ${log.routines.skincare ? 'text-emerald-400' : 'text-zinc-500'}">
-              ${skincareStreak > 0 ? `${skincareStreak}d Streak` : 'Heute offen'}
-            </div>
-          </div>
-          <div class="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 border ${
-            log.routines.skincare
-              ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
-              : 'bg-zinc-950/60 border-border text-zinc-500'
-          }">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20 6 9 17l-5-5"/>
-            </svg>
-          </div>
-        </button>
-
-        <button onclick="toggleRoutine('sertraline')"
-          class="col-span-2 sm:col-span-1 p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
-            log.routines.sertraline
-              ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
-              : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
-          }">
-          <div class="min-w-0">
-            <div class="text-xs font-semibold truncate">Sertralin</div>
-            <div class="text-[11px] mt-0.5 ${log.routines.sertraline ? 'text-emerald-400' : 'text-zinc-500'}">
-              ${sertralineStreak > 0 ? `${sertralineStreak}d Streak` : 'Heute offen'}
-            </div>
-          </div>
-          <div class="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 border ${
-            log.routines.sertraline
-              ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
-              : 'bg-zinc-950/60 border-border text-zinc-500'
-          }">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20 6 9 17l-5-5"/>
-            </svg>
-          </div>
-        </button>
-      </div>
-    </section>
-  `;
-
-  const recentWorkouts = [...(state.workouts || [])]
-    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    .slice(0, 3);
-  const sport7ActiveDays = days7.filter(d => {
-    const l = state.logs[d.dateStr];
-    const hasHabit = Array.isArray(l?.sportDone) && l.sportDone.length > 0;
-    const hasWo = (state.workouts || []).some(w => w.date === d.dateStr);
-    return hasHabit || hasWo;
-  }).length;
-
-  const sportSectionHtml = `
-    <!-- Sport & Bewegung Cluster -->
-    <section class="bg-card border border-border rounded-3xl p-4 space-y-3.5">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="text-sm font-semibold text-white">Sport & Bewegung</h2>
-          <p class="text-[11px] text-zinc-400">Aktive Einheiten für ${formatDisplayDate(state.selectedDate)} · ${sport7ActiveDays}/7 Tage aktiv</p>
-        </div>
-        <button onclick="switchTab('sport')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
-          Zum Sport-Tab →
-        </button>
-      </div>
-      <div class="flex flex-wrap gap-2">
-        ${state.sportHabits.map(sp => {
-          const done = log.sportDone.includes(sp.id);
-          return `
-            <button onclick="toggleSportHabit('${sp.id}')"
-              class="px-3.5 py-2 rounded-2xl text-xs font-medium border transition flex items-center gap-2 ${
-                done
-                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                  : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
-              }">
-              <span>${done ? '✓' : '○'}</span>
-              <span>${sp.name}</span>
-            </button>
-          `;
-        }).join('')}
-      </div>
-
-      <div class="grid grid-cols-7 gap-1.5 pt-1">
-        ${days7.map(d => {
-          const l = state.logs[d.dateStr];
-          const active = (Array.isArray(l?.sportDone) && l.sportDone.length > 0) || (state.workouts || []).some(w => w.date === d.dateStr);
-          return `
-            <div class="py-1.5 rounded-xl text-center border ${
-              active ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300' : 'bg-zinc-900/70 border-border text-zinc-500'
-            }">
-              <div class="text-[10px] font-medium">${d.label}</div>
-              <div class="text-xs font-bold mt-0.5">${active ? '✓' : '·'}</div>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    </section>
-
-    ${recentWorkouts.length > 0 ? `
-      <section class="bg-card border border-border rounded-3xl p-4 space-y-2.5">
-        <div class="flex items-center justify-between">
-          <h3 class="text-xs uppercase tracking-wider text-zinc-400 font-semibold">Letzte Workouts</h3>
-          <button onclick="switchTab('sport')" class="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">Alle anzeigen →</button>
-        </div>
-        <div class="space-y-1.5">
-          ${recentWorkouts.map(w => `
-            <div class="flex items-center justify-between gap-2 bg-zinc-900/80 border border-border rounded-2xl px-3 py-2 text-xs">
-              <div class="min-w-0">
-                <div class="font-medium text-white truncate">${w.title || (w.type === 'run' ? 'Lauf' : 'Workout')}</div>
-                <div class="text-[11px] text-zinc-400">${w.date}${w.durationMin ? ` · ${w.durationMin} Min.` : ''}${w.distanceKm ? ` · ${w.distanceKm} km` : ''}</div>
-              </div>
-              <span class="text-zinc-500 text-xs shrink-0">${w.type === 'run' ? '🏃' : '🏋️'}</span>
-            </div>
-          `).join('')}
-        </div>
-      </section>
-    ` : ''}
-  `;
-
   if (dashboardSection === 'koerper') {
     return `${dashSwitcherHtml}${koerperSectionHtml}`;
-  }
-  if (dashboardSection === 'konsum') {
-    return `${dashSwitcherHtml}${dateSelectorHtml}${konsumSectionHtml}`;
-  }
-  if (dashboardSection === 'sport') {
-    return `${dashSwitcherHtml}${dateSelectorHtml}${sportSectionHtml}`;
   }
   return `${dashSwitcherHtml}${dateSelectorHtml}${bilanzSectionHtml}`;
 }
