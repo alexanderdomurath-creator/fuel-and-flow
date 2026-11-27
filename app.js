@@ -1996,44 +1996,132 @@ function deleteSportHabit(id) {
 }
 
 // ---------- FITDAYS CSV IMPORT ----------
-function importFitDaysCsv(event) {
-  const file = event.target.files[0];
+function parseFitdaysDateTime(raw) {
+  if (!raw) return null;
+  if (raw instanceof Date && !isNaN(raw)) {
+    const d = formatDateStr(raw);
+    const t = `${String(raw.getHours()).padStart(2, '0')}:${String(raw.getMinutes()).padStart(2, '0')}`;
+    return { dateStr: d, timeStr: t };
+  }
+  const str = String(raw).trim();
+  const months = {
+    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+  };
+  // z. B. "07:30 Jan.28,2022" oder "18:23 Nov.27,2026"
+  const m = str.match(/(?:(\d{1,2}:\d{2})\s+)?([A-Za-z]{3})\.(\d{1,2}),\s*(\d{4})/);
+  if (m) {
+    const mon = months[m[2].toLowerCase()];
+    if (mon) {
+      const timeStr = m[1] ? m[1].padStart(5, '0') : '12:00';
+      return {
+        dateStr: `${m[4]}-${mon}-${String(m[3]).padStart(2, '0')}`,
+        timeStr
+      };
+    }
+  }
+  // ISO-Fallback YYYY-MM-DD (optional mit Uhrzeit)
+  const iso = str.match(/(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}:\d{2}))?/);
+  if (iso) {
+    return {
+      dateStr: `${iso[1]}-${iso[2]}-${iso[3]}`,
+      timeStr: iso[4] || '12:00'
+    };
+  }
+  return null;
+}
+
+function parseFitdaysNum(val) {
+  if (val === null || val === undefined) return null;
+  const cleaned = String(val).replace(',', '.').replace(/[^0-9.\-]/g, '');
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? null : num;
+}
+
+async function importFitdaysCsv(event) {
+  const file = event?.target?.files?.[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-const lines = String(e.target.result || '').split(/\r?\n/).filter(Boolean);
 
-    if (lines.length < 2) return;
-    const headers = lines[0].split(/[,;]/).map(h => h.replace(/"/g, '').trim().toLowerCase());
-    const findIdx = (keywords) => headers.findIndex(h => keywords.some(k => h.includes(k)));
+  try {
+    if (typeof XLSX === 'undefined') {
+      alert('Excel-Parser wird noch geladen – bitte Seite kurz neu laden.');
+      return;
+    }
 
-    const idxDate = findIdx(['time', 'date', 'datum', 'zeit']);
-    const idxWeight = findIdx(['weight', 'gewicht']);
-    const idxBf = findIdx(['body fat', 'fat', 'körperfett', 'fett']);
-    const idxMuscle = findIdx(['muscle', 'muskel']);
-    const idxAge = findIdx(['age', 'alter', 'metabolic']);
+    const buf = await file.arrayBuffer();
+    const workbook = XLSX.read(buf, { type: 'array' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
-    let imported = 0;
-    lines.slice(1).forEach(line => {
-      const cols = line.split(/[,;]/).map(c => c.replace(/"/g, '').trim());
-      const weightVal = idxWeight >= 0 ? Number(cols[idxWeight]) : cols.map(Number).find(n => n > 35 && n < 250);
-      const dateRaw = idxDate >= 0 ? cols[idxDate] : cols.find(c => /\d{4}-\d{2}-\d{2}/.test(c));
-      if (weightVal) {
-        state.weightHistory.push({
-          date: dateRaw && /\d{4}-\d{2}-\d{2}/.test(dateRaw) ? dateRaw.slice(0, 10) : getTodayStr(),
-          weight: weightVal,
-          bodyFat: idxBf >= 0 ? (Number(cols[idxBf]) || null) : null,
-          muscle: idxMuscle >= 0 ? (Number(cols[idxMuscle]) || null) : null,
-          bioAge: idxAge >= 0 ? (Number(cols[idxAge]) || null) : null
-        });
-        imported++;
+    if (!rows.length) {
+      alert('Keine Daten in der FitDays-Datei gefunden.');
+      return;
+    }
+
+    // Pro Datum nach Uhrzeit sortieren: früheste Messung des Tages (nüchtern) gewinnt
+    const byDate = {};
+    rows.forEach(r => {
+      const dt = parseFitdaysDateTime(r['Date'] || r['Datum']);
+      const weight = parseFitdaysNum(r['Weight'] || r['Gewicht']);
+      if (!dt || !weight || weight <= 0) return;
+
+      const bodyFat = parseFitdaysNum(r['Body Fat'] || r['Körperfett']);
+      const muscle = parseFitdaysNum(r['Muscle Mass'] || r['Muskelmasse'] || r['Skeletal Muscle']);
+      const bioAge = parseFitdaysNum(r['Body age'] || r['Körperalter']);
+
+      const existing = byDate[dt.dateStr];
+      if (!existing || dt.timeStr < existing.timeStr) {
+        byDate[dt.dateStr] = {
+          date: dt.dateStr,
+          timeStr: dt.timeStr,
+          weight: Math.round(weight * 10) / 10,
+          bodyFat: bodyFat !== null ? Math.round(bodyFat * 10) / 10 : null,
+          muscle: muscle !== null ? Math.round(muscle * 10) / 10 : null,
+          bioAge: bioAge !== null ? Math.round(bioAge) : null
+        };
       }
     });
+
+    const importedDates = Object.keys(byDate);
+    if (!importedDates.length) {
+      alert('Keine gültigen Gewichtseinträge erkannt.');
+      return;
+    }
+
+    const mergedMap = {};
+    (state.weightHistory || []).forEach(entry => {
+      mergedMap[entry.date] = entry;
+    });
+
+    let addedCount = 0;
+    let updatedCount = 0;
+
+    importedDates.forEach(d => {
+      const prev = mergedMap[d];
+      const next = byDate[d];
+      if (prev) updatedCount++;
+      else addedCount++;
+
+      mergedMap[d] = {
+        date: d,
+        weight: next.weight,
+        bodyFat: next.bodyFat !== null ? next.bodyFat : (prev?.bodyFat ?? 15.9),
+        muscle: next.muscle !== null ? next.muscle : (prev?.muscle ?? 59.4),
+        bioAge: next.bioAge !== null ? next.bioAge : (prev?.bioAge ?? 34)
+      };
+    });
+
+    state.weightHistory = Object.values(mergedMap).sort((a, b) => a.date.localeCompare(b.date));
     saveState();
+    closeModal();
     render();
-    alert(`${imported} FitDays-Messwerte importiert.`);
-  };
-  reader.readAsText(file);
+    alert(`✅ FitDays-Import abgeschlossen: ${addedCount} neu, ${updatedCount} aktualisiert (gesamt: ${state.weightHistory.length} Tage).`);
+  } catch (err) {
+    console.error('FitDays Import Fehler:', err);
+    alert('Fehler beim Lesen der FitDays-Datei: ' + (err.message || err));
+  } finally {
+    if (event?.target) event.target.value = '';
+  }
 }
 
 // ---------- MODALS ----------
@@ -2233,6 +2321,10 @@ function openBulkWeightModal() {
         <div>
           <h3 class="text-base font-semibold text-white">30-Tage-Schnellpflege (FitDays)</h3>
           <p class="text-[11px] text-zinc-400">Excel-Bereich kopieren & in beliebige Startzelle einfügen (Strg+V)</p>
+          <label class="flex items-center justify-center gap-2 w-full py-2 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 text-xs font-medium cursor-pointer transition">
+        <span>📂 FitDays-Exportdatei direkt importieren (.csv / .xls)</span>
+        <input type="file" accept=".csv,.xls,.xlsx" onchange="importFitdaysCsv(event)" class="hidden" />
+      </label>
         </div>
         <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-1">✕</button>
       </div>
