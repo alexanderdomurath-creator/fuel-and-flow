@@ -2367,10 +2367,20 @@ function openAiMealModal() {
           </div>
         </details>
 
-        <label style="display:flex;align-items:center;justify-content:center;gap:8px;background:#27272a;hover:background:#3f3f46;color:#fff;border:1px dashed #52525b;border-radius:12px;padding:14px;cursor:pointer;font-weight:600;font-size:0.9rem;margin-bottom:10px;">
-          <span>📸 Foto aufnehmen oder auswählen</span>
-          <input type="file" id="aiPhotoInput" accept="image/*" capture="environment" onchange="handleAiPhotoSelect(event)" style="display:none;">
-        </label>
+        <div style="display:flex;gap:8px;margin-bottom:10px;">
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#27272a;color:#fff;border:1px dashed #52525b;border-radius:12px;padding:12px 8px;cursor:pointer;font-weight:600;font-size:0.86rem;">
+            <span>📸 Kamera</span>
+            <input type="file" id="aiCameraInput" accept="image/*" capture="environment" onchange="handleAiPhotoSelect(event)" style="display:none;">
+          </label>
+          <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#27272a;color:#fff;border:1px dashed #52525b;border-radius:12px;padding:12px 8px;cursor:pointer;font-weight:600;font-size:0.86rem;">
+            <span>🖼️ Galerie</span>
+            <input type="file" id="aiPhotoInput" accept="image/*" onchange="handleAiPhotoSelect(event)" style="display:none;">
+          </label>
+        </div>
+
+        document.getElementById('aiPhotoInput').value = '';
+  const camInput = document.getElementById('aiCameraInput');
+  if (camInput) camInput.value = '';
 
         <div id="aiPhotoPreviewWrap" style="display:none;margin-bottom:10px;text-align:center;">
           <img id="aiPhotoPreviewImg" style="max-height:180px;border-radius:10px;border:1px solid #3f3f46;object-fit:cover;" />
