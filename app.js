@@ -332,6 +332,19 @@ function getRoutineStreak(key) {
   return streak;
 }
 
+function toggleHeatmapRoutineDay(key, dateStr) {
+  const day = ensureDayLog(dateStr);
+  if (key === 'routine') {
+    const bothDone = day.routines.creatine && day.routines.skincare;
+    day.routines.creatine = !bothDone;
+    day.routines.skincare = !bothDone;
+  } else {
+    day.routines[key] = !day.routines[key];
+  }
+  saveState();
+  render();
+}
+
 // ---------- NAVIGATION & UI STATE ----------
 let currentTab = 'dashboard';
 let navHistory = ['dashboard'];
@@ -898,6 +911,8 @@ function renderDashboard() {
 
   const kcalPct = Math.min(100, Math.round((totals.kcal / state.calorieGoal) * 100));
   const days7 = getLast7Days();
+  const creatineStreak = getRoutineStreak('creatine');
+  const skincareStreak = getRoutineStreak('skincare');
 
   const sortedW = [...state.weightHistory].sort((a, b) => a.date.localeCompare(b.date));
   const latestW = sortedW[sortedW.length - 1] || { weight: 74.0, bodyFat: 15.9, muscle: 59.4, bioAge: 34, date: getTodayStr() };
@@ -1071,6 +1086,67 @@ function renderDashboard() {
             </button>
           `;
         }).join('')}
+      </div>
+    </section>
+
+    <!-- Routine & Supplements (Sneak Peek) -->
+    <section class="bg-card border border-border rounded-3xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-sm font-semibold text-white">Routine & Supplements</h2>
+          <p class="text-[11px] text-zinc-400">Daily Basics für ${formatDisplayDate(state.selectedDate)}</p>
+        </div>
+        <button onclick="openManageHabits('sec-routines')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
+          30d-Verlauf →
+        </button>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2.5">
+        <button onclick="toggleRoutine('creatine')"
+          class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
+            log.routines.creatine
+              ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
+              : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
+          }">
+          <div class="min-w-0">
+            <div class="text-xs font-semibold truncate">Kreatin</div>
+            <div class="text-[11px] mt-0.5 ${log.routines.creatine ? 'text-emerald-400' : 'text-zinc-500'}">
+              ${creatineStreak > 0 ? `${creatineStreak}d Streak` : 'Heute offen'}
+            </div>
+          </div>
+          <div class="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 border ${
+            log.routines.creatine
+              ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
+              : 'bg-zinc-950/60 border-border text-zinc-500'
+          }">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6 9 17l-5-5"/>
+            </svg>
+          </div>
+        </button>
+
+        <button onclick="toggleRoutine('skincare')"
+          class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${
+            log.routines.skincare
+              ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
+              : 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800'
+          }">
+          <div class="min-w-0">
+            <div class="text-xs font-semibold truncate">Skincare</div>
+            <div class="text-[11px] mt-0.5 ${log.routines.skincare ? 'text-emerald-400' : 'text-zinc-500'}">
+              ${skincareStreak > 0 ? `${skincareStreak}d Streak` : 'Heute offen'}
+            </div>
+          </div>
+          <div class="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 border ${
+            log.routines.skincare
+              ? 'bg-emerald-500 text-zinc-950 border-emerald-400'
+              : 'bg-zinc-950/60 border-border text-zinc-500'
+          }">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6 9 17l-5-5"/>
+            </svg>
+          </div>
+        </button>
       </div>
     </section>
 
@@ -1337,10 +1413,11 @@ function renderHabitsTab() {
   const creatineStreak = getRoutineStreak('creatine');
   const skincareStreak = getRoutineStreak('skincare');
 
-  const metricTabs = [
+ const metricTabs = [
     { id: 'alcohol', label: '🍷 Alkohol' },
     { id: 'nicotine', label: '💨 Nikotin' },
-    { id: 'sport', label: '⚡ Sport' }
+    { id: 'sport', label: '⚡ Sport' },
+    { id: 'routine', label: '✨ Routine' }
   ];
 
   const getCountsForMetric = (metricKey) => {
@@ -1350,6 +1427,14 @@ function renderHabitsTab() {
       if (metricKey === 'sport') {
         const done = log && Array.isArray(log.sportDone) && log.sportDone.length > 0;
         if (done) clean++;
+        else open++;
+      } else if (metricKey === 'routine') {
+        const c = Boolean(log?.routines?.creatine);
+        const s = Boolean(log?.routines?.skincare);
+        if (c && s) clean++;
+        else open++;
+      } else if (metricKey === 'creatine' || metricKey === 'skincare') {
+        if (log?.routines?.[metricKey]) clean++;
         else open++;
       } else if (metricKey === 'nicotine') {
         const st = getCombinedNicotineStatus(log);
@@ -1383,6 +1468,27 @@ function renderHabitsTab() {
             : 'bg-amber-400/15 border-amber-400/40 text-amber-300 hover:bg-amber-400/25';
           statusIcon = done ? '✓' : '○';
           clickHandler = `toggleHeatmapSportDay('${d.dateStr}')`;
+        } else if (metricKey === 'routine') {
+          const c = Boolean(log?.routines?.creatine);
+          const s = Boolean(log?.routines?.skincare);
+          if (c && s) {
+            tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
+            statusIcon = '✓';
+          } else if (c || s) {
+            tileStyle = 'bg-amber-400/20 border-amber-400/50 text-amber-300 hover:bg-amber-400/30';
+            statusIcon = '½';
+          } else {
+            tileStyle = 'bg-zinc-900 border-border text-zinc-500 hover:bg-zinc-800';
+            statusIcon = '○';
+          }
+          clickHandler = `toggleHeatmapRoutineDay('routine', '${d.dateStr}')`;
+        } else if (metricKey === 'creatine' || metricKey === 'skincare') {
+          const done = Boolean(log?.routines?.[metricKey]);
+          tileStyle = done
+            ? 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30'
+            : 'bg-zinc-900 border-border text-zinc-500 hover:bg-zinc-800';
+          statusIcon = done ? '✓' : '○';
+          clickHandler = `toggleHeatmapRoutineDay('${metricKey}', '${d.dateStr}')`;
         } else if (metricKey === 'nicotine') {
           const st = getCombinedNicotineStatus(log);
           if (st === 'clean') {
@@ -1429,14 +1535,14 @@ function renderHabitsTab() {
             <p class="text-[11px] text-zinc-400">Tippe auf einen Tag zum Umschalten (Grün / Rot / Gelb)</p>
           </div>
           <div class="text-right text-[11px] text-zinc-400">
-            ${selectedHeatmapMetric === 'sport'
+            ${selectedHeatmapMetric === 'sport' || selectedHeatmapMetric === 'routine'
               ? `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span>/30 aktiv`
               : `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> clean · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> kons. · <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen`
             }
           </div>
         </div>
 
-        <div class="grid grid-cols-3 gap-1.5">
+        <div class="grid grid-cols-4 gap-1.5">
           ${metricTabs.map(t => `
             <button onclick="setHeatmapMetric('${t.id}')"
               class="py-2 px-2.5 rounded-xl text-xs font-medium border transition truncate ${
@@ -1482,6 +1588,34 @@ function renderHabitsTab() {
                 </span>
               </div>
               ${renderHeatmapGrid('vape', true)}
+            </div>
+          </div>
+        ` : ''}
+        ${selectedHeatmapMetric === 'routine' ? `
+          <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-3.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">Aufschlüsselung Routine (30 Tage)</span>
+              <span class="text-[10px] text-zinc-500">✓ oben = Kreatin & Skincare</span>
+            </div>
+
+            <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
+              <div class="flex items-center justify-between text-xs">
+                <span class="font-medium text-zinc-200">💊 Kreatin</span>
+                <span class="text-[11px] text-zinc-400">
+                  <span class="text-emerald-400 font-semibold">${getCountsForMetric('creatine').clean}</span>/30 Tage · ${creatineStreak}d Streak
+                </span>
+              </div>
+              ${renderHeatmapGrid('creatine', true)}
+            </div>
+
+            <div class="space-y-1.5 pl-2 border-l-2 border-zinc-800">
+              <div class="flex items-center justify-between text-xs">
+                <span class="font-medium text-zinc-200">🧴 Skincare</span>
+                <span class="text-[11px] text-zinc-400">
+                  <span class="text-emerald-400 font-semibold">${getCountsForMetric('skincare').clean}</span>/30 Tage · ${skincareStreak}d Streak
+                </span>
+              </div>
+              ${renderHeatmapGrid('skincare', true)}
             </div>
           </div>
         ` : ''}
