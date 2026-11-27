@@ -237,9 +237,28 @@ function getSyncConfig() {
   }
 }
 
+function updateHeaderSyncDot(mode) {
+  const btn = document.getElementById('headerBackupBtn');
+  if (!btn) return;
+  let dot = document.getElementById('headerSyncDot');
+  if (!dot) {
+    dot = document.createElement('span');
+    dot.id = 'headerSyncDot';
+    dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle';
+    btn.appendChild(dot);
+  }
+  if (mode === 'syncing') dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-amber-400 animate-pulse';
+  else if (mode === 'error') dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-rose-500';
+  else if (mode === 'ok') dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-emerald-400';
+  else dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-zinc-600';
+}
+
 function setSyncStatusText(msg, isError = false) {
   lastSyncStatusMsg = msg;
   lastSyncStatusErr = isError;
+  if (isError) updateHeaderSyncDot('error');
+  else if (/sende|verbinde|lade/i.test(msg)) updateHeaderSyncDot('syncing');
+  else updateHeaderSyncDot('ok');
   const el = document.getElementById('syncStatusLabel');
   if (!el) return;
   el.textContent = msg;
@@ -258,15 +277,27 @@ function buildSyncHeaders(cfg, extra = {}) {
   return headers;
 }
 
+function parseSyncTs(ts) {
+  const ms = Date.parse(ts || '');
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function nextMonotonicIsoTs() {
+  const prevMs = Math.max(parseSyncTs(lastRemoteTimestamp), parseSyncTs(state && state._updatedAt));
+  return new Date(Math.max(Date.now(), prevMs + 1000)).toISOString();
+}
+
 async function pushStateToCloud(useKeepalive = false, showAlert = false) {
+  clearTimeout(syncTimer);
   const cfg = getSyncConfig();
   if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) {
     if (showAlert) alert('Bitte zuerst Supabase URL, Key und Sync-Key eintragen.');
     return;
   }
 
-  const updatedAt = new Date().toISOString();
+  const updatedAt = nextMonotonicIsoTs();
   state._updatedAt = updatedAt;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
   const bodyStr = JSON.stringify({
     sync_key: cfg.syncKey,
     payload: state,
@@ -310,9 +341,27 @@ async function pullStateFromCloud(forceOverwrite = false) {
 
   isSyncInFlight = true;
   try {
-    const url = `${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync?sync_key=eq.${encodeURIComponent(cfg.syncKey)}&select=payload,updated_at`;
-    const res = await fetch(url, {
+    const baseUrl = `${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync?sync_key=eq.${encodeURIComponent(cfg.syncKey)}`;
+
+    // Bei normalem Hintergrund-Check erst winzigen Zeitstempel prüfen (~40 Bytes)
+    if (!forceOverwrite && !hasPendingLocalPush && lastRemoteTimestamp) {
+      const headRes = await fetch(`${baseUrl}&select=updated_at`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: buildSyncHeaders(cfg)
+      });
+      if (headRes.ok) {
+        const headRows = await headRes.json();
+        if (headRows.length && headRows[0].updated_at && parseSyncTs(headRows[0].updated_at) === parseSyncTs(lastRemoteTimestamp)) {
+          updateHeaderSyncDot('ok');
+          return;
+        }
+      }
+    }
+
+    const res = await fetch(`${baseUrl}&select=payload,updated_at`, {
       method: 'GET',
+      cache: 'no-store',
       headers: buildSyncHeaders(cfg)
     });
     if (!res.ok) {
@@ -354,29 +403,34 @@ async function pullStateFromCloud(forceOverwrite = false) {
       return;
     }
 
+    const localMs = parseSyncTs(state._updatedAt);
+    const remoteMs = parseSyncTs(remoteTs);
     const localWCount = (state.workouts || []).length;
     const remoteWCount = (remotePayload.workouts || []).length;
     const localWeightCount = (state.weightHistory || []).length;
     const remoteWeightCount = (remotePayload.weightHistory || []).length;
-    const needsMerge = remoteTs !== lastRemoteTimestamp || remoteWCount !== localWCount || remoteWeightCount !== localWeightCount || hasPendingLocalPush;
+    const remoteLooksWiped = (localWCount > 5 && remoteWCount === 0) || (localWeightCount > 10 && remoteWeightCount <= 3);
 
-    if (needsMerge && !isEditingNow) {
-      const merged = mergeCloudStates(state, remotePayload);
-      const mergedHasMoreThanRemote =
-        merged.workouts.length > remoteWCount ||
-        merged.weightHistory.length > remoteWeightCount ||
-        merged.recipes.length > (remotePayload.recipes || []).length ||
-        hasPendingLocalPush;
-
-      state = merged;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      lastRemoteTimestamp = remoteTs;
-      render();
-
-      if (mergedHasMoreThanRemote) {
+    if (!isEditingNow) {
+      if (!hasPendingLocalPush && remoteMs > 0 && remoteMs > localMs && !remoteLooksWiped) {
+        // Saubere 1:1-Übernahme inkl. Löschungen & Änderungen vom anderen Gerät
+        state = remotePayload;
+        state._updatedAt = remoteTs;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        lastRemoteTimestamp = remoteTs;
+        render();
+      } else if (hasPendingLocalPush || remoteLooksWiped || remoteWCount > localWCount || remoteWeightCount > localWeightCount || (localMs > remoteMs && remoteMs > 0)) {
+        // Parallele / noch nicht gesendete Änderungen verlustfrei zusammenführen und hochschicken
+        const merged = mergeCloudStates(state, remotePayload);
+        state = merged;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        lastRemoteTimestamp = remoteTs;
+        render();
         isSyncInFlight = false;
         await pushStateToCloud();
         return;
+      } else if (remoteTs) {
+        lastRemoteTimestamp = remoteTs;
       }
     }
 
@@ -390,8 +444,9 @@ async function pullStateFromCloud(forceOverwrite = false) {
 }
 
 function saveState() {
-  state._updatedAt = new Date().toISOString();
+  state._updatedAt = nextMonotonicIsoTs();
   hasPendingLocalPush = true;
+  updateHeaderSyncDot('syncing');
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {}
@@ -399,7 +454,7 @@ function saveState() {
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     pushStateToCloud();
-  }, 600);
+  }, 250);
 }
 
 function normalizeRoutineStatus(val) {
@@ -4407,4 +4462,4 @@ window.addEventListener('pagehide', () => {
 });
 setInterval(() => {
   if (document.visibilityState === 'visible') pullStateFromCloud();
-}, 30000);
+}, 5000);
