@@ -249,11 +249,23 @@ function mergeCloudStates(localSt, remoteSt) {
   return normalizeLoadedState(merged);
 }
 
+const DEFAULT_SUPABASE_URL = 'https://odaxtofsxgzptrmwmpge.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_g6QltrJ_o277vLibdAx8AQ_XY74jXcq';
+
 function getSyncConfig() {
   try {
-    return JSON.parse(localStorage.getItem(SYNC_CFG_KEY) || 'null');
+    const saved = JSON.parse(localStorage.getItem(SYNC_CFG_KEY) || 'null') || {};
+    return {
+      url: (saved.url && String(saved.url).trim()) || DEFAULT_SUPABASE_URL,
+      anonKey: (saved.anonKey && String(saved.anonKey).trim()) || DEFAULT_SUPABASE_ANON_KEY,
+      syncKey: (saved.syncKey && String(saved.syncKey).trim()) || ''
+    };
   } catch (e) {
-    return null;
+    return {
+      url: DEFAULT_SUPABASE_URL,
+      anonKey: DEFAULT_SUPABASE_ANON_KEY,
+      syncKey: ''
+    };
   }
 }
 
@@ -3748,20 +3760,20 @@ async function importFitdaysCsv(event) {
     let updatedCount = 0;
 
     importedDates.forEach(d => {
-      const prev = mergedMap[d] || {};
       const next = byDate[d];
       if (mergedMap[d]) updatedCount++;
       else addedCount++;
 
-      const mergedEntry = { ...prev, date: d };
+      // FitDays-CSV überschreibt bestehende (z. B. manuelle) Einträge dieses Datums vollständig
+      const authoritativeEntry = {
+        date: d,
+        timeStr: next.timeStr || '08:00',
+        source: 'fitdays'
+      };
       FITDAYS_METRICS.forEach(m => {
-        if (next[m.key] !== null && next[m.key] !== undefined) {
-          mergedEntry[m.key] = next[m.key];
-        } else if (mergedEntry[m.key] === undefined) {
-          mergedEntry[m.key] = null;
-        }
+        authoritativeEntry[m.key] = (next[m.key] !== null && next[m.key] !== undefined) ? next[m.key] : null;
       });
-      mergedMap[d] = mergedEntry;
+      mergedMap[d] = authoritativeEntry;
     });
 
     state.weightHistory = Object.values(mergedMap).sort((a, b) => a.date.localeCompare(b.date));
@@ -4182,7 +4194,7 @@ function openBackupModal() {
         <div class="flex items-center justify-between gap-2">
           <span class="text-xs font-semibold text-white">☁️ Supabase Auto-Sync</span>
           <span id="syncStatusLabel" class="text-[11px] ${lastSyncStatusErr ? 'text-rose-400' : (lastSyncStatusMsg ? 'text-emerald-400' : 'text-zinc-400')}">
-            ${lastSyncStatusMsg || (cfg.url ? 'Aktiv' : 'Nicht eingerichtet')}
+            ${lastSyncStatusMsg || (cfg.syncKey ? 'Aktiv' : 'Nicht eingerichtet')}
           </span>
         </div>
         <div class="text-[10px] text-zinc-400 bg-zinc-950/80 border border-zinc-800/80 rounded-xl px-2.5 py-1.5">
@@ -4190,12 +4202,18 @@ function openBackupModal() {
           <strong class="text-white">${(state.weightHistory || []).length}</strong> Gewichtstage ·
           <strong class="text-white">${(state.recipes || []).length}</strong> Rezepte
         </div>
-        <input id="sync-url" type="url" value="${cfg.url}" placeholder="Project URL (https://....supabase.co)"
-          class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
-        <input id="sync-anon" type="password" value="${cfg.anonKey}" placeholder="Anon / Public Key"
-          class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
         <input id="sync-secret" type="password" value="${cfg.syncKey}" placeholder="Dein persönlicher Sync-Key (z. B. alex-ff-2026)"
-          class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white" />
+          onkeydown="if(event.key==='Enter') saveSyncSettings()"
+          class="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-700 focus:border-emerald-500 focus:outline-none text-xs text-white" />
+        <details class="pt-0.5">
+          <summary class="cursor-pointer text-[10px] text-zinc-500 hover:text-zinc-300 select-none">⚙ Server-Verbindung (fest hinterlegt)</summary>
+          <div class="space-y-1.5 mt-1.5">
+            <input id="sync-url" type="url" value="${cfg.url}" placeholder="Project URL (https://....supabase.co)"
+              class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-300" />
+            <input id="sync-anon" type="password" value="${cfg.anonKey}" placeholder="Anon / Public Key"
+              class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-300" />
+          </div>
+        </details>
         <div class="flex gap-1.5 pt-1">
           <button onclick="saveSyncSettings()" class="flex-1 py-2 rounded-xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
             Sync starten
@@ -4227,11 +4245,11 @@ function openBackupModal() {
 }
 
 async function saveSyncSettings() {
-  const url = document.getElementById('sync-url').value.trim();
-  const anonKey = document.getElementById('sync-anon').value.trim();
-  const syncKey = document.getElementById('sync-secret').value.trim();
-  if (!url || !anonKey || !syncKey) {
-    setSyncStatusText('Bitte alle 3 Felder ausfüllen.', true);
+  const url = (document.getElementById('sync-url')?.value || '').trim() || DEFAULT_SUPABASE_URL;
+  const anonKey = (document.getElementById('sync-anon')?.value || '').trim() || DEFAULT_SUPABASE_ANON_KEY;
+  const syncKey = (document.getElementById('sync-secret')?.value || '').trim();
+  if (!syncKey) {
+    setSyncStatusText('Bitte deinen persönlichen Sync-Key eingeben.', true);
     return;
   }
   localStorage.setItem(SYNC_CFG_KEY, JSON.stringify({ url, anonKey, syncKey }));
@@ -5667,6 +5685,8 @@ const ES_EXACT = {
   'Als Excel-Tabelle exportieren (.csv)': 'Exportar como tabla Excel (.csv)',
   'Komplett-Backup herunterladen (.json)': 'Descargar copia completa (.json)',
   'JSON-Backup wiederherstellen': 'Restaurar copia JSON',
+  '⚙ Server-Verbindung (fest hinterlegt)': '⚙ Conexión al servidor (preconfigurada)',
+  'Bitte deinen persönlichen Sync-Key eingeben.': 'Introduce tu clave personal de Sync.',
   'Dein persönlicher Sync-Key (z. B. alex-ff-2026)': 'Tu clave personal de Sync (ej. alex-ff-2026)'
 };
 
