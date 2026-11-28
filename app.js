@@ -300,14 +300,99 @@ let state = (() => {
   return buildInitialState();
 })();
 
-// ---------- SUPABASE CLOUD SYNC ----------
+// ---------- SUPABASE CLOUD SYNC & OFFLINE-QUEUE ----------
 const SYNC_CFG_KEY = 'fuel_and_flow_sync_cfg';
+const SYNC_META_KEY = 'fuel_and_flow_sync_meta';
+const SYNC_FETCH_TIMEOUT_MS = 10000;
+const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 let syncTimer = null;
-let lastRemoteTimestamp = null;
-let hasPendingLocalPush = false;
+let syncRetryTimer = null;
+let syncRetryAttempt = 0;
 let isSyncInFlight = false;
 let lastSyncStatusMsg = '';
 let lastSyncStatusErr = false;
+
+function loadSyncMeta() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SYNC_META_KEY) || 'null');
+    if (raw && typeof raw === 'object') {
+      return {
+        pendingPush: Boolean(raw.pendingPush),
+        pendingCount: Math.max(0, Number(raw.pendingCount) || 0),
+        pendingSince: raw.pendingSince || null,
+        lastRemoteTimestamp: raw.lastRemoteTimestamp || null,
+        lastSyncedAt: raw.lastSyncedAt || null
+      };
+    }
+  } catch (e) {}
+  return {
+    pendingPush: false,
+    pendingCount: 0,
+    pendingSince: null,
+    lastRemoteTimestamp: null,
+    lastSyncedAt: null
+  };
+}
+
+let syncMeta = loadSyncMeta();
+let lastRemoteTimestamp = syncMeta.lastRemoteTimestamp;
+let hasPendingLocalPush = syncMeta.pendingPush;
+
+function persistSyncMeta() {
+  syncMeta.lastRemoteTimestamp = lastRemoteTimestamp;
+  syncMeta.pendingPush = hasPendingLocalPush;
+  try {
+    localStorage.setItem(SYNC_META_KEY, JSON.stringify(syncMeta));
+  } catch (e) {}
+}
+
+function setPendingLocalPush(isPending, increment = false) {
+  hasPendingLocalPush = Boolean(isPending);
+  if (hasPendingLocalPush) {
+    if (!syncMeta.pendingSince) syncMeta.pendingSince = new Date().toISOString();
+    if (increment) syncMeta.pendingCount = (syncMeta.pendingCount || 0) + 1;
+    else if (!syncMeta.pendingCount) syncMeta.pendingCount = 1;
+  } else {
+    syncMeta.pendingCount = 0;
+    syncMeta.pendingSince = null;
+    syncMeta.lastSyncedAt = new Date().toISOString();
+  }
+  persistSyncMeta();
+  updateOfflineBanner();
+}
+
+function setLastSyncedRemoteTs(ts) {
+  if (!ts) return;
+  lastRemoteTimestamp = ts;
+  persistSyncMeta();
+}
+
+function isAppOffline() {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+function pruneDeletedIds(rawMap) {
+  const out = {};
+  if (!rawMap || typeof rawMap !== 'object') return out;
+  const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+  Object.keys(rawMap).forEach(id => {
+    const ts = rawMap[id];
+    const ms = parseSyncTs(ts);
+    if (id && (ms === 0 || ms >= cutoff)) {
+      out[id] = typeof ts === 'string' ? ts : new Date().toISOString();
+    }
+  });
+  return out;
+}
+
+function markDeletedId(id) {
+  if (!id) return;
+  if (!state._deletedIds || typeof state._deletedIds !== 'object') {
+    state._deletedIds = {};
+  }
+  state._deletedIds[String(id)] = nextMonotonicIsoTs();
+}
 
 function normalizeLoadedState(obj) {
   if (!obj || typeof obj !== 'object') return obj;
@@ -318,6 +403,7 @@ function normalizeLoadedState(obj) {
   obj.weightHistory = stripDemoWeightEntries(Array.isArray(obj.weightHistory) ? obj.weightHistory : []);
   obj.logs = obj.logs && typeof obj.logs === 'object' ? obj.logs : {};
   obj.habitConfig = normalizeHabitConfig(obj.habitConfig);
+  obj._deletedIds = pruneDeletedIds(obj._deletedIds);
   return obj;
 }
 
@@ -331,26 +417,44 @@ function mergeByKey(primaryArr, secondaryArr, keyFn) {
 function mergeCloudStates(localSt, remoteSt) {
   const loc = normalizeLoadedState(localSt || {});
   const rem = normalizeLoadedState(remoteSt || {});
-  const localNewer = (loc._updatedAt || '') >= (rem._updatedAt || '');
+  const localNewer = parseSyncTs(loc._updatedAt) >= parseSyncTs(rem._updatedAt);
   const primary = localNewer ? loc : rem;
   const secondary = localNewer ? rem : loc;
 
+  // Lösch-Tombstones beider Geräte zusammenführen (damit Offline-Löschungen nicht zurückkehren)
+  const mergedDeleted = { ...(secondary._deletedIds || {}) };
+  Object.keys(primary._deletedIds || {}).forEach(id => {
+    const pTs = parseSyncTs(primary._deletedIds[id]);
+    const sTs = parseSyncTs(mergedDeleted[id]);
+    if (!mergedDeleted[id] || pTs >= sTs) {
+      mergedDeleted[id] = primary._deletedIds[id];
+    }
+  });
+  const isDeleted = (id) => Boolean(id && Object.prototype.hasOwnProperty.call(mergedDeleted, String(id)));
+
   const merged = { ...secondary, ...primary };
+  merged._deletedIds = pruneDeletedIds(mergedDeleted);
   merged.habitConfig = normalizeHabitConfig(primary.habitConfig || secondary.habitConfig);
   merged.workouts = mergeByKey(primary.workouts, secondary.workouts, w => w.id)
+    .filter(w => !isDeleted(w.id))
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')) || String(a.id || '').localeCompare(String(b.id || '')));
   merged.weightHistory = mergeByKey(primary.weightHistory, secondary.weightHistory, w => w.date)
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
-  merged.recipes = mergeByKey(primary.recipes, secondary.recipes, r => r.id);
-  merged.snacks = mergeByKey(primary.snacks, secondary.snacks, s => s.id);
-  merged.sportHabits = mergeByKey(primary.sportHabits, secondary.sportHabits, h => h.id);
+  merged.recipes = mergeByKey(primary.recipes, secondary.recipes, r => r.id).filter(r => !isDeleted(r.id));
+  merged.snacks = mergeByKey(primary.snacks, secondary.snacks, s => s.id).filter(s => !isDeleted(s.id));
+  merged.sportHabits = mergeByKey(primary.sportHabits, secondary.sportHabits, h => h.id).filter(h => !isDeleted(h.id));
 
-  // Tageslogs zusammenführen, ohne Einträge oder Habits von einem Gerät zu verlieren
-  const mergedLogs = { ...(secondary.logs || {}) };
-  Object.keys(primary.logs || {}).forEach(dateKey => {
-    const pLog = primary.logs[dateKey] || {};
-    const sLog = mergedLogs[dateKey] || {};
-    const entries = mergeByKey(pLog.entries || [], sLog.entries || [], e => e.id || `${e.name}_${e.kcal}`);
+  // Tageslogs über ALLE Datums-Keys beider Geräte verlustfrei zusammenführen
+  const allDates = new Set([
+    ...Object.keys(secondary.logs || {}),
+    ...Object.keys(primary.logs || {})
+  ]);
+  const mergedLogs = {};
+  allDates.forEach(dateKey => {
+    const pLog = (primary.logs && primary.logs[dateKey]) || {};
+    const sLog = (secondary.logs && secondary.logs[dateKey]) || {};
+    const entries = mergeByKey(pLog.entries || [], sLog.entries || [], e => e.id || `${e.name}_${e.kcal}`)
+      .filter(e => !isDeleted(e.id));
     const sportDone = [...new Set([...(sLog.sportDone || []), ...(pLog.sportDone || [])])];
     const badHabits = { ...(sLog.badHabits || {}) };
     Object.keys(pLog.badHabits || {}).forEach(k => {
@@ -367,7 +471,7 @@ function mergeCloudStates(localSt, remoteSt) {
     mergedLogs[dateKey] = { ...sLog, ...pLog, entries, sportDone, badHabits, routines, customHabits };
   });
   merged.logs = mergedLogs;
-  merged._updatedAt = localNewer ? (loc._updatedAt || rem._updatedAt) : (rem._updatedAt || loc._updatedAt);
+  merged._updatedAt = nextMonotonicIsoTs();
   return normalizeLoadedState(merged);
 }
 
@@ -401,22 +505,84 @@ function updateHeaderSyncDot(mode) {
     dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle';
     btn.appendChild(dot);
   }
-  if (mode === 'syncing') dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-amber-400 animate-pulse';
-  else if (mode === 'error') dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-rose-500';
-  else if (mode === 'ok') dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-emerald-400';
-  else dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-zinc-600';
+  if (mode === 'syncing') {
+    dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-amber-400 animate-pulse';
+    btn.title = 'Cloud-Sync läuft…';
+  } else if (mode === 'offline') {
+    dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-amber-500';
+    btn.title = syncMeta.pendingCount > 0
+      ? `Offline – ${syncMeta.pendingCount} lokale Änderung(en) warten auf Sync`
+      : 'Offline – Änderungen werden lokal gespeichert';
+  } else if (mode === 'error') {
+    dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-rose-500';
+    btn.title = lastSyncStatusMsg || 'Sync-Fehler';
+  } else if (mode === 'ok') {
+    dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-emerald-400';
+    btn.title = lastSyncStatusMsg || 'Mit Cloud synchronisiert';
+  } else {
+    dot.className = 'inline-block w-2 h-2 rounded-full ml-1.5 align-middle bg-zinc-600';
+    btn.title = 'Daten sichern / wiederherstellen';
+  }
 }
 
-function setSyncStatusText(msg, isError = false) {
+function updateOfflineBanner() {
+  if (typeof document === 'undefined') return;
+  const offline = isAppOffline();
+  const pending = hasPendingLocalPush && syncMeta.pendingCount > 0;
+  const cfg = getSyncConfig();
+  const hasCloudCfg = Boolean(cfg && cfg.syncKey);
+
+  let banner = document.getElementById('offlineSyncBanner');
+  if (!offline && !(pending && hasCloudCfg && lastSyncStatusErr)) {
+    if (banner) banner.remove();
+    return;
+  }
+
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'offlineSyncBanner';
+    const mainEl = document.getElementById('app-content');
+    if (mainEl && mainEl.parentNode) {
+      mainEl.parentNode.insertBefore(banner, mainEl);
+    } else if (document.body) {
+      document.body.prepend(banner);
+    }
+  }
+
+  banner.className = 'max-w-3xl mx-auto px-4 pt-2.5';
+  const countTxt = syncMeta.pendingCount > 0
+    ? `${syncMeta.pendingCount} Änderung${syncMeta.pendingCount === 1 ? '' : 'en'} lokal vorgemerkt`
+    : 'Alle Eingaben werden lokal gespeichert';
+  banner.innerHTML = offline
+    ? `
+      <div class="rounded-2xl bg-amber-500/15 border border-amber-500/35 px-3 py-2 flex items-center justify-between gap-2 text-[11px] text-amber-200">
+        <span>📡 <strong>Offline-Modus</strong> · ${countTxt} – Auto-Merge sobald wieder online</span>
+      </div>
+    `
+    : `
+      <div class="rounded-2xl bg-amber-500/15 border border-amber-500/35 px-3 py-2 flex items-center justify-between gap-2 text-[11px] text-amber-200">
+        <span>☁️ ${countTxt} (Wiederholung läuft…)</span>
+        <button type="button" onclick="syncNowWithMerge()" class="px-2 py-0.5 rounded-lg bg-amber-500/25 hover:bg-amber-500/35 text-amber-100 font-semibold shrink-0">Jetzt</button>
+      </div>
+    `;
+}
+
+function setSyncStatusText(msg, isError = false, modeOverride = null) {
   lastSyncStatusMsg = msg;
   lastSyncStatusErr = isError;
-  if (isError) updateHeaderSyncDot('error');
-  else if (/sende|verbinde|lade/i.test(msg)) updateHeaderSyncDot('syncing');
+  if (modeOverride) updateHeaderSyncDot(modeOverride);
+  else if (isError) updateHeaderSyncDot('error');
+  else if (/sende|verbinde|lade|merge|abgleich/i.test(msg)) updateHeaderSyncDot('syncing');
+  else if (/offline/i.test(msg)) updateHeaderSyncDot('offline');
   else updateHeaderSyncDot('ok');
   const el = document.getElementById('syncStatusLabel');
-  if (!el) return;
-  el.textContent = msg;
-  el.className = isError ? 'text-[11px] text-rose-400' : 'text-[11px] text-emerald-400';
+  if (el) {
+    el.textContent = msg;
+    el.className = isError
+      ? 'text-[11px] text-rose-400'
+      : (modeOverride === 'offline' || /offline/i.test(msg) ? 'text-[11px] text-amber-300' : 'text-[11px] text-emerald-400');
+  }
+  updateOfflineBanner();
 }
 
 function buildSyncHeaders(cfg, extra = {}) {
@@ -441,6 +607,50 @@ function nextMonotonicIsoTs() {
   return new Date(Math.max(Date.now(), prevMs + 1000)).toISOString();
 }
 
+async function fetchSyncWithTimeout(url, options = {}, timeoutMs = SYNC_FETCH_TIMEOUT_MS) {
+  if (typeof AbortController === 'undefined' || options.keepalive) {
+    return fetch(url, options);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    try { controller.abort(); } catch (e) {}
+  }, timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error('Zeitüberschreitung bei Cloud-Sync');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function scheduleSyncRetry() {
+  clearTimeout(syncRetryTimer);
+  const cfg = getSyncConfig();
+  if (!cfg || !cfg.syncKey || !hasPendingLocalPush) return;
+  const delays = [3000, 8000, 20000, 60000];
+  const delay = delays[Math.min(syncRetryAttempt, delays.length - 1)];
+  syncRetryAttempt = Math.min(syncRetryAttempt + 1, delays.length);
+  syncRetryTimer = setTimeout(() => {
+    syncRetryTimer = null;
+    if (hasPendingLocalPush && !isAppOffline()) {
+      pullStateFromCloud(false);
+    }
+  }, delay);
+}
+
+async function syncNowWithMerge() {
+  syncRetryAttempt = 0;
+  clearTimeout(syncRetryTimer);
+  await pullStateFromCloud(false);
+  if (hasPendingLocalPush && !isAppOffline()) {
+    await pushStateToCloud(false, false);
+  }
+}
+
 async function pushStateToCloud(useKeepalive = false, showAlert = false) {
   clearTimeout(syncTimer);
   const cfg = getSyncConfig();
@@ -449,16 +659,62 @@ async function pushStateToCloud(useKeepalive = false, showAlert = false) {
     return;
   }
 
+  if (isAppOffline()) {
+    setPendingLocalPush(true);
+    const cnt = syncMeta.pendingCount;
+    setSyncStatusText(`Offline · lokal gespeichert (${cnt} offen)`, false, 'offline');
+    if (showAlert) alert('📡 Du bist aktuell offline. Alle Änderungen sind sicher lokal gespeichert und werden automatisch abgeglichen, sobald wieder Verbindung besteht.');
+    return;
+  }
+
   // Schutz gegen Datenverlust durch ein frisch installiertes Gerät:
   // Vor dem ersten erfolgreichen Cloud-Abgleich niemals blind überschreiben!
   if (!showAlert && !lastRemoteTimestamp) {
-    hasPendingLocalPush = true;
+    setPendingLocalPush(true);
     if (isSyncInFlight) {
       syncTimer = setTimeout(() => pushStateToCloud(false, false), 800);
     } else {
       await pullStateFromCloud(false);
     }
     return;
+  }
+
+  const baseUrl = `${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync?sync_key=eq.${encodeURIComponent(cfg.syncKey)}`;
+  const wasOfflineQueue = hasPendingLocalPush && (syncMeta.pendingCount > 0) && syncRetryAttempt > 0;
+
+  // Konflikt-Schutz (Pull-before-Push): Prüfen ob ein anderes Gerät zwischenzeitlich geschrieben hat
+  if (!useKeepalive && !showAlert && lastRemoteTimestamp) {
+    try {
+      const headRes = await fetchSyncWithTimeout(`${baseUrl}&select=updated_at`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: buildSyncHeaders(cfg)
+      });
+      if (headRes.ok) {
+        const headRows = await headRes.json();
+        const remoteHeadTs = headRows?.[0]?.updated_at || '';
+        if (remoteHeadTs && parseSyncTs(remoteHeadTs) > parseSyncTs(lastRemoteTimestamp)) {
+          setSyncStatusText('Konflikt erkannt – führe Cloud-Daten zusammen…');
+          const fullRes = await fetchSyncWithTimeout(`${baseUrl}&select=payload,updated_at`, {
+            method: 'GET',
+            cache: 'no-store',
+            headers: buildSyncHeaders(cfg)
+          });
+          if (fullRes.ok) {
+            const fullRows = await fullRes.json();
+            const remotePayload = fullRows?.[0]?.payload;
+            if (remotePayload && typeof remotePayload === 'object') {
+              state = mergeCloudStates(state, remotePayload);
+              try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+              setLastSyncedRemoteTs(fullRows[0].updated_at || remoteHeadTs);
+              render();
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Bei Offline/Netzwerkfehler unten sauber als Pending-Queue abfangen
+    }
   }
 
   const updatedAt = nextMonotonicIsoTs();
@@ -474,7 +730,7 @@ async function pushStateToCloud(useKeepalive = false, showAlert = false) {
 
   try {
     setSyncStatusText('Sende in Cloud...');
-    const res = await fetch(`${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync`, {
+    const res = await fetchSyncWithTimeout(`${cfg.url.replace(/\/$/, '')}/rest/v1/fuel_sync`, {
       method: 'POST',
       keepalive: safeKeepalive,
       headers: buildSyncHeaders(cfg, {
@@ -487,15 +743,26 @@ async function pushStateToCloud(useKeepalive = false, showAlert = false) {
       const errBody = await res.json().catch(() => ({}));
       throw new Error(errBody.message || `HTTP ${res.status}`);
     }
-    hasPendingLocalPush = false;
-    lastRemoteTimestamp = updatedAt;
+    syncRetryAttempt = 0;
+    clearTimeout(syncRetryTimer);
+    setPendingLocalPush(false);
+    setLastSyncedRemoteTs(updatedAt);
     const kb = Math.round(bodyStr.length / 1024);
     const wCount = Array.isArray(state.workouts) ? state.workouts.length : 0;
     const timeStr = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
     setSyncStatusText(`Gesendet (${wCount} Wo., ${kb} KB · ${timeStr})`);
+    if (wasOfflineQueue && typeof showToast === 'function') {
+      showToast('☁️ Offline-Änderungen erfolgreich synchronisiert');
+    }
     if (showAlert) alert(`✅ In Cloud gesichert: ${wCount} Workouts, ${(state.weightHistory || []).length} Gewichtstage, ${(state.recipes || []).length} Rezepte.`);
   } catch (err) {
-    setSyncStatusText(`Push-Fehler: ${err.message}`, true);
+    setPendingLocalPush(true);
+    if (isAppOffline()) {
+      setSyncStatusText(`Offline · lokal gespeichert (${syncMeta.pendingCount} offen)`, false, 'offline');
+    } else {
+      setSyncStatusText(`Push-Fehler: ${err.message}`, true);
+      scheduleSyncRetry();
+    }
     if (showAlert) alert(`❌ Cloud-Upload fehlgeschlagen: ${err.message}`);
   }
 }
@@ -503,6 +770,12 @@ async function pushStateToCloud(useKeepalive = false, showAlert = false) {
 async function pullStateFromCloud(forceOverwrite = false) {
   const cfg = getSyncConfig();
   if (!cfg || !cfg.url || !cfg.anonKey || !cfg.syncKey) return;
+  if (isAppOffline()) {
+    const cnt = syncMeta.pendingCount;
+    setSyncStatusText(cnt > 0 ? `Offline · lokal gespeichert (${cnt} offen)` : 'Offline · lokal gespeichert', false, 'offline');
+    if (forceOverwrite) alert('📡 Du bist aktuell offline – Cloud-Download nicht möglich.');
+    return;
+  }
   if (isSyncInFlight && !forceOverwrite) return;
 
   isSyncInFlight = true;
@@ -511,7 +784,7 @@ async function pullStateFromCloud(forceOverwrite = false) {
 
     // Bei normalem Hintergrund-Check erst winzigen Zeitstempel prüfen (~40 Bytes)
     if (!forceOverwrite && !hasPendingLocalPush && lastRemoteTimestamp) {
-      const headRes = await fetch(`${baseUrl}&select=updated_at`, {
+      const headRes = await fetchSyncWithTimeout(`${baseUrl}&select=updated_at`, {
         method: 'GET',
         cache: 'no-store',
         headers: buildSyncHeaders(cfg)
@@ -525,7 +798,7 @@ async function pullStateFromCloud(forceOverwrite = false) {
       }
     }
 
-    const res = await fetch(`${baseUrl}&select=payload,updated_at`, {
+    const res = await fetchSyncWithTimeout(`${baseUrl}&select=payload,updated_at`, {
       method: 'GET',
       cache: 'no-store',
       headers: buildSyncHeaders(cfg)
@@ -537,7 +810,7 @@ async function pullStateFromCloud(forceOverwrite = false) {
     const rows = await res.json();
 
     if (!rows.length) {
-      lastRemoteTimestamp = new Date(0).toISOString();
+      setLastSyncedRemoteTs(new Date(0).toISOString());
       isSyncInFlight = false;
       await pushStateToCloud();
       return;
@@ -551,7 +824,7 @@ async function pullStateFromCloud(forceOverwrite = false) {
 
     if (remoteHadDemoWeights || removedDemoWeightsOnLoad) {
       removedDemoWeightsOnLoad = false;
-      hasPendingLocalPush = true;
+      setPendingLocalPush(true);
     }
 
     const isEditingNow = !forceOverwrite && (
@@ -562,9 +835,9 @@ async function pullStateFromCloud(forceOverwrite = false) {
     if (forceOverwrite) {
       state = remotePayload;
       if (remoteTs) state._updatedAt = remoteTs;
-      hasPendingLocalPush = false;
+      setPendingLocalPush(false);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      lastRemoteTimestamp = remoteTs;
+      setLastSyncedRemoteTs(remoteTs);
       render();
       const wCount = (state.workouts || []).length;
       const gCount = (state.weightHistory || []).length;
@@ -592,27 +865,37 @@ async function pullStateFromCloud(forceOverwrite = false) {
         state = remotePayload;
         state._updatedAt = remoteTs;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-        lastRemoteTimestamp = remoteTs;
+        setLastSyncedRemoteTs(remoteTs);
         render();
       } else if (hasPendingLocalPush || remoteLooksWiped || remoteWCount > localWCount || remoteWeightCount > localWeightCount || (localMs > remoteMs && remoteMs > 0)) {
-        // Parallele / noch nicht gesendete Änderungen verlustfrei zusammenführen und hochschicken
+        // Parallele / offline gespeicherte Änderungen verlustfrei zusammenführen und hochschicken
+        const hadPending = hasPendingLocalPush;
         const merged = mergeCloudStates(state, remotePayload);
         state = merged;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-        lastRemoteTimestamp = remoteTs;
+        setLastSyncedRemoteTs(remoteTs);
         render();
         isSyncInFlight = false;
         await pushStateToCloud();
+        if (hadPending && !hasPendingLocalPush && typeof showToast === 'function') {
+          showToast('☁️ Offline-Änderungen mit Cloud abgeglichen');
+        }
         return;
       } else if (remoteTs) {
-        lastRemoteTimestamp = remoteTs;
+        setLastSyncedRemoteTs(remoteTs);
       }
     }
 
     const wCount = (state.workouts || []).length;
     setSyncStatusText(`Synchron (${wCount} Wo. · ${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})`);
   } catch (err) {
-    setSyncStatusText(`Pull-Fehler: ${err.message}`, true);
+    if (isAppOffline()) {
+      const cnt = syncMeta.pendingCount;
+      setSyncStatusText(cnt > 0 ? `Offline · lokal gespeichert (${cnt} offen)` : 'Offline · lokal gespeichert', false, 'offline');
+    } else {
+      setSyncStatusText(`Pull-Fehler: ${err.message}`, true);
+      if (hasPendingLocalPush) scheduleSyncRetry();
+    }
   } finally {
     isSyncInFlight = false;
   }
@@ -620,12 +903,17 @@ async function pullStateFromCloud(forceOverwrite = false) {
 
 function saveState() {
   state._updatedAt = nextMonotonicIsoTs();
-  hasPendingLocalPush = true;
-  updateHeaderSyncDot('syncing');
+  setPendingLocalPush(true, true);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {}
 
+  if (isAppOffline()) {
+    setSyncStatusText(`Offline · lokal gespeichert (${syncMeta.pendingCount} offen)`, false, 'offline');
+    return;
+  }
+
+  updateHeaderSyncDot('syncing');
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     pushStateToCloud();
@@ -2263,6 +2551,7 @@ function logRecipeToDay(recipeId, multiplier = 1) {
 function deleteDayEntry(entryId) {
   const log = ensureDayLog(state.selectedDate);
   log.entries = log.entries.filter(e => e.id !== entryId);
+  markDeletedId(entryId);
   saveState();
   render();
 }
@@ -3865,6 +4154,7 @@ function deleteSnackById(snackId) {
   if (!snack) return;
   if (!confirm(`Snack „${snack.name}“ aus der Liste entfernen?`)) return;
   state.snacks = snacks.filter(s => s.id !== snackId);
+  markDeletedId(snackId);
   if (editingSnackId === snackId) editingSnackId = null;
   saveState();
   render();
@@ -4774,6 +5064,7 @@ function deleteRecipeById(id) {
   if (!rec) return;
   if (!confirm(`Rezept "${rec.name}" wirklich löschen?`)) return;
   state.recipes = state.recipes.filter(r => r.id !== id);
+  markDeletedId(id);
   saveState();
   render();
 }
@@ -4855,6 +5146,7 @@ function saveSportHabitEdit(id) {
 
 function deleteSportHabit(id) {
   state.sportHabits = state.sportHabits.filter(s => s.id !== id);
+  markDeletedId(id);
   saveState();
   render();
 }
@@ -5407,10 +5699,21 @@ function openBackupModal() {
             ${lastSyncStatusMsg || (cfg.syncKey ? 'Aktiv' : 'Nicht eingerichtet')}
           </span>
         </div>
-        <div class="text-[10px] text-zinc-400 bg-zinc-950/80 border border-zinc-800/80 rounded-xl px-2.5 py-1.5">
-          Auf diesem Gerät: <strong class="text-white">${(state.workouts || []).length}</strong> Workouts ·
-          <strong class="text-white">${(state.weightHistory || []).length}</strong> Gewichtstage ·
-          <strong class="text-white">${(state.recipes || []).length}</strong> Rezepte
+        <div class="text-[10px] text-zinc-400 bg-zinc-950/80 border border-zinc-800/80 rounded-xl px-2.5 py-1.5 space-y-0.5">
+          <div>
+            Auf diesem Gerät: <strong class="text-white">${(state.workouts || []).length}</strong> Workouts ·
+            <strong class="text-white">${(state.weightHistory || []).length}</strong> Gewichtstage ·
+            <strong class="text-white">${(state.recipes || []).length}</strong> Rezepte ·
+            <strong class="text-white">${(state.snacks || []).length}</strong> Snacks
+          </div>
+          <div class="${hasPendingLocalPush ? 'text-amber-300' : 'text-zinc-500'}">
+            ${isAppOffline()
+              ? `📡 Offline · ${syncMeta.pendingCount > 0 ? `${syncMeta.pendingCount} Änderung(en) warten auf Sync` : 'lokale Speicherung aktiv'}`
+              : hasPendingLocalPush
+                ? `⏳ ${Math.max(1, syncMeta.pendingCount)} lokale Änderung(en) noch nicht abgeglichen`
+                : `✓ Alle Daten synchron${syncMeta.lastSyncedAt ? ` (Stand ${new Date(syncMeta.lastSyncedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })})` : ''}`
+            }
+          </div>
         </div>
         <input id="sync-secret" type="password" value="${cfg.syncKey}" placeholder="Dein persönlicher Sync-Key (z. B. alex-ff-2026)"
           onkeydown="if(event.key==='Enter') saveSyncSettings()"
@@ -7463,25 +7766,35 @@ if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' &
 }
 
 pullStateFromCloud();
+updateOfflineBanner();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     pullStateFromCloud();
-  } else if (hasPendingLocalPush) {
+  } else if (hasPendingLocalPush && !isAppOffline()) {
     clearTimeout(syncTimer);
     pushStateToCloud(true);
   }
 });
 window.addEventListener('focus', () => pullStateFromCloud());
 window.addEventListener('online', () => {
-  if (hasPendingLocalPush) pushStateToCloud();
-  else pullStateFromCloud();
+  syncRetryAttempt = 0;
+  clearTimeout(syncRetryTimer);
+  updateOfflineBanner();
+  // Immer zuerst Pull -> Merge -> Push, damit parallele Offline-Änderungen beider Geräte verschmolzen werden
+  syncNowWithMerge();
+});
+window.addEventListener('offline', () => {
+  const cnt = syncMeta.pendingCount;
+  setSyncStatusText(cnt > 0 ? `Offline · lokal gespeichert (${cnt} offen)` : 'Offline · lokal gespeichert', false, 'offline');
 });
 window.addEventListener('pagehide', () => {
-  if (hasPendingLocalPush) {
+  if (hasPendingLocalPush && !isAppOffline()) {
     clearTimeout(syncTimer);
     pushStateToCloud(true);
   }
 });
 setInterval(() => {
-  if (document.visibilityState === 'visible') pullStateFromCloud();
+  if (document.visibilityState === 'visible' && !isAppOffline()) {
+    pullStateFromCloud();
+  }
 }, 5000);

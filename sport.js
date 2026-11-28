@@ -2688,6 +2688,7 @@ function deleteWorkout(id) {
   if (!w) return;
   if (!confirm('Diese Einheit wirklich löschen?')) return;
   state.workouts = getWorkouts().filter(x => x.id !== id);
+  if (typeof markDeletedId === 'function') markDeletedId(id);
   syncSportDoneAfterRemoval(w.date, w.activityId, id);
   saveState();
   render();
