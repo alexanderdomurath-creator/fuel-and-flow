@@ -4808,8 +4808,69 @@ function exportCsvExcel() {
 }
 
 const GEMINI_KEY_STORAGE = 'fuel_and_flow_gemini_key';
+const GEMINI_MODELS_TO_TRY = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-flash-latest', 'gemini-2.5-flash'];
+const GEMINI_FETCH_TIMEOUT_MS = 25000;
 let aiParsedMeal = null;
 let aiSelectedImageBase64 = null;
+let aiSelectedImageMime = 'image/jpeg';
+let aiImagePrepPromise = null;
+let aiImagePrepSeq = 0;
+let aiAnalyzeAbortController = null;
+let aiAnalyzeTimerInterval = null;
+let aiAnalyzeRunId = 0;
+let aiAnalyzeUserCancelled = false;
+
+function extractGeminiJsonText(result) {
+  const parts = result?.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts) && parts.length) {
+    const nonThoughtText = parts
+      .filter(p => !p.thought && typeof p.text === 'string' && p.text.trim())
+      .map(p => p.text)
+      .join('\n')
+      .trim();
+    const fallbackText = parts
+      .filter(p => typeof p.text === 'string' && p.text.trim())
+      .map(p => p.text)
+      .join('\n')
+      .trim();
+    const raw = nonThoughtText || fallbackText;
+    if (raw) {
+      return raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    }
+  }
+  const blockReason = result?.promptFeedback?.blockReason;
+  if (blockReason) {
+    throw new Error(`Anfrage von Gemini blockiert (${blockReason}).`);
+  }
+  const finishReason = result?.candidates?.[0]?.finishReason;
+  if (finishReason && finishReason !== 'STOP') {
+    throw new Error(`Unvollständige Antwort von Gemini (${finishReason}).`);
+  }
+  throw new Error('Gemini hat eine leere Antwort zurückgegeben.');
+}
+
+function cancelAiMealAnalysis(silent = false) {
+  aiAnalyzeUserCancelled = true;
+  if (aiAnalyzeTimerInterval) {
+    clearInterval(aiAnalyzeTimerInterval);
+    aiAnalyzeTimerInterval = null;
+  }
+  if (aiAnalyzeAbortController) {
+    try { aiAnalyzeAbortController.abort(); } catch (e) {}
+    aiAnalyzeAbortController = null;
+  }
+  const btn = document.getElementById('aiAnalyzeBtn');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = '✨ Jetzt analysieren';
+  }
+  if (!silent) {
+    const preview = document.getElementById('aiMealPreview');
+    if (preview) {
+      preview.innerHTML = '<div style="color:#a1a1aa;font-size:0.83rem;">Analyse abgebrochen.</div>';
+    }
+  }
+}
 
 function openAiMealModal() {
   let modal = document.getElementById('aiMealModal');
@@ -4821,7 +4882,7 @@ function openAiMealModal() {
       <div style="background:#18181b;color:#f4f4f5;border:1px solid #27272a;border-radius:16px;max-width:480px;width:100%;max-height:92vh;overflow-y:auto;padding:20px;box-shadow:0 20px 40px rgba(0,0,0,0.6);">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <h3 style="margin:0;font-size:1.1rem;">✨ KI-Mahlzeit scannen</h3>
-          <button onclick="closeAiMealModal()" style="background:none;border:none;color:#a1a1aa;font-size:1.3rem;cursor:pointer;">✕</button>
+          <button type="button" onclick="closeAiMealModal()" style="background:none;border:none;color:#a1a1aa;font-size:1.3rem;cursor:pointer;">✕</button>
         </div>
 
         <details id="aiKeyDetails" style="margin-bottom:12px;background:#09090b;border:1px solid #27272a;border-radius:10px;padding:8px 12px;">
@@ -4829,7 +4890,7 @@ function openAiMealModal() {
           <div style="display:flex;gap:6px;margin-top:8px;">
             <input type="password" id="aiApiKeyInput" placeholder="AIzaSy..."
               style="flex:1;background:#18181b;color:#fff;border:1px solid #3f3f46;border-radius:6px;padding:6px 8px;font-size:0.8rem;">
-            <button onclick="saveGeminiApiKey()" style="background:#27272a;color:#fff;border:1px solid #3f3f46;border-radius:6px;padding:6px 10px;font-size:0.8rem;cursor:pointer;">
+            <button type="button" onclick="saveGeminiApiKey()" style="background:#27272a;color:#fff;border:1px solid #3f3f46;border-radius:6px;padding:6px 10px;font-size:0.8rem;cursor:pointer;">
               Speichern
             </button>
           </div>
@@ -4847,13 +4908,14 @@ function openAiMealModal() {
         </div>
 
         <div id="aiPhotoPreviewWrap" style="display:none;margin-bottom:10px;text-align:center;">
-          <img id="aiPhotoPreviewImg" style="max-height:180px;border-radius:10px;border:1px solid #3f3f46;object-fit:cover;" />
+          <img id="aiPhotoPreviewImg" style="max-height:180px;border-radius:10px;border:1px solid #3f3f46;object-fit:cover;margin:0 auto;" />
         </div>
+        <div id="aiPhotoStatus" style="display:none;margin-bottom:10px;font-size:0.78rem;color:#a1a1aa;text-align:center;"></div>
 
         <input type="text" id="aiMealHintInput" placeholder="Optionaler Hinweis (z. B. 'in 1 EL Olivenöl gebraten' oder nur Text)"
           style="width:100%;box-sizing:border-box;background:#09090b;color:#e4e4e7;border:1px solid #3f3f46;border-radius:10px;padding:10px;font-size:0.85rem;margin-bottom:10px;">
 
-        <button id="aiAnalyzeBtn" onclick="analyzeMealWithGemini()"
+        <button type="button" id="aiAnalyzeBtn" onclick="analyzeMealWithGemini()"
           style="width:100%;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:10px;padding:11px;font-weight:600;font-size:0.92rem;cursor:pointer;">
           ✨ Jetzt analysieren
         </button>
@@ -4864,22 +4926,33 @@ function openAiMealModal() {
     document.body.appendChild(modal);
   }
 
+  cancelAiMealAnalysis(true);
+
   const savedKey = localStorage.getItem(GEMINI_KEY_STORAGE) || '';
   document.getElementById('aiApiKeyInput').value = savedKey;
   document.getElementById('aiKeyDetails').open = !savedKey;
 
   aiParsedMeal = null;
   aiSelectedImageBase64 = null;
+  aiSelectedImageMime = 'image/jpeg';
+  aiImagePrepPromise = null;
+  aiImagePrepSeq++;
   document.getElementById('aiPhotoInput').value = '';
   const camInput = document.getElementById('aiCameraInput');
   if (camInput) camInput.value = '';
   document.getElementById('aiPhotoPreviewWrap').style.display = 'none';
+  const photoStatus = document.getElementById('aiPhotoStatus');
+  if (photoStatus) {
+    photoStatus.style.display = 'none';
+    photoStatus.textContent = '';
+  }
   document.getElementById('aiMealHintInput').value = '';
   document.getElementById('aiMealPreview').innerHTML = '';
   modal.style.display = 'flex';
 }
 
 function closeAiMealModal() {
+  cancelAiMealAnalysis(true);
   const modal = document.getElementById('aiMealModal');
   if (modal) modal.style.display = 'none';
 }
@@ -4892,57 +4965,212 @@ function saveGeminiApiKey() {
   document.getElementById('aiMealPreview').innerHTML = '<div style="color:#4ade80;font-size:0.82rem;">✓ API Key lokal gespeichert.</div>';
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Foto konnte nicht gelesen werden.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function compressDrawableToJpeg(source, srcW, srcH, maxDim = 1024, quality = 0.8) {
+  let w = srcW;
+  let h = srcH;
+  if (!w || !h) throw new Error('Ungültige Bildgröße.');
+  if (w > maxDim || h > maxDim) {
+    if (w > h) { h = Math.max(1, Math.round((h * maxDim) / w)); w = maxDim; }
+    else { w = Math.max(1, Math.round((w * maxDim) / h)); h = maxDim; }
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas-Kontext nicht verfügbar.');
+  ctx.drawImage(source, 0, 0, w, h);
+  const dataUrl = canvas.toDataURL('image/jpeg', quality);
+  const parts = dataUrl.split(',');
+  if (!parts[1] || parts[1].length < 32) {
+    throw new Error('Bildkomprimierung ergab leere Daten.');
+  }
+  return { base64: parts[1], mimeType: 'image/jpeg', previewUrl: dataUrl };
+}
+
+async function prepareAiPhotoFile(file) {
+  // 1. Schneller, speicherschonender Weg über createImageBitmap (ideal für große Smartphone-Kamerafotos)
+  if (typeof createImageBitmap === 'function') {
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(file);
+      return compressDrawableToJpeg(bitmap, bitmap.width, bitmap.height);
+    } catch (e) {
+      // Fallback unten nutzen
+    } finally {
+      if (bitmap && typeof bitmap.close === 'function') {
+        try { bitmap.close(); } catch (e) {}
+      }
+    }
+  }
+
+  // 2. Fallback über Object-URL + Image + Canvas
+  if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+    const objUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const el = new Image();
+        const timer = setTimeout(() => reject(new Error('Zeitüberschreitung beim Laden des Fotos.')), 12000);
+        el.onload = () => { clearTimeout(timer); resolve(el); };
+        el.onerror = () => { clearTimeout(timer); reject(new Error('Bildformat konnte nicht dekodiert werden.')); };
+        el.src = objUrl;
+      });
+      return compressDrawableToJpeg(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
+    } catch (e) {
+      // Fallback 3 unten nutzen (z. B. HEIC/HEIF auf manchen Browsern)
+    } finally {
+      try { URL.revokeObjectURL(objUrl); } catch (e) {}
+    }
+  }
+
+  // 3. Direkter Fallback für Formate wie HEIC/HEIF, die Canvas nicht rendern kann, Gemini aber versteht
+  if (file.size > 8 * 1024 * 1024) {
+    throw new Error('Das Foto ist zu groß (über 8 MB) und konnte nicht verkleinert werden.');
+  }
+  const dataUrl = await readFileAsDataUrl(file);
+  const commaIdx = dataUrl.indexOf(',');
+  const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : '';
+  if (!base64) throw new Error('Foto enthält keine lesbaren Bilddaten.');
+  const detectedMime = (file.type && file.type.startsWith('image/')) ? file.type : 'image/jpeg';
+  return { base64, mimeType: detectedMime, previewUrl: dataUrl };
+}
+
 function handleAiPhotoSelect(event) {
-  const file = event.target.files && event.target.files[0];
+  const input = event.target;
+  const file = input && input.files && input.files[0];
   if (!file) return;
 
-  const reader = new FileReader();
-  reader.onload = function (e) {
-    const img = new Image();
-    img.onload = function () {
-      const maxDim = 1024;
-      let w = img.width;
-      let h = img.height;
-      if (w > maxDim || h > maxDim) {
-        if (w > h) { h = Math.round((h * maxDim) / w); w = maxDim; }
-        else { w = Math.round((w * maxDim) / h); h = maxDim; }
+  const seq = ++aiImagePrepSeq;
+  aiSelectedImageBase64 = null;
+  aiSelectedImageMime = 'image/jpeg';
+
+  const previewWrap = document.getElementById('aiPhotoPreviewWrap');
+  const previewImg = document.getElementById('aiPhotoPreviewImg');
+  const photoStatus = document.getElementById('aiPhotoStatus');
+  if (previewWrap) previewWrap.style.display = 'none';
+  if (photoStatus) {
+    photoStatus.style.display = 'block';
+    photoStatus.style.color = '#a1a1aa';
+    photoStatus.textContent = '⏳ Foto wird vorbereitet...';
+  }
+
+  const prepTask = (async () => {
+    try {
+      const prepared = await prepareAiPhotoFile(file);
+      if (seq !== aiImagePrepSeq) return;
+
+      aiSelectedImageBase64 = prepared.base64;
+      aiSelectedImageMime = prepared.mimeType || 'image/jpeg';
+
+      const approxKb = Math.max(1, Math.round((prepared.base64.length * 3) / 4 / 1024));
+      if (previewImg && previewWrap) {
+        previewImg.onerror = () => {
+          previewWrap.style.display = 'none';
+        };
+        previewImg.onload = () => {
+          previewWrap.style.display = 'block';
+        };
+        previewImg.src = prepared.previewUrl;
       }
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      if (photoStatus) {
+        photoStatus.style.display = 'block';
+        photoStatus.style.color = '#4ade80';
+        photoStatus.textContent = `✓ Foto bereit (${approxKb} KB)`;
+      }
+    } catch (err) {
+      if (seq !== aiImagePrepSeq) return;
+      aiSelectedImageBase64 = null;
+      if (photoStatus) {
+        photoStatus.style.display = 'block';
+        photoStatus.style.color = '#f87171';
+        photoStatus.textContent = `Foto-Fehler: ${err.message || 'Unbekannter Fehler'}`;
+      }
+    } finally {
+      if (input) {
+        try { input.value = ''; } catch (e) {}
+      }
+      if (aiImagePrepPromise === prepTask) {
+        aiImagePrepPromise = null;
+      }
+    }
+  })();
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-      aiSelectedImageBase64 = dataUrl.split(',')[1];
-
-      const previewImg = document.getElementById('aiPhotoPreviewImg');
-      previewImg.src = dataUrl;
-      document.getElementById('aiPhotoPreviewWrap').style.display = 'block';
-    };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
+  aiImagePrepPromise = prepTask;
 }
 
 async function analyzeMealWithGemini() {
-  const apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
   const preview = document.getElementById('aiMealPreview');
   const btn = document.getElementById('aiAnalyzeBtn');
-  const hint = document.getElementById('aiMealHintInput').value.trim();
+  const hint = (document.getElementById('aiMealHintInput')?.value || '').trim();
+
+  let apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+  if (!apiKey) {
+    const typedKey = (document.getElementById('aiApiKeyInput')?.value || '').trim();
+    if (typedKey) {
+      apiKey = typedKey;
+      try { localStorage.setItem(GEMINI_KEY_STORAGE, apiKey); } catch (e) {}
+      const det = document.getElementById('aiKeyDetails');
+      if (det) det.open = false;
+    }
+  }
 
   if (!apiKey) {
-    document.getElementById('aiKeyDetails').open = true;
+    const det = document.getElementById('aiKeyDetails');
+    if (det) det.open = true;
     preview.innerHTML = '<div style="color:#f87171;font-size:0.84rem;">Bitte zuerst deinen Gemini API Key oben speichern.</div>';
-    return;
-  }
-  if (!aiSelectedImageBase64 && !hint) {
-    preview.innerHTML = '<div style="color:#f87171;font-size:0.84rem;">Bitte ein Foto aufnehmen oder zumindest kurz beschreiben, was du gegessen hast.</div>';
+    preview.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
     return;
   }
 
+  if (aiImagePrepPromise) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Foto wird vorbereitet...';
+    preview.innerHTML = '<div style="color:#a1a1aa;font-size:0.83rem;">⏳ Foto wird noch komprimiert...</div>';
+    await aiImagePrepPromise;
+    btn.disabled = false;
+    btn.textContent = '✨ Jetzt analysieren';
+  }
+
+  if (!aiSelectedImageBase64 && !hint) {
+    preview.innerHTML = '<div style="color:#f87171;font-size:0.84rem;">Bitte ein Foto aufnehmen oder zumindest kurz beschreiben, was du gegessen hast.</div>';
+    preview.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    return;
+  }
+
+  cancelAiMealAnalysis(true);
+  aiAnalyzeUserCancelled = false;
+  const runId = ++aiAnalyzeRunId;
+  const startedAt = Date.now();
+  let activeModel = GEMINI_MODELS_TO_TRY[0];
+
+  const renderProgress = () => {
+    if (runId !== aiAnalyzeRunId) return;
+    const secs = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    btn.textContent = `⏳ Analysiere (${secs}s)...`;
+    preview.innerHTML = `
+      <div style="background:#09090b;border:1px solid #27272a;border-radius:10px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <div style="font-size:0.82rem;color:#d4d4d8;">
+          ⏳ Analysiere Gericht mit <strong>${activeModel}</strong> (${secs}s)...
+        </div>
+        <button type="button" onclick="cancelAiMealAnalysis()" style="background:#27272a;color:#e4e4e7;border:1px solid #3f3f46;border-radius:6px;padding:4px 9px;font-size:0.75rem;cursor:pointer;flex-shrink:0;">
+          Abbrechen
+        </button>
+      </div>
+    `;
+  };
+
   btn.disabled = true;
-  btn.textContent = '⏳ Analysiere Gericht...';
-  preview.innerHTML = '';
+  renderProgress();
+  preview.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+  aiAnalyzeTimerInterval = setInterval(renderProgress, 1000);
 
   const promptText = `Du bist ein präziser Ernährungs-Tracker. Analysiere diese Mahlzeit${hint ? ` (Hinweis des Nutzers: "${hint}")` : ''}.
 Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Bratöl, Sauce, Dressing) mit ungefährem Gewicht in Gramm sowie Kalorien (kcal), Protein (p), Kohlenhydraten (c) und Fett (f) für diese Portionsgröße. ${appLang === 'es' ? 'Responde en español.' : 'Antworte auf Deutsch.'}`;
@@ -4951,13 +5179,12 @@ Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Br
   if (aiSelectedImageBase64) {
     parts.push({
       inlineData: {
-        mimeType: 'image/jpeg',
+        mimeType: aiSelectedImageMime || 'image/jpeg',
         data: aiSelectedImageBase64
       }
     });
   }
 
-  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'];
   const requestBody = JSON.stringify({
     contents: [{ parts }],
     generationConfig: {
@@ -4991,30 +5218,63 @@ Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Br
     let res = null;
     let lastError = 'Unbekannter Fehler';
 
-    for (const model of modelsToTry) {
-      btn.textContent = `⏳ Analysiere (${model})...`;
-      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: requestBody
-      });
+    for (const model of GEMINI_MODELS_TO_TRY) {
+      if (aiAnalyzeUserCancelled || runId !== aiAnalyzeRunId) return;
+      activeModel = model;
+      renderProgress();
+
+      const controller = new AbortController();
+      aiAnalyzeAbortController = controller;
+      let timedOut = false;
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        try { controller.abort(); } catch (e) {}
+      }, GEMINI_FETCH_TIMEOUT_MS);
+
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: requestBody,
+          signal: controller.signal
+        });
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (aiAnalyzeUserCancelled || runId !== aiAnalyzeRunId) return;
+        if (timedOut) {
+          lastError = `Zeitüberschreitung bei ${model} (> ${Math.round(GEMINI_FETCH_TIMEOUT_MS / 1000)}s).`;
+          res = null;
+          continue;
+        }
+        throw new Error(navigator.onLine === false
+          ? 'Keine Internetverbindung. Bitte Verbindung prüfen und erneut versuchen.'
+          : `Netzwerkfehler (${fetchErr.message || 'Verbindung unterbrochen'}).`);
+      } finally {
+        clearTimeout(timeoutId);
+        if (aiAnalyzeAbortController === controller) {
+          aiAnalyzeAbortController = null;
+        }
+      }
 
       if (res.ok) break;
 
       const errData = await res.json().catch(() => ({}));
       lastError = errData.error?.message || `HTTP ${res.status}`;
-      // Nur bei Überlastung (503), Rate-Limit (429) oder nicht verfügbarem Modell (404) weiterprobieren
-      if (![404, 429, 503].includes(res.status)) {
+      // Bei Überlastung (503/500/502/504), Rate-Limit (429) oder nicht verfügbarem Modell (404) nächstes Modell probieren
+      if (![404, 429, 500, 502, 503, 504].includes(res.status)) {
         throw new Error(lastError);
       }
       res = null;
     }
 
+    if (aiAnalyzeUserCancelled || runId !== aiAnalyzeRunId) return;
     if (!res) throw new Error(lastError);
 
     const result = await res.json();
-    const rawJson = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    const rawJson = extractGeminiJsonText(result);
     const data = JSON.parse(rawJson);
+
+    if (aiAnalyzeUserCancelled || runId !== aiAnalyzeRunId) return;
 
     aiParsedMeal = {
       mealName: data.mealName || 'KI-Mahlzeit',
@@ -5030,11 +5290,21 @@ Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Br
     };
 
     renderAiMealPreview();
+    preview.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
   } catch (err) {
+    if (aiAnalyzeUserCancelled || runId !== aiAnalyzeRunId) return;
     preview.innerHTML = `<div style="color:#f87171;font-size:0.83rem;">Fehler bei der Analyse: ${err.message}</div>`;
+    preview.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
   } finally {
-    btn.disabled = false;
-    btn.textContent = '✨ Jetzt analysieren';
+    if (runId === aiAnalyzeRunId) {
+      if (aiAnalyzeTimerInterval) {
+        clearInterval(aiAnalyzeTimerInterval);
+        aiAnalyzeTimerInterval = null;
+      }
+      aiAnalyzeAbortController = null;
+      btn.disabled = false;
+      btn.textContent = '✨ Jetzt analysieren';
+    }
   }
 }
 
@@ -5423,7 +5693,7 @@ WICHTIGE REGELN:
     });
   }
 
-  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'];
+  const modelsToTry = GEMINI_MODELS_TO_TRY;
   const requestBody = JSON.stringify({
     contents: [{ parts }],
     generationConfig: {
@@ -5457,21 +5727,40 @@ WICHTIGE REGELN:
     let res = null;
     let lastError = 'Unbekannter Fehler';
     for (const model of modelsToTry) {
-      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: requestBody
-      });
+      const controller = new AbortController();
+      let timedOut = false;
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        try { controller.abort(); } catch (e) {}
+      }, GEMINI_FETCH_TIMEOUT_MS);
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: requestBody,
+          signal: controller.signal
+        });
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (timedOut) {
+          lastError = `Zeitüberschreitung bei ${model}`;
+          res = null;
+          continue;
+        }
+        throw fetchErr;
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (res.ok) break;
       const errData = await res.json().catch(() => ({}));
       lastError = errData.error?.message || `HTTP ${res.status}`;
-      if (![404, 429, 503].includes(res.status)) throw new Error(lastError);
+      if (![404, 429, 500, 502, 503, 504].includes(res.status)) throw new Error(lastError);
       res = null;
     }
     if (!res) throw new Error(lastError);
 
     const result = await res.json();
-    const rawJson = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    const rawJson = extractGeminiJsonText(result);
     const data = JSON.parse(rawJson);
     const now = Date.now();
     const newItems = (data.items || []).map((it, idx) => ({
