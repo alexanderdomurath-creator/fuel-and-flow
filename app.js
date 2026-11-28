@@ -2557,18 +2557,21 @@ function logRecipeToDay(recipeId, multiplier = 1) {
   if (!rec) return;
   const tot = calcRecipeTotals(rec);
   const log = ensureDayLog(state.selectedDate);
+  const prevCount = typeof getRecipeEatenCount === 'function' ? getRecipeEatenCount(rec) : (Number(rec.eatenCount) || 0);
   log.entries.push({
     id: 'ent_' + Date.now(),
+    recipeId: rec.id,
     name: multiplier === 1 ? rec.name : `${rec.name} (${multiplier}x)`,
     kcal: Math.round(tot.kcal * multiplier),
     p: Math.round(tot.p * multiplier * 10) / 10,
     c: Math.round(tot.c * multiplier * 10) / 10,
     f: Math.round(tot.f * multiplier * 10) / 10
   });
+  rec.eatenCount = prevCount + 1;
   saveState();
   closeModal();
   render();
-  showToast(`✓ „${rec.name}“ auf der Startseite hinzugefügt`);
+  showToast(`✓ „${rec.name}“ auf der Startseite hinzugefügt (${rec.eatenCount}× gegessen)`);
 }
 
 function deleteDayEntry(entryId) {
@@ -3827,10 +3830,183 @@ function renderDashboard() {
   return `${dashSwitcherHtml}${dateSelectorHtml}${bilanzSectionHtml}`;
 }
 
+const RECIPE_TAG_PRESETS = ['Vegetarisch', 'Vegan', 'Proteinreich', 'Schnell', 'Low Carb', 'Meal Prep', 'Süß', 'Herzhaft'];
+let selectedRecipeTagFilter = 'all';
+let selectedRecipeSort = 'default'; // 'default' | 'rating' | 'eaten'
+
+function getRecipeTags(rec) {
+  if (!rec || !Array.isArray(rec.tags)) return [];
+  return [...new Set(rec.tags.map(t => String(t || '').trim()).filter(Boolean))];
+}
+
+function getRecipeRating(rec) {
+  const r = Math.round(Number(rec?.rating) || 0);
+  return Math.max(0, Math.min(5, r));
+}
+
+function getRecipeEatenCount(rec) {
+  if (!rec) return 0;
+  const stored = Math.max(0, Math.round(Number(rec.eatenCount) || 0));
+  const recNameLower = String(rec.name || '').trim().toLowerCase();
+  let fromLogs = 0;
+  Object.values(state.logs || {}).forEach(dayLog => {
+    (dayLog?.entries || []).forEach(e => {
+      if (!e) return;
+      if (e.recipeId && e.recipeId === rec.id) {
+        fromLogs++;
+      } else if (recNameLower) {
+        const en = String(e.name || '').trim().toLowerCase();
+        if (en === recNameLower || en.startsWith(recNameLower + ' (')) {
+          fromLogs++;
+        }
+      }
+    });
+  });
+  return Math.max(stored, fromLogs);
+}
+
+function rateRecipeById(recipeId, stars) {
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec) return;
+  const cur = getRecipeRating(rec);
+  rec.rating = cur === stars ? 0 : stars;
+  saveState();
+  render();
+}
+
+function setEditingRecipeRating(stars) {
+  if (!editingRecipe) return;
+  const cur = getRecipeRating(editingRecipe);
+  editingRecipe.rating = cur === stars ? 0 : stars;
+  render();
+}
+
+function toggleEditingRecipeTag(tag) {
+  if (!editingRecipe) return;
+  const clean = String(tag || '').trim();
+  if (!clean) return;
+  const tags = getRecipeTags(editingRecipe);
+  const idx = tags.findIndex(t => t.toLowerCase() === clean.toLowerCase());
+  if (idx >= 0) tags.splice(idx, 1);
+  else tags.push(clean);
+  editingRecipe.tags = tags;
+  render();
+}
+
+function addCustomEditingRecipeTag() {
+  const inp = document.getElementById('rec-custom-tag-input');
+  if (!inp || !editingRecipe) return;
+  const val = inp.value.trim();
+  if (!val) return;
+  const tags = getRecipeTags(editingRecipe);
+  if (!tags.some(t => t.toLowerCase() === val.toLowerCase())) {
+    tags.push(val);
+    editingRecipe.tags = tags;
+  }
+  render();
+}
+
+function toggleRecipeTagQuick(recipeId, tag) {
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec) return;
+  const clean = String(tag || '').trim();
+  if (!clean) return;
+  const tags = getRecipeTags(rec);
+  const idx = tags.findIndex(t => t.toLowerCase() === clean.toLowerCase());
+  if (idx >= 0) tags.splice(idx, 1);
+  else tags.push(clean);
+  rec.tags = tags;
+  saveState();
+  render();
+  openQuickRecipeTagModal(recipeId);
+}
+
+function addCustomRecipeTagQuick(event, recipeId) {
+  if (event) event.preventDefault();
+  const inp = document.getElementById('quick-recipe-tag-input');
+  const val = (inp?.value || '').trim();
+  if (!val) return;
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec) return;
+  const tags = getRecipeTags(rec);
+  if (!tags.some(t => t.toLowerCase() === val.toLowerCase())) {
+    tags.push(val);
+    rec.tags = tags;
+    saveState();
+    render();
+  }
+  openQuickRecipeTagModal(recipeId);
+}
+
+function openQuickRecipeTagModal(recipeId) {
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec) return;
+  const activeTags = getRecipeTags(rec);
+  const allSuggestions = [...new Set([...RECIPE_TAG_PRESETS, ...activeTags])];
+
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <h3 class="text-base font-semibold text-white truncate">🏷️ Tags für ${escapeHtmlAttr(rec.name)}</h3>
+          <p class="text-[11px] text-zinc-400">Tippe Tags an oder ergänze eigene Kategorien</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+      <div class="flex flex-wrap gap-1.5">
+        ${allSuggestions.map(tag => {
+          const isOn = activeTags.some(t => t.toLowerCase() === tag.toLowerCase());
+          const safe = tag.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+          return `
+            <button type="button" onclick="toggleRecipeTagQuick('${rec.id}', '${safe}')"
+              class="px-3 py-1.5 rounded-xl text-xs font-medium border transition ${
+                isOn
+                  ? 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300'
+                  : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200'
+              }">
+              ${isOn ? '✓ ' : '+ '}${escapeHtmlAttr(tag)}
+            </button>
+          `;
+        }).join('')}
+      </div>
+      <form onsubmit="addCustomRecipeTagQuick(event, '${rec.id}')" class="flex gap-2 min-w-0">
+        <input id="quick-recipe-tag-input" type="text" placeholder="Eigenes Tag (z. B. Frühstück, Grillen…)"
+          class="flex-1 min-w-0 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
+        <button type="submit" class="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs shrink-0 transition">
+          + Tag
+        </button>
+      </form>
+      <button type="button" onclick="closeModal()" class="w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold text-xs transition">
+        Fertig
+      </button>
+    </div>
+  `);
+}
+
+function setRecipeTagFilter(tag) {
+  selectedRecipeTagFilter = tag || 'all';
+  render();
+}
+
+function setRecipeSort(sortMode) {
+  selectedRecipeSort = sortMode || 'default';
+  render();
+}
+
+function renderRecipeStarsHtml(rating, clickFnExpr) {
+  return `<div class="inline-flex items-center gap-0.5" aria-label="Bewertung ${rating} von 5 Sternen">${[1, 2, 3, 4, 5].map(n => `
+    <button type="button" onclick="${clickFnExpr.replace('__N__', n)}" title="${n} von 5 Sternen"
+      class="text-sm leading-none transition ${n <= rating ? 'text-amber-400' : 'text-zinc-600 hover:text-amber-300/70'}">★</button>
+  `).join('')}</div>`;
+}
+
 function renderRecipesTab() {
   if (editingRecipe) {
     const tot = calcRecipeTotals(editingRecipe);
     const nameSuggestions = suggestRecipeNames(editingRecipe.items);
+    const editRating = getRecipeRating(editingRecipe);
+    const editTags = getRecipeTags(editingRecipe);
+    const tagChoices = [...new Set([...RECIPE_TAG_PRESETS, ...editTags])];
     return `
       <div class="bg-card border border-border rounded-3xl p-4 space-y-4">
         <div class="flex items-center justify-between">
@@ -3856,6 +4032,41 @@ function renderRecipesTab() {
               `).join('')}
             </div>
           ` : ''}
+        </div>
+
+        <!-- Bewertung & Tags im Rezept-Editor -->
+        <div class="rounded-2xl bg-zinc-950/70 border border-border p-3 space-y-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-xs font-medium text-zinc-300">Bewertung</span>
+            ${renderRecipeStarsHtml(editRating, 'setEditingRecipeRating(__N__)')}
+          </div>
+          <div class="space-y-1.5">
+            <div class="text-xs font-medium text-zinc-300">Tags</div>
+            <div class="flex flex-wrap gap-1.5">
+              ${tagChoices.map(tag => {
+                const isOn = editTags.some(t => t.toLowerCase() === tag.toLowerCase());
+                const safe = tag.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                return `
+                  <button type="button" onclick="toggleEditingRecipeTag('${safe}')"
+                    class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition ${
+                      isOn
+                        ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                        : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200'
+                    }">
+                    ${isOn ? '✓ ' : '+ '}${escapeHtmlAttr(tag)}
+                  </button>
+                `;
+              }).join('')}
+            </div>
+            <div class="flex gap-1.5 pt-0.5">
+              <input id="rec-custom-tag-input" type="text" placeholder="Eigenes Tag hinzufügen…"
+                onkeydown="if(event.key==='Enter'){event.preventDefault(); addCustomEditingRecipeTag();}"
+                class="flex-1 min-w-0 px-2.5 py-1.5 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
+              <button type="button" onclick="addCustomEditingRecipeTag()" class="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 font-medium shrink-0">
+                + Tag
+              </button>
+            </div>
+          </div>
         </div>
 
         <div class="grid grid-cols-4 gap-2 bg-zinc-900/90 border border-border rounded-2xl p-3 text-center">
@@ -3954,12 +4165,27 @@ function renderRecipesTab() {
     `;
   }
 
+  const allUsedTags = [...new Set((state.recipes || []).flatMap(r => getRecipeTags(r)))];
+  if (selectedRecipeTagFilter !== 'all' && !allUsedTags.some(t => t.toLowerCase() === selectedRecipeTagFilter.toLowerCase())) {
+    selectedRecipeTagFilter = 'all';
+  }
+  const filteredRecipes = (state.recipes || []).filter(rec => {
+    if (selectedRecipeTagFilter === 'all') return true;
+    return getRecipeTags(rec).some(t => t.toLowerCase() === selectedRecipeTagFilter.toLowerCase());
+  });
+  const displayRecipes = [...filteredRecipes];
+  if (selectedRecipeSort === 'rating') {
+    displayRecipes.sort((a, b) => getRecipeRating(b) - getRecipeRating(a) || getRecipeEatenCount(b) - getRecipeEatenCount(a));
+  } else if (selectedRecipeSort === 'eaten') {
+    displayRecipes.sort((a, b) => getRecipeEatenCount(b) - getRecipeEatenCount(a) || getRecipeRating(b) - getRecipeRating(a));
+  }
+
   return `
     <div class="space-y-3">
       <div class="flex items-center justify-between gap-2 flex-wrap">
         <div>
           <h2 class="text-base font-semibold text-white">Meine Rezepte</h2>
-          <p class="text-xs text-zinc-400">Vorlagen auswählen, loggen oder flexibel anpassen</p>
+          <p class="text-xs text-zinc-400">Bewerten, taggen, loggen oder flexibel anpassen</p>
         </div>
         <div class="flex items-center gap-1.5">
           <button onclick="openVoiceRecipeModal(false)" class="px-3 py-2 rounded-2xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/35 text-violet-300 font-semibold text-xs flex items-center gap-1.5 transition">
@@ -3971,16 +4197,64 @@ function renderRecipesTab() {
         </div>
       </div>
 
-      ${state.recipes.map(rec => {
+      ${(state.recipes || []).length > 0 ? `
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <div class="flex flex-wrap gap-1.5">
+            <button type="button" onclick="setRecipeTagFilter('all')"
+              class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition ${
+                selectedRecipeTagFilter === 'all'
+                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                  : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200'
+              }">Alle (${state.recipes.length})</button>
+            ${allUsedTags.map(tag => {
+              const safe = tag.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+              const active = selectedRecipeTagFilter.toLowerCase() === tag.toLowerCase();
+              return `
+                <button type="button" onclick="setRecipeTagFilter('${safe}')"
+                  class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition ${
+                    active
+                      ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                      : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200'
+                  }">🏷️ ${escapeHtmlAttr(tag)}</button>
+              `;
+            }).join('')}
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            ${[
+              { id: 'default', label: 'Standard' },
+              { id: 'rating', label: '★ Top' },
+              { id: 'eaten', label: '🔥 Häufig' }
+            ].map(s => `
+              <button type="button" onclick="setRecipeSort('${s.id}')"
+                class="px-2 py-1 rounded-lg text-[10px] font-semibold border transition ${
+                  selectedRecipeSort === s.id
+                    ? 'bg-zinc-800 border-zinc-600 text-white'
+                    : 'bg-zinc-950 border-border text-zinc-500 hover:text-zinc-300'
+                }">${s.label}</button>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      ${displayRecipes.map(rec => {
         const tot = calcRecipeTotals(rec);
+        const rating = getRecipeRating(rec);
+        const tags = getRecipeTags(rec);
+        const eatenCount = getRecipeEatenCount(rec);
         return `
-          <div class="bg-card border border-border rounded-3xl p-4 space-y-3">
+          <div class="bg-card border border-border rounded-3xl p-4 space-y-2.5">
             <div class="flex items-start justify-between gap-2">
-              <div>
-                <h3 class="text-sm font-semibold text-white">${rec.name}</h3>
+              <div class="min-w-0 flex-1">
+                <h3 class="text-sm font-semibold text-white truncate">${escapeHtmlAttr(rec.name)}</h3>
                 <p class="text-xs text-zinc-400 mt-0.5">
                   ${Math.round(tot.kcal)} kcal · P ${Math.round(tot.p)}g · C ${Math.round(tot.c)}g · F ${Math.round(tot.f)}g
                 </p>
+                <div class="flex items-center flex-wrap gap-2 mt-1.5">
+                  ${renderRecipeStarsHtml(rating, `rateRecipeById('${rec.id}', __N__)`)}
+                  <span class="px-2 py-0.5 rounded-lg bg-zinc-900 border border-border text-[10px] font-medium ${eatenCount > 0 ? 'text-emerald-300 border-emerald-500/30' : 'text-zinc-500'}">
+                    🍽️ ${eatenCount}× gegessen
+                  </span>
+                </div>
               </div>
               <div class="flex items-center gap-1.5 shrink-0">
                 <button onclick="logRecipeToDay('${rec.id}', 1)" title="Heute loggen" aria-label="Heute loggen"
@@ -4006,6 +4280,20 @@ function renderRecipesTab() {
                 </button>
               </div>
             </div>
+
+            <div class="flex flex-wrap items-center gap-1.5">
+              ${tags.map(tag => `
+                <button type="button" onclick="setRecipeTagFilter('${tag.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')"
+                  class="px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-medium text-emerald-300 transition">
+                  #${escapeHtmlAttr(tag)}
+                </button>
+              `).join('')}
+              <button type="button" onclick="openQuickRecipeTagModal('${rec.id}')"
+                class="px-2 py-0.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-dashed border-zinc-700 text-[10px] text-zinc-400 hover:text-zinc-200 transition">
+                + Tag
+              </button>
+            </div>
+
             <div class="flex flex-wrap gap-1.5">
               ${rec.items.map(it => `
                 <span class="px-2 py-0.5 rounded-lg bg-zinc-900 border border-border text-[11px] text-zinc-300">
@@ -4400,14 +4688,20 @@ function logMealPlanItemToDay(dateStr, itemId) {
   const item = getPlannedMealsForDate(dateStr).find(it => it.id === itemId);
   if (!item) return;
   const log = ensureDayLog(dateStr);
+  const matchedRec = (item.kind === 'recipe' && item.refId)
+    ? (state.recipes || []).find(r => r.id === item.refId)
+    : null;
+  const prevCount = matchedRec ? getRecipeEatenCount(matchedRec) : 0;
   log.entries.push({
     id: 'ent_' + Date.now(),
+    ...(matchedRec ? { recipeId: matchedRec.id } : {}),
     name: item.name,
     kcal: Math.round(Number(item.kcal) || 0),
     p: Math.round((Number(item.p) || 0) * 10) / 10,
     c: Math.round((Number(item.c) || 0) * 10) / 10,
     f: Math.round((Number(item.f) || 0) * 10) / 10
   });
+  if (matchedRec) matchedRec.eatenCount = prevCount + 1;
   item.logged = true;
   saveState();
   render();
@@ -4506,11 +4800,300 @@ function generateSmartDayPlan(dateStr) {
   showToast(`⚡ Tagesplan erstellt (${Math.round(curKcal)} / ${targetKcal} kcal)`);
 }
 
-async function generateAiDayPlan(dateStr) {
+let mpSpeechRecognition = null;
+let mpSpeechActive = false;
+let mpSpeechFinal = '';
+let mpSpeechInterim = '';
+let mpMediaRecorder = null;
+let mpAudioStream = null;
+let mpAudioChunks = [];
+let mpRecordedAudioBase64 = null;
+let mpRecordedAudioMime = null;
+let mpRecTimer = null;
+let mpRecSeconds = 0;
+let mpPrefDraft = '';
+let mpAiAbortController = null;
+
+function stopMealPlanVoiceStreamOnly() {
+  clearInterval(mpRecTimer);
+  mpRecTimer = null;
+  mpSpeechActive = false;
+  if (mpSpeechRecognition) {
+    try {
+      mpSpeechRecognition.onresult = null;
+      mpSpeechRecognition.onend = null;
+      mpSpeechRecognition.onerror = null;
+      mpSpeechRecognition.abort();
+    } catch (e) {}
+    mpSpeechRecognition = null;
+  }
+  if (mpMediaRecorder && mpMediaRecorder.state !== 'inactive') {
+    try { mpMediaRecorder.onstop = null; mpMediaRecorder.stop(); } catch (e) {}
+  }
+  mpMediaRecorder = null;
+  if (mpAudioStream) {
+    mpAudioStream.getTracks().forEach(t => t.stop());
+    mpAudioStream = null;
+  }
+  if (mpAiAbortController) {
+    try { mpAiAbortController.abort(); } catch (e) {}
+    mpAiAbortController = null;
+  }
+}
+
+function resetMealPlanMicButtonUi() {
+  const btn = document.getElementById('mealPlanMicBtn');
+  if (!btn) return;
+  btn.className = 'px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/45 text-emerald-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition shrink-0';
+  btn.innerHTML = `${VQL_MIC_SVG}<span>Wünsche einsprechen</span>`;
+}
+
+function startMealPlanRecUi(statusMsg) {
+  mpRecSeconds = 0;
+  const btn = document.getElementById('mealPlanMicBtn');
+  const statusEl = document.getElementById('mealPlanAiStatus');
+  if (btn) {
+    btn.className = 'px-3 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 border border-rose-400 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition shrink-0 animate-pulse';
+    btn.innerHTML = '<span>⏹</span><span id="mealPlanMicLabel">Stopp (00:00)</span>';
+  }
+  if (statusEl) {
+    statusEl.textContent = statusMsg;
+    statusEl.className = 'text-[11px] text-amber-300';
+  }
+  clearInterval(mpRecTimer);
+  mpRecTimer = setInterval(() => {
+    mpRecSeconds++;
+    const mm = String(Math.floor(mpRecSeconds / 60)).padStart(2, '0');
+    const ss = String(mpRecSeconds % 60).padStart(2, '0');
+    const lbl = document.getElementById('mealPlanMicLabel');
+    if (lbl) lbl.textContent = `Stopp (${mm}:${ss})`;
+  }, 1000);
+}
+
+async function startMealPlanAudioFallback() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('Mikrofon wird in diesem Browser nicht unterstützt.');
+  }
+  mpAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mime = pickSupportedAudioMime();
+  mpAudioChunks = [];
+  const recOpts = mime ? { mimeType: mime, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 };
+  try {
+    mpMediaRecorder = new MediaRecorder(mpAudioStream, recOpts);
+  } catch (e) {
+    mpMediaRecorder = mime ? new MediaRecorder(mpAudioStream, { mimeType: mime }) : new MediaRecorder(mpAudioStream);
+  }
+  mpMediaRecorder.ondataavailable = (ev) => {
+    if (ev.data && ev.data.size > 0) mpAudioChunks.push(ev.data);
+  };
+  mpMediaRecorder.onstop = async () => {
+    const actualMime = (mpMediaRecorder && mpMediaRecorder.mimeType) || mime || 'audio/webm';
+    if (mpAudioStream) {
+      mpAudioStream.getTracks().forEach(t => t.stop());
+      mpAudioStream = null;
+    }
+    mpMediaRecorder = null;
+    clearInterval(mpRecTimer);
+    mpRecTimer = null;
+    resetMealPlanMicButtonUi();
+    const blob = new Blob(mpAudioChunks, { type: actualMime });
+    if (!blob.size) return;
+    mpRecordedAudioBase64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result || '').split(',')[1] || '');
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    mpRecordedAudioMime = actualMime.split(';')[0];
+    const statusEl = document.getElementById('mealPlanAiStatus');
+    if (statusEl) {
+      statusEl.textContent = '✓ Sprachaufnahme gespeichert – tippe jetzt auf „KI-Tag“ oder „KI-Woche (7T)“.';
+      statusEl.className = 'text-[11px] text-emerald-400';
+    }
+  };
+  mpMediaRecorder.start();
+  startMealPlanRecUi('🔴 Aufnahme läuft… Sprich deine Wünsche für den Tag oder die Woche ein.');
+}
+
+async function toggleMealPlanVoiceRecording() {
+  const statusEl = document.getElementById('mealPlanAiStatus');
+
+  if (mpSpeechActive && mpSpeechRecognition) {
+    mpSpeechActive = false;
+    clearInterval(mpRecTimer);
+    mpRecTimer = null;
+    try { mpSpeechRecognition.stop(); } catch (e) {}
+    mpSpeechRecognition = null;
+    resetMealPlanMicButtonUi();
+    const captured = `${mpSpeechFinal} ${mpSpeechInterim}`.trim();
+    if (captured) {
+      mpPrefDraft = captured;
+      const inp = document.getElementById('mealPlanPrefInput');
+      if (inp) inp.value = captured;
+      if (statusEl) {
+        statusEl.textContent = '✓ Wunsch übernommen – tippe jetzt auf „KI-Tag“ oder „KI-Woche (7T)“.';
+        statusEl.className = 'text-[11px] text-emerald-400';
+      }
+    }
+    return;
+  }
+
+  if (mpMediaRecorder && mpMediaRecorder.state === 'recording') {
+    mpMediaRecorder.stop();
+    return;
+  }
+
+  mpRecordedAudioBase64 = null;
+  mpRecordedAudioMime = null;
+
+  const SpeechRec = getSpeechRecognitionCtor();
+  if (SpeechRec) {
+    try {
+      const existingText = (document.getElementById('mealPlanPrefInput')?.value || '').trim();
+      mpSpeechFinal = existingText ? existingText + ' ' : '';
+      mpSpeechInterim = '';
+      const rec = new SpeechRec();
+      rec.lang = appLang === 'es' ? 'es-ES' : 'de-DE';
+      rec.continuous = true;
+      rec.interimResults = true;
+      mpSpeechRecognition = rec;
+      mpSpeechActive = true;
+
+      rec.onresult = (ev) => {
+        let fin = existingText ? existingText + ' ' : '';
+        let interim = '';
+        for (let i = 0; i < ev.results.length; i++) {
+          const t = ev.results[i][0]?.transcript || '';
+          if (ev.results[i].isFinal) fin += t + ' ';
+          else interim += t;
+        }
+        mpSpeechFinal = fin.trim();
+        mpSpeechInterim = interim.trim();
+        const combined = `${mpSpeechFinal} ${mpSpeechInterim}`.trim();
+        mpPrefDraft = combined;
+        const inp = document.getElementById('mealPlanPrefInput');
+        if (inp) inp.value = combined;
+      };
+
+      rec.onerror = async (ev) => {
+        const code = ev?.error || '';
+        if (code === 'aborted' || code === 'no-speech') return;
+        stopMealPlanVoiceStreamOnly();
+        try {
+          await startMealPlanAudioFallback();
+        } catch (fallbackErr) {
+          resetMealPlanMicButtonUi();
+          if (statusEl) {
+            statusEl.textContent = `Mikrofon-Fehler: ${fallbackErr.message || fallbackErr}`;
+            statusEl.className = 'text-[11px] text-rose-400';
+          }
+        }
+      };
+
+      rec.onend = () => {
+        if (!mpSpeechActive) return;
+        mpSpeechActive = false;
+        clearInterval(mpRecTimer);
+        mpRecTimer = null;
+        mpSpeechRecognition = null;
+        resetMealPlanMicButtonUi();
+        if (statusEl && mpPrefDraft) {
+          statusEl.textContent = '✓ Wunsch übernommen – tippe jetzt auf „KI-Tag“ oder „KI-Woche (7T)“.';
+          statusEl.className = 'text-[11px] text-emerald-400';
+        }
+      };
+
+      rec.start();
+      startMealPlanRecUi('🔴 Hört live zu… Sprich deine Wünsche für den Tag oder die Woche ein.');
+      return;
+    } catch (e) {
+      stopMealPlanVoiceStreamOnly();
+    }
+  }
+
+  try {
+    await startMealPlanAudioFallback();
+  } catch (err) {
+    stopMealPlanVoiceStreamOnly();
+    resetMealPlanMicButtonUi();
+    if (statusEl) {
+      statusEl.textContent = `Mikrofon-Fehler: ${err.message || err}`;
+      statusEl.className = 'text-[11px] text-rose-400';
+    }
+  }
+}
+
+function savePlannedMealAsRecipe(dateStr, itemId) {
+  const meal = getPlannedMealsForDate(dateStr).find(it => it.id === itemId);
+  if (!meal) return;
+  const rawItems = Array.isArray(meal.items) && meal.items.length
+    ? meal.items
+    : [{ name: meal.name, grams: 250 }];
+  const totalGrams = rawItems.reduce((s, it) => s + Math.max(1, Number(it.grams) || 100), 0) || 100;
+  const now = Date.now();
+  const recipeItems = rawItems.map((it, idx) => {
+    const g = Math.max(1, Math.round(Number(it.grams) || 100));
+    const share = g / totalGrams;
+    const hasPer100 = Number(it.kcal100) > 0;
+    return {
+      id: 'it_' + (now + idx),
+      name: String(it.name || 'Zutat').trim(),
+      grams: g,
+      kcal100: hasPer100 ? Math.round(Number(it.kcal100)) : Math.round(((Number(meal.kcal) || 0) * share * 100) / g),
+      p100: hasPer100 ? Math.round((Number(it.p100) || 0) * 10) / 10 : Math.round((((Number(meal.p) || 0) * share * 100) / g) * 10) / 10,
+      c100: hasPer100 ? Math.round((Number(it.c100) || 0) * 10) / 10 : Math.round((((Number(meal.c) || 0) * share * 100) / g) * 10) / 10,
+      f100: hasPer100 ? Math.round((Number(it.f100) || 0) * 10) / 10 : Math.round((((Number(meal.f) || 0) * share * 100) / g) * 10) / 10
+    };
+  });
+  state.recipes.unshift({
+    id: 'rec_' + now,
+    name: meal.name,
+    items: recipeItems
+  });
+  meal.savedAsRecipe = true;
+  saveState();
+  render();
+  openMealPlanModal(dateStr);
+  showToast(`📖 „${meal.name}“ unter Meine Rezepte gespeichert`);
+}
+
+function normalizeAiPlannedMeal(m, baseTs, idx) {
+  return {
+    id: 'mp_' + (baseTs + idx) + '_' + Math.floor(Math.random() * 1000),
+    kind: 'ai',
+    name: String(m.name || `Mahlzeit ${idx + 1}`).trim(),
+    kcal: Math.max(0, Math.round(Number(m.kcal) || 0)),
+    p: Math.max(0, Math.round((Number(m.p) || 0) * 10) / 10),
+    c: Math.max(0, Math.round((Number(m.c) || 0) * 10) / 10),
+    f: Math.max(0, Math.round((Number(m.f) || 0) * 10) / 10),
+    items: (Array.isArray(m.items) ? m.items : [])
+      .map(it => ({
+        name: String(it.name || '').trim(),
+        grams: Math.max(1, Math.round(Number(it.grams) || 100)),
+        ...(Number(it.kcal100) > 0 ? {
+          kcal100: Math.round(Number(it.kcal100)),
+          p100: Math.round((Number(it.p100) || 0) * 10) / 10,
+          c100: Math.round((Number(it.c100) || 0) * 10) / 10,
+          f100: Math.round((Number(it.f100) || 0) * 10) / 10
+        } : {})
+      }))
+      .filter(it => it.name)
+  };
+}
+
+async function generateAiMealPlan(mode, dateStr) {
+  const isWeek = mode === 'week';
   const apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
   const statusEl = document.getElementById('mealPlanAiStatus');
-  const btn = document.getElementById('mealPlanAiBtn');
-  const pref = (document.getElementById('mealPlanPrefInput')?.value || '').trim();
+  const dayBtn = document.getElementById('mealPlanAiBtn');
+  const weekBtn = document.getElementById('mealPlanAiWeekBtn');
+
+  if (mpSpeechActive || (mpMediaRecorder && mpMediaRecorder.state === 'recording')) {
+    await toggleMealPlanVoiceRecording();
+  }
+
+  const pref = (document.getElementById('mealPlanPrefInput')?.value || mpPrefDraft || '').trim();
+  mpPrefDraft = pref;
 
   if (!apiKey) {
     if (statusEl) {
@@ -4527,67 +5110,113 @@ async function generateAiDayPlan(dateStr) {
   const targetF = Number(state.fatGoal) || 70;
   const existingRecipeNames = (state.recipes || []).map(r => r.name).slice(0, 12).join(', ');
   const langLabel = appLang === 'es' ? 'Spanisch (Español)' : 'Deutsch';
+  const weekDays = getMealPlanDates(7);
 
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ KI plant…'; }
+  if (dayBtn) dayBtn.disabled = true;
+  if (weekBtn) weekBtn.disabled = true;
+  if (isWeek && weekBtn) weekBtn.textContent = '⏳ Plant 7 Tage…';
+  if (!isWeek && dayBtn) dayBtn.textContent = '⏳ Plant Tag…';
   if (statusEl) {
-    statusEl.textContent = '⚡ Erstelle personalisierten Tagesplan…';
+    statusEl.textContent = isWeek
+      ? '⚡ KI erstellt abwechslungsreichen 7-Tage-Wochenplan mit Rezepten & Zutaten…'
+      : '⚡ KI erstellt personalisierten Tagesplan mit Rezepten & Zutaten…';
     statusEl.className = 'text-[11px] text-zinc-400';
   }
 
-  const promptText = `Erstelle einen praxisnahen Tages-Ernährungsplan (3-4 Mahlzeiten) auf ${langLabel} für exakt diese Tagesziele:
+  const mealSchema = {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      kcal: { type: 'number' },
+      p: { type: 'number' },
+      c: { type: 'number' },
+      f: { type: 'number' },
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            grams: { type: 'number' }
+          },
+          required: ['name', 'grams']
+        }
+      }
+    },
+    required: ['name', 'kcal', 'p', 'c', 'f', 'items']
+  };
+
+  const promptText = isWeek
+    ? `Erstelle einen praxisnahen, abwechslungsreichen 7-Tage-Ernährungsplan (dayOffset 0 bis 6, je 3 Mahlzeiten pro Tag) auf ${langLabel} für diese Tagesziele pro Tag:
+- Kalorien: ca. ${targetKcal} kcal (±120 kcal)
+- Protein: ca. ${targetP}g · Kohlenhydrate: ca. ${targetC}g · Fett: ca. ${targetF}g
+${pref ? `- Vorgaben/Wünsche des Nutzers: "${pref}"` : ''}
+${mpRecordedAudioBase64 ? '- Berücksichtige unbedingt alle gesprochenen Wünsche aus der angehängten Sprachaufnahme!' : ''}
+${existingRecipeNames ? `- Typische Rezepte des Nutzers als Stil-Inspiration: ${existingRecipeNames}` : ''}
+Achte auf clevere Zutaten-Wiederverwendung über die Woche für eine effiziente Einkaufsliste. Gib für jede Mahlzeit konkrete Lebensmittel mit Gramm-Mengen ("items") und realistischen Portions-Nährwerten (kcal, p, c, f) an.`
+    : `Erstelle einen praxisnahen Tages-Ernährungsplan (3-4 Mahlzeiten) auf ${langLabel} für diese Tagesziele:
 - Kalorien: ca. ${targetKcal} kcal (±100 kcal)
 - Protein: ca. ${targetP}g · Kohlenhydrate: ca. ${targetC}g · Fett: ca. ${targetF}g
-${pref ? `- Wunsch / Fokus des Nutzers: "${pref}"` : ''}
+${pref ? `- Vorgaben/Wünsche des Nutzers: "${pref}"` : ''}
+${mpRecordedAudioBase64 ? '- Berücksichtige unbedingt alle gesprochenen Wünsche aus der angehängten Sprachaufnahme!' : ''}
 ${existingRecipeNames ? `- Typische Rezepte des Nutzers als Stil-Inspiration: ${existingRecipeNames}` : ''}
-Gib für jede Mahlzeit die konkreten Einkaufs-Zutaten ("items" mit "name" und "grams") sowie realistische Portions-Nährwerte (kcal, p, c, f) an.`;
+Gib für jede Mahlzeit die konkreten Lebensmittel mit Gramm-Mengen ("items") sowie realistische Portions-Nährwerte (kcal, p, c, f) an.`;
 
-  const requestBody = JSON.stringify({
-    contents: [{ parts: [{ text: promptText }] }],
-    generationConfig: {
-      temperature: 0.35,
-      maxOutputTokens: 1400,
-      responseMimeType: 'application/json',
-      responseJsonSchema: {
+  const parts = [{ text: promptText }];
+  if (mpRecordedAudioBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: mpRecordedAudioMime || 'audio/webm',
+        data: mpRecordedAudioBase64
+      }
+    });
+  }
+
+  const responseJsonSchema = isWeek
+    ? {
         type: 'object',
         properties: {
-          meals: {
+          days: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                name: { type: 'string' },
-                kcal: { type: 'number' },
-                p: { type: 'number' },
-                c: { type: 'number' },
-                f: { type: 'number' },
-                items: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      name: { type: 'string' },
-                      grams: { type: 'number' }
-                    },
-                    required: ['name', 'grams']
-                  }
-                }
+                dayOffset: { type: 'number' },
+                meals: { type: 'array', items: mealSchema }
               },
-              required: ['name', 'kcal', 'p', 'c', 'f', 'items']
+              required: ['dayOffset', 'meals']
             }
           }
         },
-        required: ['meals']
+        required: ['days']
       }
+    : {
+        type: 'object',
+        properties: {
+          meals: { type: 'array', items: mealSchema }
+        },
+        required: ['meals']
+      };
+
+  const requestBody = JSON.stringify({
+    contents: [{ parts }],
+    generationConfig: {
+      temperature: 0.35,
+      maxOutputTokens: isWeek ? 6000 : 1400,
+      responseMimeType: 'application/json',
+      responseJsonSchema
     }
   });
 
   try {
     let res = null;
     let lastError = 'Unbekannter Fehler';
+    const timeoutMs = isWeek ? 35000 : 20000;
     for (const model of GEMINI_FAST_MODELS_TO_TRY) {
       const controller = new AbortController();
+      mpAiAbortController = controller;
       let timedOut = false;
-      const tid = setTimeout(() => { timedOut = true; try { controller.abort(); } catch (e) {} }, 20000);
+      const tid = setTimeout(() => { timedOut = true; try { controller.abort(); } catch (e) {} }, timeoutMs);
       try {
         res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
           method: 'POST',
@@ -4601,6 +5230,7 @@ Gib für jede Mahlzeit die konkreten Einkaufs-Zutaten ("items" mit "name" und "g
         throw err;
       } finally {
         clearTimeout(tid);
+        if (mpAiAbortController === controller) mpAiAbortController = null;
       }
       if (res.ok) break;
       const errData = await res.json().catch(() => ({}));
@@ -4613,40 +5243,62 @@ Gib für jede Mahlzeit die konkreten Einkaufs-Zutaten ("items" mit "name" und "g
     const result = await res.json();
     const rawJson = extractGeminiJsonText(result);
     const data = JSON.parse(rawJson);
-    const meals = Array.isArray(data?.meals) ? data.meals : [];
-    if (!meals.length) throw new Error('KI hat keine Mahlzeiten geliefert.');
-
     const mp = ensureMealPlan();
-    const prev = Array.isArray(mp.days[dateStr]) ? mp.days[dateStr] : [];
-    prev.forEach(it => markDeletedId(it.id));
     const now = Date.now();
-    mp.days[dateStr] = meals.map((m, idx) => ({
-      id: 'mp_' + (now + idx),
-      kind: 'ai',
-      name: String(m.name || `Mahlzeit ${idx + 1}`).trim(),
-      kcal: Math.max(0, Math.round(Number(m.kcal) || 0)),
-      p: Math.max(0, Math.round((Number(m.p) || 0) * 10) / 10),
-      c: Math.max(0, Math.round((Number(m.c) || 0) * 10) / 10),
-      f: Math.max(0, Math.round((Number(m.f) || 0) * 10) / 10),
-      items: (Array.isArray(m.items) ? m.items : [])
-        .map(it => ({ name: String(it.name || '').trim(), grams: Math.max(1, Math.round(Number(it.grams) || 100)) }))
-        .filter(it => it.name)
-    }));
+    mpRecordedAudioBase64 = null;
+    mpRecordedAudioMime = null;
 
-    saveState();
-    render();
-    openMealPlanModal(dateStr);
-    showToast(`✨ KI-Plan mit ${meals.length} Mahlzeiten erstellt`);
+    if (isWeek) {
+      const aiDays = Array.isArray(data?.days) ? data.days : [];
+      if (!aiDays.length) throw new Error('KI hat keinen Wochenplan geliefert.');
+      let filledDays = 0;
+      aiDays.forEach((dObj, arrIdx) => {
+        const offset = Number.isInteger(dObj?.dayOffset) ? dObj.dayOffset : arrIdx;
+        if (offset < 0 || offset >= weekDays.length) return;
+        const targetIso = weekDays[offset].dateStr;
+        const meals = Array.isArray(dObj?.meals) ? dObj.meals : [];
+        if (!meals.length) return;
+        const prev = Array.isArray(mp.days[targetIso]) ? mp.days[targetIso] : [];
+        prev.forEach(it => markDeletedId(it.id));
+        mp.days[targetIso] = meals.map((m, idx) => normalizeAiPlannedMeal(m, now + offset * 20, idx));
+        filledDays++;
+      });
+      if (!filledDays) throw new Error('KI-Wochenplan enthielt keine gültigen Tage.');
+      saveState();
+      render();
+      openMealPlanModal(weekDays[0].dateStr);
+      showToast(`🗓️ KI-Wochenplan für ${filledDays} Tage erstellt`);
+    } else {
+      const meals = Array.isArray(data?.meals) ? data.meals : [];
+      if (!meals.length) throw new Error('KI hat keine Mahlzeiten geliefert.');
+      const prev = Array.isArray(mp.days[dateStr]) ? mp.days[dateStr] : [];
+      prev.forEach(it => markDeletedId(it.id));
+      mp.days[dateStr] = meals.map((m, idx) => normalizeAiPlannedMeal(m, now, idx));
+      saveState();
+      render();
+      openMealPlanModal(dateStr);
+      showToast(`✨ KI-Plan mit ${meals.length} Mahlzeiten erstellt`);
+    }
   } catch (err) {
     if (statusEl) {
       statusEl.textContent = `Fehler: ${err.message || err}`;
       statusEl.className = 'text-[11px] text-rose-400';
     }
-    if (btn) { btn.disabled = false; btn.textContent = '✨ KI-Tag planen'; }
+    if (dayBtn) { dayBtn.disabled = false; dayBtn.textContent = '✨ KI-Tag'; }
+    if (weekBtn) { weekBtn.disabled = false; weekBtn.textContent = '🗓️ KI-Woche (7T)'; }
   }
 }
 
+function generateAiDayPlan(dateStr) {
+  return generateAiMealPlan('day', dateStr);
+}
+
+function generateAiWeekPlan(dateStr) {
+  return generateAiMealPlan('week', dateStr);
+}
+
 function openMealPlanModal(dateOverride = null) {
+  stopMealPlanVoiceStreamOnly();
   const days = getMealPlanDates(7);
   if (dateOverride) selectedMealPlanDate = dateOverride;
   if (!selectedMealPlanDate || !days.some(d => d.dateStr === selectedMealPlanDate)) {
@@ -4710,20 +5362,32 @@ function openMealPlanModal(dateOverride = null) {
         </div>
       </div>
 
-      <!-- Plan-Generator -->
-      <div class="rounded-2xl bg-zinc-950/80 border border-border p-3 space-y-2">
-        <div class="grid grid-cols-2 gap-2">
-          <button type="button" onclick="generateSmartDayPlan('${activeDate}')"
-            class="py-2 px-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 font-semibold text-xs transition">
-            ⚡ Aus meinen Rezepten
-          </button>
-          <button id="mealPlanAiBtn" type="button" onclick="generateAiDayPlan('${activeDate}')"
-            class="py-2 px-2.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/40 text-violet-300 font-semibold text-xs transition">
-            ✨ KI-Tag planen
+      <!-- KI- & Rezept-Planer mit Sprachaufnahme -->
+      <div class="rounded-2xl bg-zinc-950/80 border border-border p-3 space-y-2.5">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs font-semibold text-white">KI-Wochen- & Tagesplaner</span>
+          <button id="mealPlanMicBtn" type="button" onclick="toggleMealPlanVoiceRecording()"
+            class="px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/45 text-emerald-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition shrink-0">
+            ${VQL_MIC_SVG}<span>Wünsche einsprechen</span>
           </button>
         </div>
-        <input id="mealPlanPrefInput" type="text" placeholder="Optionaler Wunsch für KI-Plan (z. B. vegetarisch, schnell, high protein…)"
-          class="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500" />
+        <textarea id="mealPlanPrefInput" rows="2" oninput="mpPrefDraft = this.value"
+          placeholder="Sprich oder tippe deine Wünsche für die Woche (z. B. Mo–Fr high protein, 2× Pasta, 1× Lachs, abends leicht…)"
+          class="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500">${escapeHtmlAttr(mpPrefDraft)}</textarea>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="mealPlanAiWeekBtn" type="button" onclick="generateAiWeekPlan('${activeDate}')"
+            class="py-2.5 px-2.5 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 hover:from-violet-400 hover:to-indigo-400 text-white font-semibold text-xs transition">
+            🗓️ KI-Woche (7T)
+          </button>
+          <button id="mealPlanAiBtn" type="button" onclick="generateAiDayPlan('${activeDate}')"
+            class="py-2.5 px-2.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/40 text-violet-300 font-semibold text-xs transition">
+            ✨ KI-Tag
+          </button>
+        </div>
+        <button type="button" onclick="generateSmartDayPlan('${activeDate}')"
+          class="w-full py-2 px-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-emerald-300 font-semibold text-xs transition">
+          ⚡ Tag aus meinen bestehenden Rezepten füllen
+        </button>
         <div id="mealPlanAiStatus" class="text-[11px] text-zinc-500"></div>
       </div>
 
@@ -4737,7 +5401,17 @@ function openMealPlanModal(dateOverride = null) {
                 <div class="text-xs font-semibold text-white truncate">${escapeHtmlAttr(m.name)}</div>
                 <div class="text-[11px] text-zinc-400">${Math.round(m.kcal)} kcal · P ${Math.round(m.p)}g · C ${Math.round(m.c)}g · F ${Math.round(m.f)}g</div>
               </div>
-              <div class="flex items-center gap-1.5 shrink-0">
+              <div class="flex items-center gap-1 shrink-0">
+                ${m.kind === 'ai' ? `
+                  <button type="button" onclick="savePlannedMealAsRecipe('${activeDate}', '${m.id}')" title="Als eigenes Rezept speichern"
+                    class="px-2 py-1.5 rounded-xl text-[11px] font-semibold border transition ${
+                      m.savedAsRecipe
+                        ? 'bg-sky-500/20 border-sky-500/45 text-sky-300'
+                        : 'bg-zinc-950 hover:bg-sky-500/15 border-zinc-800 hover:border-sky-500/35 text-zinc-300 hover:text-sky-300'
+                    }">
+                    ${m.savedAsRecipe ? '✓ Rezept' : '📖'}
+                  </button>
+                ` : ''}
                 <button type="button" onclick="logMealPlanItemToDay('${activeDate}', '${m.id}')" title="In Tagesbilanz loggen"
                   class="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border transition ${
                     m.logged
@@ -4756,7 +5430,7 @@ function openMealPlanModal(dateOverride = null) {
               </div>
             ` : ''}
           </div>
-        `).join('') : `<p class="text-xs text-zinc-500">Noch nichts geplant – generiere oben einen Plan oder tippe unten auf ein Rezept.</p>`}
+        `).join('') : `<p class="text-xs text-zinc-500">Noch nichts geplant – sprich oben deine Wünsche ein oder tippe unten auf ein Rezept.</p>`}
       </div>
 
       <!-- Schnell hinzufügen aus Rezepten & Snacks -->
@@ -4873,6 +5547,7 @@ function addSelectedRecipesToShoppingList() {
 
   const cnt = mergeIngredientsIntoShoppingList(aggregated, 'Rezepte');
   shoppingRecipeCounts = {};
+  shoppingImportDrawerOpen = false;
   openShoppingListModal();
   showToast(`🛒 ${cnt} Zutat(en) aus Rezepten zur Einkaufsliste hinzugefügt`);
 }
@@ -4933,104 +5608,168 @@ function copyShoppingListToClipboard() {
   }
 }
 
+let shoppingImportDrawerOpen = false;
+
+function toggleShoppingImportDrawer() {
+  shoppingImportDrawerOpen = !shoppingImportDrawerOpen;
+  openShoppingListModal();
+}
+
+function closeShoppingListModal() {
+  const overlay = document.getElementById('shoppingFullscreenOverlay');
+  if (overlay) overlay.remove();
+}
+
 function openShoppingListModal() {
+  // Evtl. offenes Plan-Modal sauber schließen, damit die Einkaufsliste allein den ganzen Bildschirm einnimmt
+  const backdrop = document.getElementById('modal-backdrop');
+  if (backdrop) backdrop.classList.add('hidden');
+
   const list = ensureShoppingList();
   const openItems = list.filter(it => !it.checked);
   const doneItems = list.filter(it => it.checked);
   const selectedRecipeTotal = Object.values(shoppingRecipeCounts).reduce((s, n) => s + (Number(n) || 0), 0);
 
-  openModal(`
-    <div class="space-y-4">
-      <div class="flex items-start justify-between gap-2">
-        <div>
-          <h3 class="text-base font-semibold text-white">🛒 Einkaufsliste</h3>
-          <p class="text-[11px] text-zinc-400">${openItems.length} offen · ${doneItems.length} erledigt · automatisch summiert</p>
-        </div>
-        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
-      </div>
+  let overlay = document.getElementById('shoppingFullscreenOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'shoppingFullscreenOverlay';
+    overlay.className = 'fixed inset-0 z-50 bg-bg flex flex-col';
+    document.body.appendChild(overlay);
+  }
 
-      <!-- Automatisch generieren -->
-      <div class="rounded-2xl bg-zinc-950/80 border border-border p-3 space-y-2.5">
-        <div class="flex items-center justify-between gap-2">
-          <span class="text-xs font-semibold text-white">Automatisch füllen</span>
-          <button type="button" onclick="buildShoppingListFromPlan(7)"
-            class="px-2.5 py-1 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold transition">
-            📅 Aus Wochenplan
+  overlay.innerHTML = `
+    <!-- Vollbild-Header -->
+    <header class="shrink-0 bg-bg/95 backdrop-blur-md border-b border-border px-4 py-3">
+      <div class="max-w-3xl mx-auto flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <h3 class="text-base font-semibold text-white">🛒 Einkaufsliste</h3>
+          <p class="text-[11px] text-zinc-400">${openItems.length} offen · ${doneItems.length} erledigt</p>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button type="button" onclick="toggleShoppingImportDrawer()"
+            class="px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+              shoppingImportDrawerOpen
+                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                : 'bg-card hover:bg-cardHover border-border text-zinc-200'
+            }">
+            ${shoppingImportDrawerOpen ? '▲ Füllen' : '+ Aus Plan / Rezepten'}
+          </button>
+          <button type="button" onclick="closeShoppingListModal()" title="Schließen" aria-label="Einkaufsliste schließen"
+            class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-300 hover:text-white text-xs font-semibold">
+            ✕
           </button>
         </div>
-        ${(state.recipes || []).length > 0 ? `
-          <div class="space-y-1.5">
-            <div class="text-[10px] text-zinc-400">Oder Rezepte antippen (Portionen summieren):</div>
-            <div class="flex flex-wrap gap-1.5">
-              ${(state.recipes || []).map(r => {
-                const cnt = Number(shoppingRecipeCounts[r.id]) || 0;
-                return `
-                  <div class="inline-flex items-center rounded-xl border text-[11px] overflow-hidden ${
-                    cnt > 0 ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-200' : 'bg-zinc-900 border-border text-zinc-300'
-                  }">
-                    <button type="button" onclick="stepShoppingRecipeCount('${r.id}', 1)" class="px-2.5 py-1 hover:bg-white/5 transition">
-                      ${cnt > 0 ? `<strong>${cnt}×</strong> ` : '+ '}${escapeHtmlAttr(r.name)}
-                    </button>
-                    ${cnt > 0 ? `<button type="button" onclick="stepShoppingRecipeCount('${r.id}', -1)" class="px-1.5 py-1 border-l border-emerald-500/30 hover:bg-white/10 text-emerald-300">−</button>` : ''}
-                  </div>
-                `;
-              }).join('')}
-            </div>
-            ${selectedRecipeTotal > 0 ? `
-              <button type="button" onclick="addSelectedRecipesToShoppingList()"
-                class="w-full py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
-                ✓ Zutaten aus ${selectedRecipeTotal} Rezept-Portion(en) hinzufügen
+      </div>
+    </header>
+
+    <!-- Hauptbereich: Einkaufsliste über den gesamten Bildschirm -->
+    <div class="flex-1 overflow-y-auto px-4 py-3">
+      <div class="max-w-3xl mx-auto space-y-2">
+        ${shoppingImportDrawerOpen ? `
+          <div class="rounded-2xl bg-card border border-emerald-500/30 p-3.5 space-y-2.5 mb-3">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-semibold text-white">Automatisch füllen</span>
+              <button type="button" onclick="buildShoppingListFromPlan(7)"
+                class="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-xs font-semibold transition">
+                📅 Aus Wochenplan (7T)
               </button>
+            </div>
+            ${(state.recipes || []).length > 0 ? `
+              <div class="space-y-2 pt-1 border-t border-border">
+                <div class="text-[11px] text-zinc-400">Rezepte antippen (Portionen summieren):</div>
+                <div class="flex flex-wrap gap-1.5">
+                  ${(state.recipes || []).map(r => {
+                    const cnt = Number(shoppingRecipeCounts[r.id]) || 0;
+                    return `
+                      <div class="inline-flex items-center rounded-xl border text-xs overflow-hidden ${
+                        cnt > 0 ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-200' : 'bg-zinc-900 border-border text-zinc-300'
+                      }">
+                        <button type="button" onclick="stepShoppingRecipeCount('${r.id}', 1)" class="px-2.5 py-1.5 hover:bg-white/5 transition">
+                          ${cnt > 0 ? `<strong>${cnt}×</strong> ` : '+ '}${escapeHtmlAttr(r.name)}
+                        </button>
+                        ${cnt > 0 ? `<button type="button" onclick="stepShoppingRecipeCount('${r.id}', -1)" class="px-2 py-1.5 border-l border-emerald-500/30 hover:bg-white/10 text-emerald-300">−</button>` : ''}
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+                ${selectedRecipeTotal > 0 ? `
+                  <button type="button" onclick="addSelectedRecipesToShoppingList()"
+                    class="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+                    ✓ Zutaten aus ${selectedRecipeTotal} Rezept-Portion(en) übernehmen
+                  </button>
+                ` : ''}
+              </div>
             ` : ''}
           </div>
         ` : ''}
-      </div>
 
-      <!-- Manuell hinzufügen -->
-      <form onsubmit="addManualShoppingItem(event)" class="flex gap-2 min-w-0">
-        <input id="shopping-manual-input" type="text" placeholder="Artikel ergänzen (z. B. 500g Skyr, Zitronen)"
-          class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
-        <button type="submit" class="px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-semibold text-xs shrink-0 transition">
-          +
-        </button>
-      </form>
-
-      <!-- Liste -->
-      ${list.length > 0 ? `
-        <div class="space-y-1.5 max-h-64 overflow-y-auto">
+        ${list.length > 0 ? `
           ${[...openItems, ...doneItems].map(it => `
-            <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border transition ${
+            <div class="flex items-center justify-between gap-3 px-3.5 py-3 rounded-2xl border transition ${
               it.checked
                 ? 'bg-zinc-950/60 border-zinc-900 text-zinc-500'
-                : 'bg-zinc-900/90 border-border text-zinc-100'
+                : 'bg-card border-border text-zinc-100'
             }">
-              <button type="button" onclick="toggleShoppingItem('${it.id}')" class="flex-1 min-w-0 flex items-center gap-2 text-left text-xs">
-                <span class="w-4 h-4 rounded-md border flex items-center justify-center shrink-0 text-[10px] ${
+              <button type="button" onclick="toggleShoppingItem('${it.id}')" class="flex-1 min-w-0 flex items-center gap-3 text-left text-sm">
+                <span class="w-5 h-5 rounded-lg border flex items-center justify-center shrink-0 text-xs font-bold ${
                   it.checked ? 'bg-emerald-500/25 border-emerald-500/50 text-emerald-300' : 'border-zinc-600'
                 }">${it.checked ? '✓' : ''}</span>
                 <span class="truncate ${it.checked ? 'line-through' : 'font-medium'}">${it.grams > 0 ? `<strong class="${it.checked ? '' : 'text-emerald-400'}">${it.grams}g</strong> ` : ''}${escapeHtmlAttr(it.name)}</span>
               </button>
-              <button type="button" onclick="deleteShoppingItem('${it.id}')" class="text-zinc-500 hover:text-rose-400 px-1 text-xs shrink-0">✕</button>
+              <button type="button" onclick="deleteShoppingItem('${it.id}')" title="Entfernen"
+                class="w-8 h-8 flex items-center justify-center rounded-xl text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 text-xs shrink-0 transition">✕</button>
             </div>
           `).join('')}
-        </div>
-      ` : `<p class="text-xs text-zinc-500 text-center py-3">Deine Einkaufsliste ist leer – übernimm oben Zutaten aus Rezepten oder deinem Wochenplan.</p>`}
-
-      <!-- Aktionen -->
-      <div class="flex gap-2 pt-1">
-        <button type="button" onclick="copyShoppingListToClipboard()"
-          class="flex-1 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-border text-zinc-200 font-semibold text-xs transition">
-          📋 Kopieren
-        </button>
-        ${doneItems.length > 0 ? `
-          <button type="button" onclick="clearCheckedShoppingItems()"
-            class="px-3.5 py-2.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold text-xs transition">
-            Erledigte löschen (${doneItems.length})
-          </button>
-        ` : ''}
+        ` : `
+          <div class="rounded-3xl bg-card border border-dashed border-zinc-700 p-8 text-center space-y-3 mt-6">
+            <div class="text-3xl">🛒</div>
+            <p class="text-sm font-medium text-zinc-200">Deine Einkaufsliste ist noch leer</p>
+            <p class="text-xs text-zinc-400">Füge unten einen Artikel hinzu oder fülle sie direkt aus deinem Wochenplan bzw. deinen Rezepten.</p>
+            <div class="flex justify-center gap-2 pt-1">
+              <button type="button" onclick="buildShoppingListFromPlan(7)"
+                class="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+                📅 Aus Wochenplan
+              </button>
+              <button type="button" onclick="toggleShoppingImportDrawer()"
+                class="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-xs transition">
+                📖 Rezepte wählen
+              </button>
+            </div>
+          </div>
+        `}
       </div>
     </div>
-  `);
+
+    <!-- Unten angedockte Eingabe- & Aktionsleiste -->
+    <footer class="shrink-0 bg-bg/95 backdrop-blur-md border-t border-border px-4 py-3">
+      <div class="max-w-3xl mx-auto space-y-2">
+        <form onsubmit="addManualShoppingItem(event)" class="flex gap-2 min-w-0">
+          <input id="shopping-manual-input" type="text" placeholder="Artikel hinzufügen (z. B. 500g Skyr, Zitronen…)"
+            class="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-700 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
+          <button type="submit" class="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-sm shrink-0 transition">
+            +
+          </button>
+        </form>
+        <div class="flex gap-2">
+          <button type="button" onclick="copyShoppingListToClipboard()"
+            class="flex-1 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-200 font-semibold text-xs transition">
+            📋 Liste kopieren
+          </button>
+          ${doneItems.length > 0 ? `
+            <button type="button" onclick="clearCheckedShoppingItems()"
+              class="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold text-xs transition">
+              Erledigte löschen (${doneItems.length})
+            </button>
+          ` : ''}
+        </div>
+      </div>
+    </footer>
+  `;
+
+  if (appLang === 'es' && typeof applyI18nToSubtree === 'function') {
+    applyI18nToSubtree(overlay, false);
+  }
 }
 
 function setFoodSubTab(sub) {
@@ -6077,6 +6816,7 @@ function openModal(html) {
 function closeModal() {
   if (typeof stopVoiceRecipeStreamOnly === 'function') stopVoiceRecipeStreamOnly();
   if (typeof stopVoiceQuickLogStreamOnly === 'function') stopVoiceQuickLogStreamOnly();
+  if (typeof stopMealPlanVoiceStreamOnly === 'function') stopMealPlanVoiceStreamOnly();
   document.getElementById('modal-backdrop').classList.add('hidden');
 }
 
