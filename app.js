@@ -890,6 +890,37 @@ function toggleCustomHabitQuickCheck(habitId) {
 function pickCustomHabitIcon(emoji) {
   const inp = document.getElementById('custom-habit-icon');
   if (inp) inp.value = emoji;
+  document.querySelectorAll('.custom-habit-emoji-btn').forEach(btn => {
+    const active = btn.dataset.emoji === emoji;
+    btn.className = `custom-habit-emoji-btn w-7 h-7 rounded-lg border text-sm flex items-center justify-center transition ${
+      active
+        ? 'bg-emerald-500/20 border-emerald-500/60 ring-1 ring-emerald-500/40'
+        : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800'
+    }`;
+  });
+}
+
+function selectCustomHabitType(type) {
+  const safeType = type === 'avoid' ? 'avoid' : 'positive';
+  const hidden = document.getElementById('custom-habit-type');
+  if (hidden) hidden.value = safeType;
+
+  const posBtn = document.getElementById('custom-habit-type-positive');
+  const avoidBtn = document.getElementById('custom-habit-type-avoid');
+  if (posBtn) {
+    posBtn.className = `p-2.5 rounded-xl border text-left transition ${
+      safeType === 'positive'
+        ? 'bg-emerald-500/15 border-emerald-500/60 text-white ring-1 ring-emerald-500/30'
+        : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+    }`;
+  }
+  if (avoidBtn) {
+    avoidBtn.className = `p-2.5 rounded-xl border text-left transition ${
+      safeType === 'avoid'
+        ? 'bg-rose-500/15 border-rose-500/60 text-white ring-1 ring-rose-500/30'
+        : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+    }`;
+  }
 }
 
 function addCustomHabitFromModal(event) {
@@ -1033,30 +1064,49 @@ function openHabitCustomizerModal() {
       </div>
 
       <!-- Neues Habit erstellen -->
-      <form onsubmit="addCustomHabitFromModal(event)" class="bg-zinc-950/80 border border-border rounded-2xl p-3 space-y-2.5">
+      <form onsubmit="addCustomHabitFromModal(event)" class="bg-zinc-950/80 border border-border rounded-2xl p-3.5 space-y-3 overflow-hidden">
         <div class="text-xs font-semibold text-white">+ Eigenes Habit erstellen</div>
-        <div class="flex flex-wrap gap-1">
-          ${emojiPresets.map(em => `
-            <button type="button" onclick="pickCustomHabitIcon('${em}')"
-              class="w-7 h-7 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-sm flex items-center justify-center transition">${em}</button>
+        <div class="flex flex-wrap gap-1.5">
+          ${emojiPresets.map((em, idx) => `
+            <button type="button" data-emoji="${em}" onclick="pickCustomHabitIcon('${em}')"
+              class="custom-habit-emoji-btn w-7 h-7 rounded-lg border text-sm flex items-center justify-center transition ${
+                idx === 0
+                  ? 'bg-emerald-500/20 border-emerald-500/60 ring-1 ring-emerald-500/40'
+                  : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800'
+              }">${em}</button>
           `).join('')}
         </div>
-        <div class="flex gap-2">
+        <div class="flex gap-2 min-w-0">
           <input id="custom-habit-icon" type="text" value="💧" maxlength="4"
-            class="w-12 text-center bg-zinc-900 border border-border rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+            class="w-12 shrink-0 text-center bg-zinc-900 border border-border rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
           <input id="custom-habit-name" type="text" placeholder="Name (z. B. 2L Wasser, Zuckerfrei, Lesen)"
-            class="flex-1 bg-zinc-900 border border-border rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
+            class="flex-1 min-w-0 bg-zinc-900 border border-border rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
         </div>
-        <div class="flex gap-2 items-center">
-          <select id="custom-habit-type"
-            class="flex-1 bg-zinc-900 border border-border rounded-xl px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500">
-            <option value="positive">✓ Positive Routine (Ja / Nein / Offen)</option>
-            <option value="avoid">🚫 Verzicht / Konsum (Clean / Konsumiert / Offen)</option>
-          </select>
-          <button type="submit" class="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs shrink-0 transition">
-            + Hinzufügen
-          </button>
+        <div class="space-y-1.5">
+          <div class="text-[11px] font-medium text-zinc-400">Tracking-Art</div>
+          <input id="custom-habit-type" type="hidden" value="positive" />
+          <div class="grid grid-cols-2 gap-2">
+            <button type="button" id="custom-habit-type-positive" onclick="selectCustomHabitType('positive')"
+              class="p-2.5 rounded-xl border text-left transition bg-emerald-500/15 border-emerald-500/60 text-white ring-1 ring-emerald-500/30">
+              <div class="flex items-center gap-1.5 text-xs font-semibold">
+                <span class="text-emerald-400">✓</span>
+                <span class="truncate">Aufbauen</span>
+              </div>
+              <div class="text-[10px] text-zinc-400 mt-0.5 leading-snug">Positive Routine · Ja / Nein / Offen</div>
+            </button>
+            <button type="button" id="custom-habit-type-avoid" onclick="selectCustomHabitType('avoid')"
+              class="p-2.5 rounded-xl border text-left transition bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200">
+              <div class="flex items-center gap-1.5 text-xs font-semibold">
+                <span class="text-rose-400">🚫</span>
+                <span class="truncate">Verzichten</span>
+              </div>
+              <div class="text-[10px] text-zinc-400 mt-0.5 leading-snug">Konsum meiden · Clean / Konsum</div>
+            </button>
+          </div>
         </div>
+        <button type="submit" class="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+          + Habit hinzufügen
+        </button>
       </form>
 
       <button type="button" onclick="closeModal()" class="w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold text-xs transition">
