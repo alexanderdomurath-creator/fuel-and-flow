@@ -250,6 +250,8 @@ function buildInitialState() {
       { id: 'sp_surf', name: 'Surfen / Mobility' }
     ],
     snacks: [],
+    mealPlan: { days: {} },
+    shoppingList: [],
     habitConfig: createDefaultHabitConfig(),
     weightHistory: [],
     logs: {}
@@ -283,6 +285,10 @@ let state = (() => {
       if (parsed && typeof parsed === 'object') {
         parsed.recipes = Array.isArray(parsed.recipes) ? parsed.recipes : [];
         parsed.snacks = Array.isArray(parsed.snacks) ? parsed.snacks : [];
+        parsed.mealPlan = (parsed.mealPlan && typeof parsed.mealPlan === 'object' && parsed.mealPlan.days && typeof parsed.mealPlan.days === 'object')
+          ? parsed.mealPlan
+          : { days: {} };
+        parsed.shoppingList = Array.isArray(parsed.shoppingList) ? parsed.shoppingList : [];
         parsed.sportHabits = Array.isArray(parsed.sportHabits) ? parsed.sportHabits : [];
         parsed.workouts = Array.isArray(parsed.workouts) ? parsed.workouts : [];
         const rawW = Array.isArray(parsed.weightHistory) ? parsed.weightHistory : [];
@@ -398,6 +404,10 @@ function normalizeLoadedState(obj) {
   if (!obj || typeof obj !== 'object') return obj;
   obj.recipes = Array.isArray(obj.recipes) ? obj.recipes : [];
   obj.snacks = Array.isArray(obj.snacks) ? obj.snacks : [];
+  obj.mealPlan = (obj.mealPlan && typeof obj.mealPlan === 'object' && obj.mealPlan.days && typeof obj.mealPlan.days === 'object')
+    ? obj.mealPlan
+    : { days: {} };
+  obj.shoppingList = Array.isArray(obj.shoppingList) ? obj.shoppingList : [];
   obj.sportHabits = Array.isArray(obj.sportHabits) ? obj.sportHabits : [];
   obj.workouts = Array.isArray(obj.workouts) ? obj.workouts : [];
   obj.weightHistory = stripDemoWeightEntries(Array.isArray(obj.weightHistory) ? obj.weightHistory : []);
@@ -442,6 +452,19 @@ function mergeCloudStates(localSt, remoteSt) {
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
   merged.recipes = mergeByKey(primary.recipes, secondary.recipes, r => r.id).filter(r => !isDeleted(r.id));
   merged.snacks = mergeByKey(primary.snacks, secondary.snacks, s => s.id).filter(s => !isDeleted(s.id));
+  merged.shoppingList = mergeByKey(primary.shoppingList, secondary.shoppingList, it => it.id).filter(it => !isDeleted(it.id));
+  const allPlanDates = new Set([
+    ...Object.keys((secondary.mealPlan && secondary.mealPlan.days) || {}),
+    ...Object.keys((primary.mealPlan && primary.mealPlan.days) || {})
+  ]);
+  const mergedPlanDays = {};
+  allPlanDates.forEach(dk => {
+    const pArr = (primary.mealPlan && primary.mealPlan.days && primary.mealPlan.days[dk]) || [];
+    const sArr = (secondary.mealPlan && secondary.mealPlan.days && secondary.mealPlan.days[dk]) || [];
+    const dayMerged = mergeByKey(pArr, sArr, it => it.id).filter(it => !isDeleted(it.id));
+    if (dayMerged.length) mergedPlanDays[dk] = dayMerged;
+  });
+  merged.mealPlan = { days: mergedPlanDays };
   merged.sportHabits = mergeByKey(primary.sportHabits, secondary.sportHabits, h => h.id).filter(h => !isDeleted(h.id));
 
   // Tageslogs über ALLE Datums-Keys beider Geräte verlustfrei zusammenführen
@@ -4268,6 +4291,748 @@ function renderSnacksSection() {
   `;
 }
 
+// ---------- PERSONALISIERTER ERNÄHRUNGSPLAN & AUTOMATISCHE EINKAUFSLISTE ----------
+let selectedMealPlanDate = null;
+let shoppingRecipeCounts = {};
+
+function ensureMealPlan() {
+  if (!state.mealPlan || typeof state.mealPlan !== 'object' || !state.mealPlan.days || typeof state.mealPlan.days !== 'object') {
+    state.mealPlan = { days: {} };
+  }
+  return state.mealPlan;
+}
+
+function ensureShoppingList() {
+  if (!Array.isArray(state.shoppingList)) state.shoppingList = [];
+  return state.shoppingList;
+}
+
+function getMealPlanDates(count = 7) {
+  const out = [];
+  const start = new Date(getTodayStr() + 'T12:00:00');
+  const wdDe = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+  const wdEs = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+  for (let i = 0; i < count; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const dateStr = formatDateStr(d);
+    out.push({
+      dateStr,
+      label: i === 0 ? (appLang === 'es' ? 'Hoy' : 'Heute') : (appLang === 'es' ? wdEs[d.getDay()] : wdDe[d.getDay()]),
+      shortDate: `${d.getDate()}.${d.getMonth() + 1}.`
+    });
+  }
+  return out;
+}
+
+function getPlannedMealsForDate(dateStr) {
+  const mp = ensureMealPlan();
+  if (!Array.isArray(mp.days[dateStr])) return [];
+  return mp.days[dateStr];
+}
+
+function calcPlannedDayTotals(dateStr) {
+  return getPlannedMealsForDate(dateStr).reduce((acc, m) => ({
+    kcal: acc.kcal + (Number(m.kcal) || 0),
+    p: acc.p + (Number(m.p) || 0),
+    c: acc.c + (Number(m.c) || 0),
+    f: acc.f + (Number(m.f) || 0)
+  }), { kcal: 0, p: 0, c: 0, f: 0 });
+}
+
+function addRecipeToMealPlan(dateStr, recipeId, keepModalOpen = true) {
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec) return;
+  const tot = calcRecipeTotals(rec);
+  const mp = ensureMealPlan();
+  if (!Array.isArray(mp.days[dateStr])) mp.days[dateStr] = [];
+  mp.days[dateStr].push({
+    id: 'mp_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    kind: 'recipe',
+    refId: rec.id,
+    name: rec.name,
+    kcal: Math.round(tot.kcal),
+    p: Math.round(tot.p * 10) / 10,
+    c: Math.round(tot.c * 10) / 10,
+    f: Math.round(tot.f * 10) / 10,
+    items: (rec.items || []).map(it => ({ name: it.name, grams: Math.max(1, Math.round(Number(it.grams) || 100)) }))
+  });
+  saveState();
+  render();
+  if (keepModalOpen) openMealPlanModal(dateStr);
+}
+
+function addSnackToMealPlan(dateStr, snackId, keepModalOpen = true) {
+  const sn = ensureSnacksArray().find(s => s.id === snackId);
+  if (!sn) return;
+  const g = Math.max(1, Math.round(Number(sn.grams) || 50));
+  const factor = g / 100;
+  const mp = ensureMealPlan();
+  if (!Array.isArray(mp.days[dateStr])) mp.days[dateStr] = [];
+  mp.days[dateStr].push({
+    id: 'mp_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    kind: 'snack',
+    refId: sn.id,
+    name: `${sn.name} (${g}g)`,
+    kcal: Math.round(sn.kcal100 * factor),
+    p: Math.round(sn.p100 * factor * 10) / 10,
+    c: Math.round(sn.c100 * factor * 10) / 10,
+    f: Math.round(sn.f100 * factor * 10) / 10,
+    items: [{ name: sn.name, grams: g }]
+  });
+  saveState();
+  render();
+  if (keepModalOpen) openMealPlanModal(dateStr);
+}
+
+function removeMealPlanItem(dateStr, itemId) {
+  const mp = ensureMealPlan();
+  if (!Array.isArray(mp.days[dateStr])) return;
+  mp.days[dateStr] = mp.days[dateStr].filter(it => it.id !== itemId);
+  if (!mp.days[dateStr].length) delete mp.days[dateStr];
+  markDeletedId(itemId);
+  saveState();
+  render();
+  openMealPlanModal(dateStr);
+}
+
+function logMealPlanItemToDay(dateStr, itemId) {
+  const item = getPlannedMealsForDate(dateStr).find(it => it.id === itemId);
+  if (!item) return;
+  const log = ensureDayLog(dateStr);
+  log.entries.push({
+    id: 'ent_' + Date.now(),
+    name: item.name,
+    kcal: Math.round(Number(item.kcal) || 0),
+    p: Math.round((Number(item.p) || 0) * 10) / 10,
+    c: Math.round((Number(item.c) || 0) * 10) / 10,
+    f: Math.round((Number(item.f) || 0) * 10) / 10
+  });
+  item.logged = true;
+  saveState();
+  render();
+  openMealPlanModal(dateStr);
+  showToast(`✓ „${item.name}“ für ${formatDisplayDate(dateStr)} geloggt`);
+}
+
+function generateSmartDayPlan(dateStr) {
+  const dyn = getDynamicCalorieTarget(dateStr);
+  const targetKcal = Math.max(1200, dyn.target || state.calorieGoal || 2200);
+  const targetProtein = Math.max(60, Number(state.proteinGoal) || 150);
+  const recipes = (state.recipes || []).map(r => ({ rec: r, tot: calcRecipeTotals(r) })).filter(x => x.tot.kcal > 0);
+  const snacks = ensureSnacksArray().map(s => {
+    const g = Math.max(1, Number(s.grams) || 50);
+    return {
+      sn: s,
+      g,
+      kcal: Math.round(s.kcal100 * g / 100),
+      p: Math.round(s.p100 * g / 100 * 10) / 10,
+      c: Math.round(s.c100 * g / 100 * 10) / 10,
+      f: Math.round(s.f100 * g / 100 * 10) / 10
+    };
+  }).filter(x => x.kcal > 0);
+
+  if (!recipes.length && !snacks.length) {
+    showToast('Bitte lege zuerst mindestens ein Rezept oder einen Snack an – oder nutze den KI-Plan.');
+    return;
+  }
+
+  const mp = ensureMealPlan();
+  const prev = Array.isArray(mp.days[dateStr]) ? mp.days[dateStr] : [];
+  prev.forEach(it => markDeletedId(it.id));
+  mp.days[dateStr] = [];
+
+  // Rezepte nach Protein-Dichte sortieren und geschickt bis nahe ans Tagesziel kombinieren
+  const rankedRecipes = [...recipes].sort((a, b) => (b.tot.p / Math.max(1, b.tot.kcal)) - (a.tot.p / Math.max(1, a.tot.kcal)));
+  let curKcal = 0;
+  let curP = 0;
+  let added = 0;
+  const maxRecipes = Math.min(4, Math.max(2, rankedRecipes.length));
+
+  for (let pass = 0; pass < 2 && added < maxRecipes; pass++) {
+    for (const entry of rankedRecipes) {
+      if (added >= maxRecipes) break;
+      if (pass === 0 && curKcal + entry.tot.kcal > targetKcal * 1.06 && added > 0) continue;
+      if (pass === 1 && curKcal >= targetKcal * 0.82) break;
+      if (curKcal + entry.tot.kcal > targetKcal * 1.12 && added > 0) continue;
+      mp.days[dateStr].push({
+        id: 'mp_' + (Date.now() + added),
+        kind: 'recipe',
+        refId: entry.rec.id,
+        name: entry.rec.name,
+        kcal: Math.round(entry.tot.kcal),
+        p: Math.round(entry.tot.p * 10) / 10,
+        c: Math.round(entry.tot.c * 10) / 10,
+        f: Math.round(entry.tot.f * 10) / 10,
+        items: (entry.rec.items || []).map(it => ({ name: it.name, grams: Math.max(1, Math.round(Number(it.grams) || 100)) }))
+      });
+      curKcal += entry.tot.kcal;
+      curP += entry.tot.p;
+      added++;
+    }
+  }
+
+  // Mit passenden Snacks bis zum Ziel auffüllen (Protein-Lücke bevorzugt schließen)
+  if (snacks.length && curKcal < targetKcal * 0.92) {
+    const needProtein = curP < targetProtein * 0.85;
+    const rankedSnacks = [...snacks].sort((a, b) => needProtein
+      ? (b.p / Math.max(1, b.kcal)) - (a.p / Math.max(1, a.kcal))
+      : Math.abs((targetKcal - curKcal) - a.kcal) - Math.abs((targetKcal - curKcal) - b.kcal)
+    );
+    for (const s of rankedSnacks) {
+      if (curKcal + s.kcal <= targetKcal * 1.06) {
+        mp.days[dateStr].push({
+          id: 'mp_' + (Date.now() + 100 + added),
+          kind: 'snack',
+          refId: s.sn.id,
+          name: `${s.sn.name} (${s.g}g)`,
+          kcal: s.kcal,
+          p: s.p,
+          c: s.c,
+          f: s.f,
+          items: [{ name: s.sn.name, grams: s.g }]
+        });
+        curKcal += s.kcal;
+        curP += s.p;
+        added++;
+        if (curKcal >= targetKcal * 0.92) break;
+      }
+    }
+  }
+
+  saveState();
+  render();
+  openMealPlanModal(dateStr);
+  showToast(`⚡ Tagesplan erstellt (${Math.round(curKcal)} / ${targetKcal} kcal)`);
+}
+
+async function generateAiDayPlan(dateStr) {
+  const apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+  const statusEl = document.getElementById('mealPlanAiStatus');
+  const btn = document.getElementById('mealPlanAiBtn');
+  const pref = (document.getElementById('mealPlanPrefInput')?.value || '').trim();
+
+  if (!apiKey) {
+    if (statusEl) {
+      statusEl.textContent = 'Bitte zuerst deinen Gemini API Key (z. B. über KI-Analyse oder Sprach-Log) speichern.';
+      statusEl.className = 'text-[11px] text-rose-400';
+    }
+    return;
+  }
+
+  const dyn = getDynamicCalorieTarget(dateStr);
+  const targetKcal = Math.max(1200, dyn.target || state.calorieGoal || 2200);
+  const targetP = Number(state.proteinGoal) || 150;
+  const targetC = Number(state.carbsGoal) || 250;
+  const targetF = Number(state.fatGoal) || 70;
+  const existingRecipeNames = (state.recipes || []).map(r => r.name).slice(0, 12).join(', ');
+  const langLabel = appLang === 'es' ? 'Spanisch (Español)' : 'Deutsch';
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ KI plant…'; }
+  if (statusEl) {
+    statusEl.textContent = '⚡ Erstelle personalisierten Tagesplan…';
+    statusEl.className = 'text-[11px] text-zinc-400';
+  }
+
+  const promptText = `Erstelle einen praxisnahen Tages-Ernährungsplan (3-4 Mahlzeiten) auf ${langLabel} für exakt diese Tagesziele:
+- Kalorien: ca. ${targetKcal} kcal (±100 kcal)
+- Protein: ca. ${targetP}g · Kohlenhydrate: ca. ${targetC}g · Fett: ca. ${targetF}g
+${pref ? `- Wunsch / Fokus des Nutzers: "${pref}"` : ''}
+${existingRecipeNames ? `- Typische Rezepte des Nutzers als Stil-Inspiration: ${existingRecipeNames}` : ''}
+Gib für jede Mahlzeit die konkreten Einkaufs-Zutaten ("items" mit "name" und "grams") sowie realistische Portions-Nährwerte (kcal, p, c, f) an.`;
+
+  const requestBody = JSON.stringify({
+    contents: [{ parts: [{ text: promptText }] }],
+    generationConfig: {
+      temperature: 0.35,
+      maxOutputTokens: 1400,
+      responseMimeType: 'application/json',
+      responseJsonSchema: {
+        type: 'object',
+        properties: {
+          meals: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                kcal: { type: 'number' },
+                p: { type: 'number' },
+                c: { type: 'number' },
+                f: { type: 'number' },
+                items: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      grams: { type: 'number' }
+                    },
+                    required: ['name', 'grams']
+                  }
+                }
+              },
+              required: ['name', 'kcal', 'p', 'c', 'f', 'items']
+            }
+          }
+        },
+        required: ['meals']
+      }
+    }
+  });
+
+  try {
+    let res = null;
+    let lastError = 'Unbekannter Fehler';
+    for (const model of GEMINI_FAST_MODELS_TO_TRY) {
+      const controller = new AbortController();
+      let timedOut = false;
+      const tid = setTimeout(() => { timedOut = true; try { controller.abort(); } catch (e) {} }, 20000);
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: requestBody,
+          signal: controller.signal
+        });
+      } catch (err) {
+        clearTimeout(tid);
+        if (timedOut) { lastError = `Timeout bei ${model}`; res = null; continue; }
+        throw err;
+      } finally {
+        clearTimeout(tid);
+      }
+      if (res.ok) break;
+      const errData = await res.json().catch(() => ({}));
+      lastError = errData.error?.message || `HTTP ${res.status}`;
+      if (![404, 429, 500, 502, 503, 504].includes(res.status)) throw new Error(lastError);
+      res = null;
+    }
+    if (!res) throw new Error(lastError);
+
+    const result = await res.json();
+    const rawJson = extractGeminiJsonText(result);
+    const data = JSON.parse(rawJson);
+    const meals = Array.isArray(data?.meals) ? data.meals : [];
+    if (!meals.length) throw new Error('KI hat keine Mahlzeiten geliefert.');
+
+    const mp = ensureMealPlan();
+    const prev = Array.isArray(mp.days[dateStr]) ? mp.days[dateStr] : [];
+    prev.forEach(it => markDeletedId(it.id));
+    const now = Date.now();
+    mp.days[dateStr] = meals.map((m, idx) => ({
+      id: 'mp_' + (now + idx),
+      kind: 'ai',
+      name: String(m.name || `Mahlzeit ${idx + 1}`).trim(),
+      kcal: Math.max(0, Math.round(Number(m.kcal) || 0)),
+      p: Math.max(0, Math.round((Number(m.p) || 0) * 10) / 10),
+      c: Math.max(0, Math.round((Number(m.c) || 0) * 10) / 10),
+      f: Math.max(0, Math.round((Number(m.f) || 0) * 10) / 10),
+      items: (Array.isArray(m.items) ? m.items : [])
+        .map(it => ({ name: String(it.name || '').trim(), grams: Math.max(1, Math.round(Number(it.grams) || 100)) }))
+        .filter(it => it.name)
+    }));
+
+    saveState();
+    render();
+    openMealPlanModal(dateStr);
+    showToast(`✨ KI-Plan mit ${meals.length} Mahlzeiten erstellt`);
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = `Fehler: ${err.message || err}`;
+      statusEl.className = 'text-[11px] text-rose-400';
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '✨ KI-Tag planen'; }
+  }
+}
+
+function openMealPlanModal(dateOverride = null) {
+  const days = getMealPlanDates(7);
+  if (dateOverride) selectedMealPlanDate = dateOverride;
+  if (!selectedMealPlanDate || !days.some(d => d.dateStr === selectedMealPlanDate)) {
+    selectedMealPlanDate = days[0].dateStr;
+  }
+  const activeDate = selectedMealPlanDate;
+  const planned = getPlannedMealsForDate(activeDate);
+  const tot = calcPlannedDayTotals(activeDate);
+  const dyn = getDynamicCalorieTarget(activeDate);
+  const targetKcal = Math.max(1200, dyn.target || state.calorieGoal || 2200);
+  const kcalPct = Math.min(100, Math.round((tot.kcal / targetKcal) * 100));
+  const diffKcal = Math.round(targetKcal - tot.kcal);
+
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <h3 class="text-base font-semibold text-white">📅 Personalisierter Ernährungsplan</h3>
+          <p class="text-[11px] text-zinc-400">Auf deine Ziele abgestimmt · direkt loggbar & Basis für deine Einkaufsliste</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+
+      <!-- 7-Tage-Leiste -->
+      <div class="grid grid-cols-7 gap-1">
+        ${days.map(d => {
+          const dTot = calcPlannedDayTotals(d.dateStr);
+          const isAct = d.dateStr === activeDate;
+          return `
+            <button type="button" onclick="openMealPlanModal('${d.dateStr}')"
+              class="py-1.5 px-1 rounded-xl border text-center transition ${
+                isAct
+                  ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300'
+                  : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200'
+              }">
+              <div class="text-[10px] font-semibold">${d.label}</div>
+              <div class="text-[9px] opacity-75">${d.shortDate}</div>
+              <div class="text-[9px] mt-0.5 font-bold ${dTot.kcal > 0 ? 'text-emerald-400' : 'text-zinc-600'}">${dTot.kcal > 0 ? Math.round(dTot.kcal) : '·'}</div>
+            </button>
+          `;
+        }).join('')}
+      </div>
+
+      <!-- Ziel-Abgleich -->
+      <div class="rounded-2xl bg-zinc-900/90 border border-border p-3 space-y-2">
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="text-xs font-semibold text-white">
+            ${Math.round(tot.kcal)} <span class="text-zinc-400 font-normal">/ ${targetKcal} kcal</span>
+          </div>
+          <div class="text-[11px] ${diffKcal >= 0 ? 'text-emerald-400' : 'text-amber-300'} font-medium">
+            ${diffKcal >= 0 ? `Noch ${diffKcal} kcal frei` : `${Math.abs(diffKcal)} kcal über Ziel`}
+          </div>
+        </div>
+        <div class="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
+          <div class="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-full transition-all" style="width:${kcalPct}%"></div>
+        </div>
+        <div class="grid grid-cols-3 gap-1.5 text-center text-[11px]">
+          <div class="bg-zinc-950/80 rounded-xl py-1.5"><span class="text-sky-400 font-semibold">${Math.round(tot.p)}g</span> <span class="text-zinc-500">/ ${state.proteinGoal}g P</span></div>
+          <div class="bg-zinc-950/80 rounded-xl py-1.5"><span class="text-amber-400 font-semibold">${Math.round(tot.c)}g</span> <span class="text-zinc-500">/ ${state.carbsGoal}g C</span></div>
+          <div class="bg-zinc-950/80 rounded-xl py-1.5"><span class="text-rose-400 font-semibold">${Math.round(tot.f)}g</span> <span class="text-zinc-500">/ ${state.fatGoal}g F</span></div>
+        </div>
+      </div>
+
+      <!-- Plan-Generator -->
+      <div class="rounded-2xl bg-zinc-950/80 border border-border p-3 space-y-2">
+        <div class="grid grid-cols-2 gap-2">
+          <button type="button" onclick="generateSmartDayPlan('${activeDate}')"
+            class="py-2 px-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 font-semibold text-xs transition">
+            ⚡ Aus meinen Rezepten
+          </button>
+          <button id="mealPlanAiBtn" type="button" onclick="generateAiDayPlan('${activeDate}')"
+            class="py-2 px-2.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/40 text-violet-300 font-semibold text-xs transition">
+            ✨ KI-Tag planen
+          </button>
+        </div>
+        <input id="mealPlanPrefInput" type="text" placeholder="Optionaler Wunsch für KI-Plan (z. B. vegetarisch, schnell, high protein…)"
+          class="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500" />
+        <div id="mealPlanAiStatus" class="text-[11px] text-zinc-500"></div>
+      </div>
+
+      <!-- Geplante Mahlzeiten -->
+      <div class="space-y-2">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Geplant (${planned.length})</div>
+        ${planned.length > 0 ? planned.map(m => `
+          <div class="bg-zinc-900/90 border border-border rounded-2xl p-3 space-y-1.5">
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0 flex-1">
+                <div class="text-xs font-semibold text-white truncate">${escapeHtmlAttr(m.name)}</div>
+                <div class="text-[11px] text-zinc-400">${Math.round(m.kcal)} kcal · P ${Math.round(m.p)}g · C ${Math.round(m.c)}g · F ${Math.round(m.f)}g</div>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button type="button" onclick="logMealPlanItemToDay('${activeDate}', '${m.id}')" title="In Tagesbilanz loggen"
+                  class="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border transition ${
+                    m.logged
+                      ? 'bg-emerald-500/25 border-emerald-500/50 text-emerald-300'
+                      : 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/35 text-emerald-400'
+                  }">
+                  ${m.logged ? '✓ Geloggt' : '+ Loggen'}
+                </button>
+                <button type="button" onclick="removeMealPlanItem('${activeDate}', '${m.id}')" title="Entfernen"
+                  class="w-7 h-7 flex items-center justify-center rounded-xl bg-zinc-950 hover:bg-rose-500/20 border border-zinc-800 text-zinc-400 hover:text-rose-300 text-xs">✕</button>
+              </div>
+            </div>
+            ${Array.isArray(m.items) && m.items.length ? `
+              <div class="flex flex-wrap gap-1 pt-0.5">
+                ${m.items.map(it => `<span class="px-1.5 py-0.5 rounded-md bg-zinc-950 border border-zinc-800 text-[10px] text-zinc-400">${it.grams}g ${escapeHtmlAttr(it.name)}</span>`).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `).join('') : `<p class="text-xs text-zinc-500">Noch nichts geplant – generiere oben einen Plan oder tippe unten auf ein Rezept.</p>`}
+      </div>
+
+      <!-- Schnell hinzufügen aus Rezepten & Snacks -->
+      ${(state.recipes || []).length > 0 || ensureSnacksArray().length > 0 ? `
+        <div class="space-y-1.5 pt-1 border-t border-border">
+          <div class="text-[11px] font-semibold text-zinc-400">Manuell hinzufügen:</div>
+          <div class="flex flex-wrap gap-1.5">
+            ${(state.recipes || []).map(r => `
+              <button type="button" onclick="addRecipeToMealPlan('${activeDate}', '${r.id}')"
+                class="px-2.5 py-1 rounded-xl bg-zinc-900 hover:bg-emerald-500/15 border border-border hover:border-emerald-500/40 text-[11px] text-zinc-200 transition">
+                + ${escapeHtmlAttr(r.name)}
+              </button>
+            `).join('')}
+            ${ensureSnacksArray().map(s => `
+              <button type="button" onclick="addSnackToMealPlan('${activeDate}', '${s.id}')"
+                class="px-2.5 py-1 rounded-xl bg-zinc-900 hover:bg-amber-500/15 border border-border hover:border-amber-500/40 text-[11px] text-amber-200 transition">
+                + 🍫 ${escapeHtmlAttr(s.name)}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <button type="button" onclick="buildShoppingListFromPlan(7)"
+        class="w-full py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+        🛒 Einkaufsliste aus Wochenplan (7T) erstellen
+      </button>
+    </div>
+  `);
+}
+
+function mergeIngredientsIntoShoppingList(rawItems, sourceLabel = 'Rezept') {
+  const list = ensureShoppingList();
+  let addedOrUpdated = 0;
+  const now = Date.now();
+
+  (rawItems || []).forEach((raw, idx) => {
+    const name = String(raw?.name || '').trim();
+    const grams = Math.max(0, Math.round(Number(raw?.grams) || 0));
+    if (!name) return;
+    const norm = name.toLowerCase();
+    const existing = list.find(it => !it.checked && String(it.name || '').trim().toLowerCase() === norm);
+    if (existing) {
+      if (grams > 0) existing.grams = (Number(existing.grams) || 0) + grams;
+    } else {
+      list.unshift({
+        id: 'shop_' + (now + idx) + '_' + Math.floor(Math.random() * 1000),
+        name,
+        grams,
+        checked: false,
+        source: sourceLabel
+      });
+    }
+    addedOrUpdated++;
+  });
+
+  if (addedOrUpdated > 0) {
+    saveState();
+    render();
+  }
+  return addedOrUpdated;
+}
+
+function buildShoppingListFromPlan(daysCount = 7) {
+  const dates = getMealPlanDates(daysCount);
+  const aggregated = [];
+  dates.forEach(d => {
+    getPlannedMealsForDate(d.dateStr).forEach(m => {
+      if (Array.isArray(m.items) && m.items.length) {
+        m.items.forEach(it => aggregated.push({ name: it.name, grams: it.grams }));
+      } else if (m.kind === 'recipe' && m.refId) {
+        const rec = (state.recipes || []).find(r => r.id === m.refId);
+        if (rec) (rec.items || []).forEach(it => aggregated.push({ name: it.name, grams: it.grams }));
+      } else if (m.name) {
+        aggregated.push({ name: m.name, grams: 0 });
+      }
+    });
+  });
+
+  if (!aggregated.length) {
+    showToast('Noch keine Mahlzeiten im 7-Tage-Plan – wähle unten einfach Rezepte aus.');
+    openShoppingListModal();
+    return;
+  }
+
+  const cnt = mergeIngredientsIntoShoppingList(aggregated, 'Wochenplan');
+  openShoppingListModal();
+  showToast(`🛒 ${cnt} Zutat-Position(en) aus dem Wochenplan übernommen`);
+}
+
+function stepShoppingRecipeCount(recipeId, delta) {
+  const cur = Number(shoppingRecipeCounts[recipeId]) || 0;
+  shoppingRecipeCounts[recipeId] = Math.max(0, Math.min(14, cur + delta));
+  openShoppingListModal();
+}
+
+function addSelectedRecipesToShoppingList() {
+  const aggregated = [];
+  (state.recipes || []).forEach(rec => {
+    const mult = Number(shoppingRecipeCounts[rec.id]) || 0;
+    if (mult <= 0) return;
+    (rec.items || []).forEach(it => {
+      aggregated.push({
+        name: it.name,
+        grams: Math.max(1, Math.round((Number(it.grams) || 100) * mult))
+      });
+    });
+  });
+
+  if (!aggregated.length) {
+    showToast('Bitte zuerst mindestens ein Rezept oben auswählen.');
+    return;
+  }
+
+  const cnt = mergeIngredientsIntoShoppingList(aggregated, 'Rezepte');
+  shoppingRecipeCounts = {};
+  openShoppingListModal();
+  showToast(`🛒 ${cnt} Zutat(en) aus Rezepten zur Einkaufsliste hinzugefügt`);
+}
+
+function addManualShoppingItem(event) {
+  if (event) event.preventDefault();
+  const inp = document.getElementById('shopping-manual-input');
+  const raw = (inp?.value || '').trim();
+  if (!raw) return;
+  const m = raw.match(/^(\d+)\s*(?:g|gr|gramm|ml)\s+(.+)$/i);
+  const grams = m ? Number(m[1]) : 0;
+  const name = m ? m[2].trim() : raw;
+  mergeIngredientsIntoShoppingList([{ name, grams }], 'Manuell');
+  openShoppingListModal();
+}
+
+function toggleShoppingItem(id) {
+  const item = ensureShoppingList().find(it => it.id === id);
+  if (!item) return;
+  item.checked = !item.checked;
+  saveState();
+  render();
+  openShoppingListModal();
+}
+
+function deleteShoppingItem(id) {
+  state.shoppingList = ensureShoppingList().filter(it => it.id !== id);
+  markDeletedId(id);
+  saveState();
+  render();
+  openShoppingListModal();
+}
+
+function clearCheckedShoppingItems() {
+  const list = ensureShoppingList();
+  list.filter(it => it.checked).forEach(it => markDeletedId(it.id));
+  state.shoppingList = list.filter(it => !it.checked);
+  saveState();
+  render();
+  openShoppingListModal();
+}
+
+function copyShoppingListToClipboard() {
+  const openItems = ensureShoppingList().filter(it => !it.checked);
+  if (!openItems.length) {
+    showToast('Keine offenen Artikel auf der Einkaufsliste.');
+    return;
+  }
+  const text = '🛒 Einkaufsliste (Fuel & Flow)\n' + openItems.map(it =>
+    `- [ ] ${it.grams > 0 ? `${it.grams}g ` : ''}${it.name}`
+  ).join('\n');
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast('📋 Einkaufsliste in Zwischenablage kopiert'))
+      .catch(() => showToast('Kopieren fehlgeschlagen'));
+  } else {
+    showToast('Zwischenablage in diesem Browser nicht verfügbar');
+  }
+}
+
+function openShoppingListModal() {
+  const list = ensureShoppingList();
+  const openItems = list.filter(it => !it.checked);
+  const doneItems = list.filter(it => it.checked);
+  const selectedRecipeTotal = Object.values(shoppingRecipeCounts).reduce((s, n) => s + (Number(n) || 0), 0);
+
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <h3 class="text-base font-semibold text-white">🛒 Einkaufsliste</h3>
+          <p class="text-[11px] text-zinc-400">${openItems.length} offen · ${doneItems.length} erledigt · automatisch summiert</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+
+      <!-- Automatisch generieren -->
+      <div class="rounded-2xl bg-zinc-950/80 border border-border p-3 space-y-2.5">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs font-semibold text-white">Automatisch füllen</span>
+          <button type="button" onclick="buildShoppingListFromPlan(7)"
+            class="px-2.5 py-1 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold transition">
+            📅 Aus Wochenplan
+          </button>
+        </div>
+        ${(state.recipes || []).length > 0 ? `
+          <div class="space-y-1.5">
+            <div class="text-[10px] text-zinc-400">Oder Rezepte antippen (Portionen summieren):</div>
+            <div class="flex flex-wrap gap-1.5">
+              ${(state.recipes || []).map(r => {
+                const cnt = Number(shoppingRecipeCounts[r.id]) || 0;
+                return `
+                  <div class="inline-flex items-center rounded-xl border text-[11px] overflow-hidden ${
+                    cnt > 0 ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-200' : 'bg-zinc-900 border-border text-zinc-300'
+                  }">
+                    <button type="button" onclick="stepShoppingRecipeCount('${r.id}', 1)" class="px-2.5 py-1 hover:bg-white/5 transition">
+                      ${cnt > 0 ? `<strong>${cnt}×</strong> ` : '+ '}${escapeHtmlAttr(r.name)}
+                    </button>
+                    ${cnt > 0 ? `<button type="button" onclick="stepShoppingRecipeCount('${r.id}', -1)" class="px-1.5 py-1 border-l border-emerald-500/30 hover:bg-white/10 text-emerald-300">−</button>` : ''}
+                  </div>
+                `;
+              }).join('')}
+            </div>
+            ${selectedRecipeTotal > 0 ? `
+              <button type="button" onclick="addSelectedRecipesToShoppingList()"
+                class="w-full py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+                ✓ Zutaten aus ${selectedRecipeTotal} Rezept-Portion(en) hinzufügen
+              </button>
+            ` : ''}
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Manuell hinzufügen -->
+      <form onsubmit="addManualShoppingItem(event)" class="flex gap-2 min-w-0">
+        <input id="shopping-manual-input" type="text" placeholder="Artikel ergänzen (z. B. 500g Skyr, Zitronen)"
+          class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
+        <button type="submit" class="px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-semibold text-xs shrink-0 transition">
+          +
+        </button>
+      </form>
+
+      <!-- Liste -->
+      ${list.length > 0 ? `
+        <div class="space-y-1.5 max-h-64 overflow-y-auto">
+          ${[...openItems, ...doneItems].map(it => `
+            <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border transition ${
+              it.checked
+                ? 'bg-zinc-950/60 border-zinc-900 text-zinc-500'
+                : 'bg-zinc-900/90 border-border text-zinc-100'
+            }">
+              <button type="button" onclick="toggleShoppingItem('${it.id}')" class="flex-1 min-w-0 flex items-center gap-2 text-left text-xs">
+                <span class="w-4 h-4 rounded-md border flex items-center justify-center shrink-0 text-[10px] ${
+                  it.checked ? 'bg-emerald-500/25 border-emerald-500/50 text-emerald-300' : 'border-zinc-600'
+                }">${it.checked ? '✓' : ''}</span>
+                <span class="truncate ${it.checked ? 'line-through' : 'font-medium'}">${it.grams > 0 ? `<strong class="${it.checked ? '' : 'text-emerald-400'}">${it.grams}g</strong> ` : ''}${escapeHtmlAttr(it.name)}</span>
+              </button>
+              <button type="button" onclick="deleteShoppingItem('${it.id}')" class="text-zinc-500 hover:text-rose-400 px-1 text-xs shrink-0">✕</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : `<p class="text-xs text-zinc-500 text-center py-3">Deine Einkaufsliste ist leer – übernimm oben Zutaten aus Rezepten oder deinem Wochenplan.</p>`}
+
+      <!-- Aktionen -->
+      <div class="flex gap-2 pt-1">
+        <button type="button" onclick="copyShoppingListToClipboard()"
+          class="flex-1 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-border text-zinc-200 font-semibold text-xs transition">
+          📋 Kopieren
+        </button>
+        ${doneItems.length > 0 ? `
+          <button type="button" onclick="clearCheckedShoppingItems()"
+            class="px-3.5 py-2.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold text-xs transition">
+            Erledigte löschen (${doneItems.length})
+          </button>
+        ` : ''}
+      </div>
+    </div>
+  `);
+}
+
 function setFoodSubTab(sub) {
   foodSubTab = sub;
   if (sub !== 'recipes') editingRecipe = null;
@@ -4278,10 +5043,17 @@ function renderFoodTab() {
   if (editingRecipe) {
     return renderRecipesTab();
   }
+  const openShopCount = ensureShoppingList().filter(it => !it.checked).length;
   return `
-    <div class="flex gap-2">
-      <button onclick="openAiMealModal()" class="flex-1 px-3 py-2.5 rounded-2xl text-xs font-semibold transition flex items-center justify-center gap-1.5 border bg-violet-500/15 hover:bg-violet-500/25 border-violet-500/30 text-violet-300">
-        <span>✨</span><span>KI-Analyse</span>
+    <div class="grid grid-cols-3 gap-2">
+      <button onclick="openAiMealModal()" class="px-2.5 py-2.5 rounded-2xl text-xs font-semibold transition flex items-center justify-center gap-1.5 border bg-violet-500/15 hover:bg-violet-500/25 border-violet-500/30 text-violet-300">
+        <span>✨</span><span class="truncate">KI-Analyse</span>
+      </button>
+      <button onclick="openMealPlanModal()" class="px-2.5 py-2.5 rounded-2xl text-xs font-semibold transition flex items-center justify-center gap-1.5 border bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30 text-emerald-300">
+        <span>📅</span><span class="truncate">Plan</span>
+      </button>
+      <button onclick="openShoppingListModal()" class="px-2.5 py-2.5 rounded-2xl text-xs font-semibold transition flex items-center justify-center gap-1.5 border bg-sky-500/15 hover:bg-sky-500/25 border-sky-500/30 text-sky-300">
+        <span>🛒</span><span class="truncate">Einkauf${openShopCount > 0 ? ` (${openShopCount})` : ''}</span>
       </button>
     </div>
     ${renderSnacksSection()}
