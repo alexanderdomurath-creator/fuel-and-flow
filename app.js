@@ -253,6 +253,7 @@ function buildInitialState() {
     mealPlan: { days: {} },
     shoppingList: [],
     shoppingHistory: [],
+    waterGoalMl: 2500,
     habitConfig: createDefaultHabitConfig(),
     weightHistory: [],
     logs: {}
@@ -291,6 +292,7 @@ let state = (() => {
           : { days: {} };
         parsed.shoppingList = Array.isArray(parsed.shoppingList) ? parsed.shoppingList : [];
         parsed.shoppingHistory = Array.isArray(parsed.shoppingHistory) ? parsed.shoppingHistory : [];
+        parsed.waterGoalMl = Math.max(500, Math.round(Number(parsed.waterGoalMl) || 2500));
         parsed.sportHabits = Array.isArray(parsed.sportHabits) ? parsed.sportHabits : [];
         parsed.workouts = Array.isArray(parsed.workouts) ? parsed.workouts : [];
         const rawW = Array.isArray(parsed.weightHistory) ? parsed.weightHistory : [];
@@ -411,6 +413,7 @@ function normalizeLoadedState(obj) {
     : { days: {} };
   obj.shoppingList = Array.isArray(obj.shoppingList) ? obj.shoppingList : [];
   obj.shoppingHistory = Array.isArray(obj.shoppingHistory) ? obj.shoppingHistory : [];
+  obj.waterGoalMl = Math.max(500, Math.round(Number(obj.waterGoalMl) || 2500));
   obj.sportHabits = Array.isArray(obj.sportHabits) ? obj.sportHabits : [];
   obj.workouts = Array.isArray(obj.workouts) ? obj.workouts : [];
   obj.weightHistory = stripDemoWeightEntries(Array.isArray(obj.weightHistory) ? obj.weightHistory : []);
@@ -524,7 +527,10 @@ function mergeCloudStates(localSt, remoteSt) {
     Object.keys(pLog.customHabits || {}).forEach(k => {
       if (pLog.customHabits[k] !== null && pLog.customHabits[k] !== undefined) customHabits[k] = pLog.customHabits[k];
     });
-    mergedLogs[dateKey] = { ...sLog, ...pLog, entries, sportDone, badHabits, routines, customHabits };
+    const waterMl = typeof pLog.waterMl === 'number'
+      ? Math.max(0, Math.round(pLog.waterMl))
+      : (typeof sLog.waterMl === 'number' ? Math.max(0, Math.round(sLog.waterMl)) : 0);
+    mergedLogs[dateKey] = { ...sLog, ...pLog, entries, sportDone, badHabits, routines, customHabits, ...(waterMl > 0 || typeof pLog.waterMl === 'number' ? { waterMl } : {}) };
   });
   merged.logs = mergedLogs;
   merged._updatedAt = nextMonotonicIsoTs();
@@ -3597,6 +3603,177 @@ function openCalorieInfoModal() {
   `);
 }
 
+function getWaterGoalMl() {
+  return Math.max(500, Math.round(Number(state.waterGoalMl) || 2500));
+}
+
+function getDayWaterMl(dateStr = state.selectedDate) {
+  const log = state.logs && state.logs[dateStr];
+  return Math.max(0, Math.round(Number(log?.waterMl) || 0));
+}
+
+function formatLitersDe(ml) {
+  const liters = (Math.max(0, Number(ml) || 0)) / 1000;
+  return liters.toFixed(2).replace(/0$/, '').replace(/\.0$/, '').replace('.', ',');
+}
+
+function addWaterMl(deltaMl, dateStr = state.selectedDate) {
+  const log = ensureDayLog(dateStr);
+  const prev = Math.max(0, Math.round(Number(log.waterMl) || 0));
+  const next = Math.max(0, Math.min(10000, prev + Math.round(Number(deltaMl) || 0)));
+  if (next === prev) return;
+  const goal = getWaterGoalMl();
+  log.waterMl = next;
+  saveState();
+  render();
+  if (prev < goal && next >= goal) {
+    showToast(`💧 Wasserziel erreicht (${formatLitersDe(next)} L)!`);
+  }
+}
+
+function toggleWaterGlass(glassIndex, dateStr = state.selectedDate) {
+  const log = ensureDayLog(dateStr);
+  const cur = Math.max(0, Math.round(Number(log.waterMl) || 0));
+  const targetMl = Math.max(0, Math.round(Number(glassIndex) || 1) * 250);
+  const next = cur >= targetMl && cur < targetMl + 250 ? Math.max(0, targetMl - 250) : targetMl;
+  const goal = getWaterGoalMl();
+  log.waterMl = next;
+  saveState();
+  render();
+  if (cur < goal && next >= goal) {
+    showToast(`💧 Wasserziel erreicht (${formatLitersDe(next)} L)!`);
+  }
+}
+
+function setWaterGoalMl(goalMl) {
+  const clean = Math.max(500, Math.min(8000, Math.round(Number(goalMl) || 2500)));
+  state.waterGoalMl = clean;
+  saveState();
+  closeModal();
+  render();
+  showToast(`💧 Tagesziel auf ${formatLitersDe(clean)} L gesetzt`);
+}
+
+function openWaterGoalModal() {
+  const cur = getWaterGoalMl();
+  const presets = [1500, 2000, 2500, 3000, 3500, 4000];
+  openModal(`
+    <form onsubmit="event.preventDefault(); setWaterGoalMl(document.getElementById('water-goal-input').value);" class="space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold text-white">💧 Wasser-Tagesziel</h3>
+          <p class="text-[11px] text-zinc-400">Wähle dein tägliches Flüssigkeitsziel</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        ${presets.map(ml => `
+          <button type="button" onclick="setWaterGoalMl(${ml})"
+            class="py-2 rounded-xl text-xs font-semibold border transition ${
+              cur === ml
+                ? 'bg-sky-500/20 border-sky-500/55 text-sky-300'
+                : 'bg-zinc-900 hover:bg-zinc-800 border-border text-zinc-300'
+            }">
+            ${formatLitersDe(ml)} L
+          </button>
+        `).join('')}
+      </div>
+      <div class="flex items-center gap-2 bg-zinc-900 border border-zinc-700 focus-within:border-sky-500 rounded-2xl px-3.5 py-2.5">
+        <input id="water-goal-input" type="number" inputmode="numeric" step="100" min="500" max="8000" value="${cur}"
+          class="w-full bg-transparent text-base font-bold text-white text-center focus:outline-none" />
+        <span class="text-xs font-semibold text-zinc-400 shrink-0">ml</span>
+      </div>
+      <button type="submit" class="w-full py-2.5 rounded-2xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-semibold text-xs transition">
+        ✓ Ziel speichern
+      </button>
+    </form>
+  `);
+}
+
+function renderWaterWidgetHtml(log) {
+  const waterMl = Math.max(0, Math.round(Number(log?.waterMl) || 0));
+  const goalMl = getWaterGoalMl();
+  const pct = Math.min(100, Math.round((waterMl / goalMl) * 100));
+  const reached = waterMl >= goalMl;
+  const totalGlasses = Math.min(12, Math.max(6, Math.round(goalMl / 250)));
+  const filledGlasses = Math.floor(waterMl / 250);
+  const remMl = Math.max(0, goalMl - waterMl);
+
+  return `
+    <section class="bg-card border ${reached ? 'border-emerald-500/35' : 'border-border'} rounded-3xl p-4 space-y-3">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <div class="flex items-center gap-1.5">
+            <h2 class="text-xs uppercase tracking-wider text-zinc-400 font-semibold">💧 Wasser</h2>
+            <span class="px-1.5 py-0.5 rounded-md text-[10px] font-semibold ${
+              reached
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/35'
+                : 'bg-sky-500/15 text-sky-300 border border-sky-500/30'
+            }">${reached ? '✓ Ziel erreicht' : `${pct} %`}</span>
+          </div>
+          <div class="mt-1 flex items-baseline gap-1.5">
+            <span class="text-xl font-bold ${reached ? 'text-emerald-400' : 'text-sky-400'}">${formatLitersDe(waterMl)} L</span>
+            <span class="text-xs text-zinc-400">/ ${formatLitersDe(goalMl)} L</span>
+            ${!reached ? `<span class="text-[11px] text-zinc-500 ml-1">(noch ${remMl >= 1000 ? `${formatLitersDe(remMl)} L` : `${remMl} ml`})</span>` : ''}
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          ${waterMl > 0 ? `
+            <button type="button" onclick="addWaterMl(-250)" title="250 ml abziehen" aria-label="250 ml abziehen"
+              class="px-2 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-400 hover:text-zinc-200 text-[11px] font-semibold transition">
+              −250
+            </button>
+          ` : ''}
+          <button type="button" onclick="openWaterGoalModal()" title="Wasserziel anpassen"
+            class="px-2.5 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-300 hover:text-white text-[11px] font-medium transition">
+            🎯 Ziel
+          </button>
+        </div>
+      </div>
+
+      <div class="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
+        <div class="h-full rounded-full transition-all duration-300 ${
+          reached ? 'bg-gradient-to-r from-emerald-500 to-teal-400' : 'bg-gradient-to-r from-sky-500 to-cyan-400'
+        }" style="width:${pct}%"></div>
+      </div>
+
+      <div class="grid gap-1.5" style="grid-template-columns: repeat(${totalGlasses}, minmax(0, 1fr));">
+        ${Array.from({ length: totalGlasses }, (_, i) => {
+          const idx = i + 1;
+          const isFilled = idx <= filledGlasses;
+          return `
+            <button type="button" onclick="toggleWaterGlass(${idx})" title="${idx * 250} ml"
+              class="h-7 rounded-xl border flex items-center justify-center text-xs transition ${
+                isFilled
+                  ? (reached
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                    : 'bg-sky-500/25 border-sky-400/55 text-sky-200')
+                  : 'bg-zinc-900/80 hover:bg-zinc-800 border-border text-zinc-600'
+              }">
+              <span class="${isFilled ? 'opacity-100' : 'opacity-35'}">💧</span>
+            </button>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="grid grid-cols-3 gap-2">
+        <button type="button" onclick="addWaterMl(250)"
+          class="py-2 px-2.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 font-semibold text-xs transition">
+          +250 ml
+        </button>
+        <button type="button" onclick="addWaterMl(500)"
+          class="py-2 px-2.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/45 text-sky-200 font-semibold text-xs transition">
+          +500 ml
+        </button>
+        <button type="button" onclick="addWaterMl(750)"
+          class="py-2 px-2.5 rounded-xl bg-zinc-900 hover:bg-sky-500/20 border border-border hover:border-sky-500/40 text-zinc-200 hover:text-sky-200 font-semibold text-xs transition">
+          +750 ml
+        </button>
+      </div>
+    </section>
+  `;
+}
+
 function renderDashboard() {
   const log = ensureDayLog(state.selectedDate);
   const totals = log.entries.reduce((a, e) => {
@@ -3810,6 +3987,8 @@ function renderDashboard() {
         </div>
       ` : `<p class="text-xs text-zinc-500">Noch keine Mahlzeiten für ${formatDisplayDate(state.selectedDate)} eingetragen.</p>`}
     </section>
+
+    ${renderWaterWidgetHtml(log)}
 
     ${renderCalorieMacroHistoryCard()}
 

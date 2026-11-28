@@ -1,5 +1,5 @@
 // Network-First Service Worker mit Offline-Fallback für die App-Shell
-const SHELL_CACHE = 'fuel-flow-shell-v20261128-12';
+const SHELL_CACHE = 'fuel-flow-shell-v20261128-20';
 const SHELL_ASSETS = [
   './',
   './index.html',

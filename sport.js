@@ -1224,6 +1224,10 @@ function renderSportTab() {
           <p class="text-[11px] text-zinc-400">Aus bisherigem Workout starten oder frei anlegen</p>
         </div>
         <div class="flex items-center gap-1.5">
+          <button onclick="openSportVoiceDictationModal(true)" title="Neues Training per Sprache diktieren" aria-label="Training diktieren"
+            class="h-9 px-2.5 flex items-center gap-1 rounded-xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/35 text-violet-300 text-xs font-semibold transition">
+            <span>🎙️</span><span>Diktieren</span>
+          </button>
           <button onclick="openRepCountImportModal()" title="RepCount CSV importieren" aria-label="RepCount CSV importieren"
             class="h-9 px-2.5 flex items-center gap-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-200 text-xs font-medium transition">
             ${ICON_UPLOAD}<span>CSV</span>
@@ -2392,6 +2396,12 @@ function renderLiveWorkoutView() {
         </div>
       </section>
 
+      <!-- Sprachdiktat für Übungen, Gewichte & Wiederholungen -->
+      <button type="button" onclick="openSportVoiceDictationModal(false)"
+        class="w-full py-3 px-4 rounded-2xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/40 text-violet-200 flex items-center justify-center gap-2 text-xs font-semibold transition">
+        <span>🎙️</span><span>Übungen, Gewichte &amp; Wiederholungen diktieren</span>
+      </button>
+
       <!-- Übungs-Liste -->
       <div class="space-y-3">
         ${d.exercises.length === 0 ? `
@@ -2523,11 +2533,17 @@ function renderLiveWorkoutView() {
         <button onclick="closeWorkoutModalKeepDraft()" class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-xs text-zinc-300">
           ← ${isEdit ? 'Abbrechen' : 'Übersicht'}
         </button>
-        ${!isEdit ? `
-          <button onclick="openTemplatePickerModal()" class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-xs text-emerald-300 font-medium">
-            📋 Vorlage
+        <div class="flex items-center gap-1.5">
+          <button type="button" onclick="openSportVoiceDictationModal(false)" title="Per Sprache diktieren"
+            class="px-2.5 py-1.5 rounded-xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/35 text-xs text-violet-300 font-semibold">
+            🎙️ Diktieren
           </button>
-        ` : '<span class="text-xs font-semibold text-zinc-300">Einheit bearbeiten</span>'}
+          ${!isEdit ? `
+            <button onclick="openTemplatePickerModal()" class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-xs text-emerald-300 font-medium">
+              📋 Vorlage
+            </button>
+          ` : '<span class="text-xs font-semibold text-zinc-300">Einheit bearbeiten</span>'}
+        </div>
       </div>
 
       ${!isEdit ? `
@@ -2692,4 +2708,659 @@ function deleteWorkout(id) {
   syncSportDoneAfterRemoval(w.date, w.activityId, id);
   saveState();
   render();
+}
+
+// ---------- SPRACHDIKTAT FÜR TRAINING (ÜBUNGEN, SÄTZE, GEWICHTE, WDH.) ----------
+let sportVoiceRec = null;
+let sportVoiceActive = false;
+let sportVoiceFinalText = '';
+let sportVoiceInterimText = '';
+let sportVoiceMediaRecorder = null;
+let sportVoiceAudioStream = null;
+let sportVoiceAudioChunks = [];
+let sportVoiceAudioBase64 = null;
+let sportVoiceAudioMime = null;
+let sportVoiceTimer = null;
+let sportVoiceSeconds = 0;
+let sportVoiceAbortController = null;
+
+function stopSportVoiceStreamOnly() {
+  clearInterval(sportVoiceTimer);
+  sportVoiceTimer = null;
+  sportVoiceActive = false;
+  if (sportVoiceRec) {
+    try {
+      sportVoiceRec.onresult = null;
+      sportVoiceRec.onend = null;
+      sportVoiceRec.onerror = null;
+      sportVoiceRec.abort();
+    } catch (e) {}
+    sportVoiceRec = null;
+  }
+  if (sportVoiceMediaRecorder && sportVoiceMediaRecorder.state !== 'inactive') {
+    try { sportVoiceMediaRecorder.onstop = null; sportVoiceMediaRecorder.stop(); } catch (e) {}
+  }
+  sportVoiceMediaRecorder = null;
+  if (sportVoiceAudioStream) {
+    sportVoiceAudioStream.getTracks().forEach(t => t.stop());
+    sportVoiceAudioStream = null;
+  }
+  if (sportVoiceAbortController) {
+    try { sportVoiceAbortController.abort(); } catch (e) {}
+    sportVoiceAbortController = null;
+  }
+}
+
+function resetSportVoiceBtnUi() {
+  const btn = document.getElementById('sportVoiceMicBtn');
+  if (!btn) return;
+  btn.className = 'w-full py-3 px-4 rounded-2xl bg-violet-500 hover:bg-violet-400 text-white font-semibold text-sm flex items-center justify-center gap-2 transition';
+  btn.innerHTML = '<span>🎙️</span><span>Aufnahme starten</span>';
+}
+
+function startSportVoiceRecUi(statusMsg) {
+  sportVoiceSeconds = 0;
+  const btn = document.getElementById('sportVoiceMicBtn');
+  const statusEl = document.getElementById('sportVoiceStatus');
+  if (btn) {
+    btn.className = 'w-full py-3 px-4 rounded-2xl bg-rose-500 hover:bg-rose-400 text-white font-semibold text-sm flex items-center justify-center gap-2 animate-pulse transition';
+    btn.innerHTML = '<span>⏹</span><span id="sportVoiceTimerLbl">Stopp &amp; Auswerten (00:00)</span>';
+  }
+  if (statusEl) {
+    statusEl.textContent = statusMsg;
+    statusEl.className = 'text-xs text-amber-300';
+  }
+  clearInterval(sportVoiceTimer);
+  sportVoiceTimer = setInterval(() => {
+    sportVoiceSeconds++;
+    const mm = String(Math.floor(sportVoiceSeconds / 60)).padStart(2, '0');
+    const ss = String(sportVoiceSeconds % 60).padStart(2, '0');
+    const lbl = document.getElementById('sportVoiceTimerLbl');
+    if (lbl) lbl.textContent = `Stopp & Auswerten (${mm}:${ss})`;
+  }, 1000);
+}
+
+function openSportVoiceDictationModal(startNewIfNeeded = false) {
+  stopSportVoiceStreamOnly();
+  sportVoiceFinalText = '';
+  sportVoiceInterimText = '';
+  sportVoiceAudioBase64 = null;
+  sportVoiceAudioMime = null;
+
+  if (startNewIfNeeded && !sportDraft) {
+    openWorkoutModal();
+  }
+
+  const curExNames = (sportDraft?.exercises || []).map(e => e.name).filter(Boolean);
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <h3 class="text-base font-semibold text-white">🎙️ Training diktieren</h3>
+          <p class="text-[11px] text-zinc-400">Übungen, Gewichte, Sätze, Wiederholungen oder Zeiten einfach einsprechen</p>
+        </div>
+        <button type="button" onclick="stopSportVoiceStreamOnly(); closeModal();" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+
+      <button type="button" id="sportVoiceMicBtn" onclick="toggleSportVoiceRecording()"
+        class="w-full py-3 px-4 rounded-2xl bg-violet-500 hover:bg-violet-400 text-white font-semibold text-sm flex items-center justify-center gap-2 transition">
+        <span>🎙️</span><span>Aufnahme starten</span>
+      </button>
+
+      <div class="space-y-1.5">
+        <label class="text-[11px] text-zinc-400">Erkannter Text (oder direkt eintippen / korrigieren)</label>
+        <textarea id="sportVoiceTextInput" rows="3"
+          placeholder="z. B. Bankdrücken 80 Kilo, 10, 9 und 8 Wiederholungen. Danach 3 Sätze Klimmzüge mit 10 Kilo je 8 Wiederholungen und Plank 60 Sekunden."
+          class="w-full px-3 py-2.5 rounded-2xl bg-zinc-950 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-400"></textarea>
+      </div>
+
+      ${curExNames.length > 0 ? `
+        <div class="text-[10px] text-zinc-400 bg-zinc-900/70 border border-border rounded-xl px-2.5 py-2">
+          Im aktuellen Training: <span class="text-zinc-200">${sportEsc(curExNames.join(', '))}</span>
+          <span class="block text-zinc-500 mt-0.5">Sätze für vorhandene Übungen werden automatisch ergänzt bzw. abgehakt.</span>
+        </div>
+      ` : ''}
+
+      <div id="sportVoiceStatus" class="text-xs text-zinc-400">Tippe auf „Aufnahme starten“ und sprich dein Training ein.</div>
+
+      <div class="flex gap-2">
+        <button type="button" onclick="stopSportVoiceStreamOnly(); closeModal();"
+          class="px-4 py-2.5 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-300 text-xs font-semibold transition">
+          Abbrechen
+        </button>
+        <button type="button" id="sportVoiceAnalyzeBtn" onclick="analyzeSportVoiceDictation()"
+          class="flex-1 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold transition">
+          ✨ Erkennen &amp; eintragen
+        </button>
+      </div>
+    </div>
+  `);
+}
+
+async function startSportVoiceAudioFallback() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('Mikrofon wird in diesem Browser nicht unterstützt.');
+  }
+  sportVoiceAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mime = typeof pickSupportedAudioMime === 'function' ? pickSupportedAudioMime() : '';
+  sportVoiceAudioChunks = [];
+  const opts = mime ? { mimeType: mime, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 };
+  try {
+    sportVoiceMediaRecorder = new MediaRecorder(sportVoiceAudioStream, opts);
+  } catch (e) {
+    sportVoiceMediaRecorder = mime ? new MediaRecorder(sportVoiceAudioStream, { mimeType: mime }) : new MediaRecorder(sportVoiceAudioStream);
+  }
+  sportVoiceMediaRecorder.ondataavailable = (ev) => {
+    if (ev.data && ev.data.size > 0) sportVoiceAudioChunks.push(ev.data);
+  };
+  sportVoiceMediaRecorder.onstop = async () => {
+    const actualMime = (sportVoiceMediaRecorder && sportVoiceMediaRecorder.mimeType) || mime || 'audio/webm';
+    if (sportVoiceAudioStream) {
+      sportVoiceAudioStream.getTracks().forEach(t => t.stop());
+      sportVoiceAudioStream = null;
+    }
+    sportVoiceMediaRecorder = null;
+    clearInterval(sportVoiceTimer);
+    sportVoiceTimer = null;
+    resetSportVoiceBtnUi();
+    const blob = new Blob(sportVoiceAudioChunks, { type: actualMime });
+    if (!blob.size) return;
+    sportVoiceAudioBase64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result || '').split(',')[1] || '');
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    sportVoiceAudioMime = actualMime.split(';')[0];
+    analyzeSportVoiceDictation();
+  };
+  sportVoiceMediaRecorder.start();
+  startSportVoiceRecUi('🔴 Aufnahme läuft… Sprich deine Übungen, Gewichte & Wiederholungen ein.');
+}
+
+async function toggleSportVoiceRecording() {
+  const statusEl = document.getElementById('sportVoiceStatus');
+
+  if (sportVoiceActive && sportVoiceRec) {
+    sportVoiceActive = false;
+    clearInterval(sportVoiceTimer);
+    sportVoiceTimer = null;
+    try { sportVoiceRec.stop(); } catch (e) {}
+    sportVoiceRec = null;
+    resetSportVoiceBtnUi();
+    const captured = `${sportVoiceFinalText} ${sportVoiceInterimText}`.trim();
+    const inp = document.getElementById('sportVoiceTextInput');
+    if (inp && captured) inp.value = captured;
+    if ((inp?.value || captured).trim()) {
+      analyzeSportVoiceDictation();
+    }
+    return;
+  }
+
+  if (sportVoiceMediaRecorder && sportVoiceMediaRecorder.state === 'recording') {
+    sportVoiceMediaRecorder.stop();
+    return;
+  }
+
+  sportVoiceAudioBase64 = null;
+  sportVoiceAudioMime = null;
+
+  const SpeechRec = typeof getSpeechRecognitionCtor === 'function' ? getSpeechRecognitionCtor() : null;
+  if (SpeechRec) {
+    try {
+      const existing = (document.getElementById('sportVoiceTextInput')?.value || '').trim();
+      sportVoiceFinalText = existing ? existing + ' ' : '';
+      sportVoiceInterimText = '';
+      const rec = new SpeechRec();
+      rec.lang = (typeof appLang !== 'undefined' && appLang === 'es') ? 'es-ES' : 'de-DE';
+      rec.continuous = true;
+      rec.interimResults = true;
+      sportVoiceRec = rec;
+      sportVoiceActive = true;
+
+      rec.onresult = (ev) => {
+        let fin = existing ? existing + ' ' : '';
+        let interim = '';
+        for (let i = 0; i < ev.results.length; i++) {
+          const t = ev.results[i][0]?.transcript || '';
+          if (ev.results[i].isFinal) fin += t + ' ';
+          else interim += t;
+        }
+        sportVoiceFinalText = fin.trim();
+        sportVoiceInterimText = interim.trim();
+        const combined = `${sportVoiceFinalText} ${sportVoiceInterimText}`.trim();
+        const inp = document.getElementById('sportVoiceTextInput');
+        if (inp) inp.value = combined;
+      };
+
+      rec.onerror = async (ev) => {
+        const code = ev?.error || '';
+        if (code === 'aborted' || code === 'no-speech') return;
+        stopSportVoiceStreamOnly();
+        try {
+          await startSportVoiceAudioFallback();
+        } catch (fallbackErr) {
+          resetSportVoiceBtnUi();
+          if (statusEl) {
+            statusEl.textContent = `Mikrofon-Fehler: ${fallbackErr.message || fallbackErr}`;
+            statusEl.className = 'text-xs text-rose-400';
+          }
+        }
+      };
+
+      rec.onend = () => {
+        if (!sportVoiceActive) return;
+        sportVoiceActive = false;
+        clearInterval(sportVoiceTimer);
+        sportVoiceTimer = null;
+        sportVoiceRec = null;
+        resetSportVoiceBtnUi();
+      };
+
+      rec.start();
+      startSportVoiceRecUi('🔴 Hört live zu… Sprich z. B. „Bankdrücken 80 Kilo, 10, 9, 8 Wiederholungen“.');
+      return;
+    } catch (e) {
+      stopSportVoiceStreamOnly();
+    }
+  }
+
+  try {
+    await startSportVoiceAudioFallback();
+  } catch (err) {
+    stopSportVoiceStreamOnly();
+    resetSportVoiceBtnUi();
+    if (statusEl) {
+      statusEl.textContent = `Mikrofon-Fehler: ${err.message || err}`;
+      statusEl.className = 'text-xs text-rose-400';
+    }
+  }
+}
+
+function parseWorkoutTextLocally(rawText) {
+  const clean = String(rawText || '').trim();
+  if (!clean) return null;
+  const segments = clean
+    .split(/(?:\.|;|\n|\bdanach\b|\bdann\b|\baußerdem\b|\bzum schluss\b)/i)
+    .map(s => s.trim())
+    .filter(s => s.length >= 3);
+
+  const exercises = [];
+  const catalogNames = getAllCatalogExercises().map(x => x.name).sort((a, b) => b.length - a.length);
+  const aliasKeys = Object.keys(EXERCISE_ALIASES).sort((a, b) => b.length - a.length);
+
+  segments.forEach(seg => {
+    const low = seg.toLowerCase();
+    let matchedName = '';
+    for (const cName of catalogNames) {
+      if (low.includes(cName.toLowerCase())) { matchedName = cName; break; }
+    }
+    if (!matchedName) {
+      for (const aKey of aliasKeys) {
+        if (low.includes(aKey)) { matchedName = EXERCISE_ALIASES[aKey].name; break; }
+      }
+    }
+    if (!matchedName) {
+      const m = seg.match(/^([a-zA-ZäöüÄÖÜß\- ]{3,32}?)(?=\s+\d|\s+mit\s+\d)/);
+      if (m) matchedName = m[1].trim();
+    }
+    if (!matchedName) return;
+
+    const canon = canonicalizeExercise(matchedName, 'Other');
+    const kgMatch = seg.match(/(\d+(?:[.,]\d+)?)\s*(?:kg|kilo|kilogramm)\b/i);
+    const kg = kgMatch ? Number(kgMatch[1].replace(',', '.')) : 0;
+    const setType = /aufwärm|warm[\s-]?up/i.test(seg) ? 'w' : (/drop[\s-]?set|reduktion/i.test(seg) ? 'd' : '');
+    const secMatches = [...seg.matchAll(/(\d+)\s*(?:sek(?:unden)?|s)\b/gi)].map(m => Number(m[1]));
+
+    const sets = [];
+    if (secMatches.length > 0) {
+      secMatches.forEach(sec => {
+        if (sec > 0) sets.push({ kg, reps: 0, sec, t: setType });
+      });
+    } else {
+      const multMatch = seg.match(/(\d+)\s*(?:x|×|mal|sätze?(?:\s*(?:à|a|je|mit))?)\s*(\d+)/i);
+      if (multMatch) {
+        const count = Math.min(12, Math.max(1, Number(multMatch[1])));
+        const reps = Number(multMatch[2]);
+        for (let k = 0; k < count; k++) sets.push({ kg, reps, sec: 0, t: setType });
+      } else {
+        const cleanedForReps = seg
+          .replace(/(\d+(?:[.,]\d+)?)\s*(?:kg|kilo|kilogramm)\b/gi, '')
+          .replace(/\b\d+\s*sätze?\b/gi, '');
+        const nums = [...cleanedForReps.matchAll(/\b(\d{1,3})\b/g)].map(m => Number(m[1])).filter(n => n > 0 && n <= 200);
+        nums.forEach(reps => sets.push({ kg, reps, sec: 0, t: setType }));
+      }
+    }
+
+    if (sets.length > 0) {
+      exercises.push({
+        name: canon.name,
+        category: canon.category,
+        timed: secMatches.length > 0,
+        sets
+      });
+    }
+  });
+
+  if (!exercises.length) return null;
+  return { workoutType: 'strength', exercises };
+}
+
+function applyVoiceWorkoutResult(parsed) {
+  if (!parsed || typeof parsed !== 'object') return { exCount: 0, setCount: 0 };
+  if (!sportDraft) {
+    openWorkoutModal();
+  }
+  const d = sportDraft;
+
+  if (parsed.workoutTitle && !d.title) {
+    d.title = String(parsed.workoutTitle).trim();
+  }
+  if (parsed.notes && String(parsed.notes).trim()) {
+    const note = String(parsed.notes).trim();
+    d.notes = d.notes ? `${d.notes} · ${note}` : note;
+  }
+  if (Number(parsed.duration) > 0 && !Number(d.duration)) {
+    d.duration = Math.round(Number(parsed.duration));
+  }
+
+  let addedExercises = 0;
+  let addedSets = 0;
+
+  if (parsed.workoutType === 'cardio' && (!(parsed.exercises && parsed.exercises.length))) {
+    d.type = 'cardio';
+    if (Number(parsed.distance) > 0) d.distance = Math.round(Number(parsed.distance) * 100) / 100;
+    if (Number(parsed.hr) > 0) d.hr = Math.round(Number(parsed.hr));
+    if (Number(parsed.elev) > 0) d.elev = Math.round(Number(parsed.elev));
+    saveSportDraftLocal();
+    render();
+    return { exCount: 0, setCount: 0, cardio: true };
+  }
+
+  const incoming = Array.isArray(parsed.exercises) ? parsed.exercises : [];
+  if (incoming.length > 0) {
+    d.type = 'strength';
+    if (!Array.isArray(d.exercises)) d.exercises = [];
+
+    incoming.forEach(rawEx => {
+      const canon = canonicalizeExercise(rawEx?.name, rawEx?.category);
+      if (!canon.name) return;
+      const rawSets = Array.isArray(rawEx.sets) ? rawEx.sets : [];
+      const cleanSets = rawSets
+        .map(s => {
+          const kg = Math.max(0, Math.round((Number(s?.kg) || 0) * 100) / 100);
+          const reps = Math.max(0, Math.round(Number(s?.reps) || 0));
+          const sec = Math.max(0, Math.round(Number(s?.sec) || 0));
+          const t = s?.t === 'w' || s?.t === 'd' ? s.t : '';
+          return { kg, reps, sec, t };
+        })
+        .filter(s => s.reps > 0 || s.sec > 0);
+      if (!cleanSets.length) return;
+
+      const isTimed = Boolean(rawEx.timed) || (cleanSets.some(s => s.sec > 0) && cleanSets.every(s => s.reps === 0));
+      const existingEx = d.exercises.find(e => canonicalizeExercise(e.name, e.category).name.toLowerCase() === canon.name.toLowerCase());
+
+      if (existingEx) {
+        if (isTimed) existingEx.timed = true;
+        if (existingEx.category === 'Other' && canon.category !== 'Other') existingEx.category = canon.category;
+        let pendingIdx = 0;
+        cleanSets.forEach(ns => {
+          const slotIdx = existingEx.sets.findIndex((es, idx) => idx >= pendingIdx && !es.done);
+          const builtSet = {
+            kg: ns.kg > 0 ? ns.kg : '',
+            reps: isTimed ? '' : ns.reps,
+            sec: isTimed ? ns.sec : (ns.sec > 0 ? ns.sec : ''),
+            t: ns.t,
+            done: true
+          };
+          if (slotIdx >= 0) {
+            existingEx.sets[slotIdx] = builtSet;
+            pendingIdx = slotIdx + 1;
+          } else {
+            existingEx.sets.push(builtSet);
+          }
+          addedSets++;
+        });
+      } else {
+        const prevMeta = lastSetsFor(canon.name, d.id);
+        const resolvedCat = canon.category !== 'Other' ? canon.category : (prevMeta ? prevMeta.category : 'Other');
+        d.exercises.push({
+          name: canon.name,
+          category: resolvedCat,
+          timed: isTimed,
+          sets: cleanSets.map(ns => ({
+            kg: ns.kg > 0 ? ns.kg : '',
+            reps: isTimed ? '' : ns.reps,
+            sec: isTimed ? ns.sec : (ns.sec > 0 ? ns.sec : ''),
+            t: ns.t,
+            done: true
+          }))
+        });
+        addedExercises++;
+        addedSets += cleanSets.length;
+      }
+    });
+  }
+
+  if ((addedSets > 0 || addedExercises > 0) && !d.id && !d.timerRunning && !d.firstStartedAt) {
+    const now = Date.now();
+    d.firstStartedAt = now;
+    d.timerRunning = true;
+    d.timerStartedAt = now;
+    ensureSportClockTicker();
+  }
+
+  saveSportDraftLocal();
+  render();
+  return { exCount: addedExercises, setCount: addedSets };
+}
+
+async function analyzeSportVoiceDictation() {
+  const inp = document.getElementById('sportVoiceTextInput');
+  const statusEl = document.getElementById('sportVoiceStatus');
+  const btn = document.getElementById('sportVoiceAnalyzeBtn');
+
+  if (sportVoiceActive && sportVoiceRec) {
+    sportVoiceActive = false;
+    clearInterval(sportVoiceTimer);
+    sportVoiceTimer = null;
+    try { sportVoiceRec.stop(); } catch (e) {}
+    sportVoiceRec = null;
+    resetSportVoiceBtnUi();
+    const captured = `${sportVoiceFinalText} ${sportVoiceInterimText}`.trim();
+    if (inp && captured && !inp.value.trim()) inp.value = captured;
+  }
+
+  const spokenText = (inp?.value || '').trim();
+  if (!spokenText && !sportVoiceAudioBase64) {
+    if (statusEl) {
+      statusEl.textContent = 'Bitte zuerst einsprechen oder deine Übungen eintippen.';
+      statusEl.className = 'text-xs text-rose-400';
+    }
+    return;
+  }
+
+  const apiKey = (typeof GEMINI_KEY_STORAGE !== 'undefined' ? (localStorage.getItem(GEMINI_KEY_STORAGE) || '') : '').trim();
+
+  // Offline oder ohne Gemini Key -> lokaler Sofort-Parser für Textdiktat
+  if ((!apiKey || (typeof navigator !== 'undefined' && navigator.onLine === false)) && spokenText) {
+    const localParsed = parseWorkoutTextLocally(spokenText);
+    if (localParsed) {
+      const res = applyVoiceWorkoutResult(localParsed);
+      stopSportVoiceStreamOnly();
+      closeModal();
+      if (typeof showToast === 'function') {
+        showToast(`🎙️ ${res.setCount} Satz/Sätze direkt ins Training übernommen`);
+      }
+      return;
+    }
+    if (statusEl) {
+      statusEl.textContent = !apiKey
+        ? 'Für komplexe Spracheingaben bitte deinen Gemini API Key (unter KI-Analyse) hinterlegen.'
+        : 'Offline nicht eindeutig erkannt – z. B. „Bankdrücken 80kg 3x10“ versuchen.';
+      statusEl.className = 'text-xs text-amber-300';
+    }
+    return;
+  }
+
+  if (!apiKey) {
+    if (statusEl) {
+      statusEl.textContent = 'Bitte zuerst deinen Gemini API Key (unter Food → KI-Analyse) speichern.';
+      statusEl.className = 'text-xs text-rose-400';
+    }
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ KI erkennt Sätze…';
+  }
+  if (statusEl) {
+    statusEl.textContent = '⚡ Werte Übungen, Gewichte & Wiederholungen aus…';
+    statusEl.className = 'text-xs text-zinc-300';
+  }
+
+  const activeExList = (sportDraft?.exercises || []).map(e => e.name).filter(Boolean).join(', ');
+  const catalogSample = EXERCISE_CATALOG.map(c => c.name).slice(0, 60).join(', ');
+  const promptText = `Du bist ein präziser Trainings-Logger für eine Kraft- und Ausdauer-App.
+Extrahiere alle diktierten Übungen, Sätze, Gewichte (in kg, 0 für Bodyweight/Eigengewicht), Wiederholungen (reps) oder Haltezeiten in Sekunden (sec) sowie Satztypen ("w" für Aufwärmsatz/Warmup, "d" für Dropset, "" für normal).
+Regeln:
+- Bei "3 Sätze à 10 Wiederholungen mit 80 Kilo" erzeuge 3 einzelne Einträge in "sets".
+- Bei "10, 9 und 8 Wiederholungen mit 80 Kilo" erzeuge 3 Einträge in "sets" mit je kg=80 und reps=10, 9, 8.
+- Nutze bevorzugt passende Übungsnamen aus dem aktuellen Training (${activeExList || 'noch leer'}) oder aus dem Katalog: ${catalogSample}.
+- Ordne "category" immer einem dieser Werte zu: Back, Chest, Legs, Shoulders, Triceps, Biceps, Abs, Other.
+- Bei Ausdauer (Laufen, Radfahren, Distanz in km) setze workoutType="cardio" mit distance, duration, hr, elev.
+${spokenText ? `Diktierter Text: "${spokenText}"` : 'Analysiere die angehängte Sprachaufnahme.'}`;
+
+  const parts = [{ text: promptText }];
+  if (sportVoiceAudioBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: sportVoiceAudioMime || 'audio/webm',
+        data: sportVoiceAudioBase64
+      }
+    });
+  }
+
+  const requestBody = JSON.stringify({
+    contents: [{ parts }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseJsonSchema: {
+        type: 'object',
+        properties: {
+          workoutTitle: { type: 'string' },
+          workoutType: { type: 'string' },
+          duration: { type: 'number' },
+          distance: { type: 'number' },
+          hr: { type: 'number' },
+          elev: { type: 'number' },
+          notes: { type: 'string' },
+          exercises: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                category: { type: 'string' },
+                timed: { type: 'boolean' },
+                sets: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      kg: { type: 'number' },
+                      reps: { type: 'number' },
+                      sec: { type: 'number' },
+                      t: { type: 'string' }
+                    },
+                    required: ['kg', 'reps']
+                  }
+                }
+              },
+              required: ['name', 'category', 'sets']
+            }
+          }
+        },
+        required: ['workoutType', 'exercises']
+      }
+    }
+  });
+
+  const models = typeof GEMINI_FAST_MODELS_TO_TRY !== 'undefined'
+    ? GEMINI_FAST_MODELS_TO_TRY
+    : ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+  const timeoutMs = typeof GEMINI_FETCH_TIMEOUT_MS !== 'undefined' ? GEMINI_FETCH_TIMEOUT_MS : 25000;
+
+  try {
+    let res = null;
+    let lastError = 'Unbekannter Fehler';
+    for (const model of models) {
+      const controller = new AbortController();
+      sportVoiceAbortController = controller;
+      const tid = setTimeout(() => { try { controller.abort(); } catch (e) {} }, timeoutMs);
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: requestBody,
+          signal: controller.signal
+        });
+      } catch (fetchErr) {
+        clearTimeout(tid);
+        lastError = fetchErr.message || 'Netzwerkfehler';
+        res = null;
+        continue;
+      } finally {
+        clearTimeout(tid);
+        if (sportVoiceAbortController === controller) sportVoiceAbortController = null;
+      }
+      if (res.ok) break;
+      const errData = await res.json().catch(() => ({}));
+      lastError = errData.error?.message || `HTTP ${res.status}`;
+      if (![404, 429, 500, 502, 503, 504].includes(res.status)) throw new Error(lastError);
+      res = null;
+    }
+
+    if (!res) throw new Error(lastError);
+    const jsonRes = await res.json();
+    const raw = extractGeminiJsonText(jsonRes);
+    const parsed = JSON.parse(raw);
+
+    const applied = applyVoiceWorkoutResult(parsed);
+    if (!applied.cardio && applied.setCount === 0) {
+      throw new Error('Keine Übungen oder Sätze erkannt – bitte kurz deutlicher wiederholen.');
+    }
+
+    stopSportVoiceStreamOnly();
+    closeModal();
+    if (typeof showToast === 'function') {
+      showToast(applied.cardio
+        ? '🎙️ Ausdauer-Einheit per Sprache übernommen'
+        : `🎙️ ${applied.setCount} Satz/Sätze automatisch ins Training eingetragen`);
+    }
+  } catch (err) {
+    // Letzter Fallback: lokaler Parser bei Netzwerkproblemen
+    if (spokenText) {
+      const localParsed = parseWorkoutTextLocally(spokenText);
+      if (localParsed) {
+        const applied = applyVoiceWorkoutResult(localParsed);
+        stopSportVoiceStreamOnly();
+        closeModal();
+        if (typeof showToast === 'function') {
+          showToast(`🎙️ ${applied.setCount} Satz/Sätze (offline erkannt) eingetragen`);
+        }
+        return;
+      }
+    }
+    if (statusEl) {
+      statusEl.textContent = `Fehler: ${err.message || err}`;
+      statusEl.className = 'text-xs text-rose-400';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '✨ Erkennen & eintragen';
+    }
+  }
 }
