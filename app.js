@@ -4088,6 +4088,22 @@ function renderRecipesTab() {
           </div>
         </div>
 
+        ${editingRecipe.summary || (Array.isArray(editingRecipe.steps) && editingRecipe.steps.length) ? `
+          <div class="rounded-2xl bg-zinc-950/70 border border-border p-3 space-y-2">
+            ${editingRecipe.summary || editingRecipe.prepMinutes ? `
+              <div class="text-xs text-zinc-200 leading-snug">
+                ${editingRecipe.prepMinutes ? `<span class="inline-block px-1.5 py-0.5 mr-1 rounded-md bg-zinc-800 text-zinc-200 text-[10px] font-semibold">⏱️ ${editingRecipe.prepMinutes} Min.</span>` : ''}${escapeHtmlAttr(editingRecipe.summary || '')}
+              </div>
+            ` : ''}
+            ${Array.isArray(editingRecipe.steps) && editingRecipe.steps.length ? `
+              <ol class="list-decimal list-inside space-y-1 text-[11px] text-zinc-300">
+                ${editingRecipe.steps.map(st => `<li>${escapeHtmlAttr(st)}</li>`).join('')}
+              </ol>
+            ` : ''}
+            ${renderRecipeReferenceLinksHtml(editingRecipe.name, editingRecipe.searchQuery)}
+          </div>
+        ` : ''}
+
         <div class="space-y-2.5">
           <div class="text-xs font-semibold text-zinc-300">Zutaten (${editingRecipe.items.length})</div>
           ${editingRecipe.items.map((it, idx) => {
@@ -5023,14 +5039,35 @@ async function toggleMealPlanVoiceRecording() {
   }
 }
 
+let mpLastSavedRecipe = null;
+
+function jumpToRecipeFromMealPlan(recipeId) {
+  const found = (state.recipes || []).find(r => r.id === recipeId);
+  if (!found) {
+    showToast('Rezept wurde nicht gefunden.');
+    return;
+  }
+  mpLastSavedRecipe = null;
+  closeModal();
+  currentTab = 'food';
+  editingRecipe = JSON.parse(JSON.stringify(found));
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 function savePlannedMealAsRecipe(dateStr, itemId) {
   const meal = getPlannedMealsForDate(dateStr).find(it => it.id === itemId);
   if (!meal) return;
+  if (meal.savedRecipeId && (state.recipes || []).some(r => r.id === meal.savedRecipeId)) {
+    jumpToRecipeFromMealPlan(meal.savedRecipeId);
+    return;
+  }
   const rawItems = Array.isArray(meal.items) && meal.items.length
     ? meal.items
     : [{ name: meal.name, grams: 250 }];
   const totalGrams = rawItems.reduce((s, it) => s + Math.max(1, Number(it.grams) || 100), 0) || 100;
   const now = Date.now();
+  const newRecId = 'rec_' + now;
   const recipeItems = rawItems.map((it, idx) => {
     const g = Math.max(1, Math.round(Number(it.grams) || 100));
     const share = g / totalGrams;
@@ -5046,26 +5083,39 @@ function savePlannedMealAsRecipe(dateStr, itemId) {
     };
   });
   state.recipes.unshift({
-    id: 'rec_' + now,
+    id: newRecId,
     name: meal.name,
-    items: recipeItems
+    items: recipeItems,
+    tags: [],
+    rating: 0,
+    eatenCount: 0,
+    ...(meal.prepMinutes ? { prepMinutes: meal.prepMinutes } : {}),
+    ...(meal.summary ? { summary: meal.summary } : {}),
+    ...(Array.isArray(meal.steps) && meal.steps.length ? { steps: meal.steps } : {}),
+    ...(meal.searchQuery ? { searchQuery: meal.searchQuery } : {})
   });
   meal.savedAsRecipe = true;
+  meal.savedRecipeId = newRecId;
+  mpLastSavedRecipe = { id: newRecId, name: meal.name };
   saveState();
   render();
   openMealPlanModal(dateStr);
-  showToast(`📖 „${meal.name}“ unter Meine Rezepte gespeichert`);
 }
 
 function normalizeAiPlannedMeal(m, baseTs, idx) {
+  const cleanName = String(m.name || `Mahlzeit ${idx + 1}`).trim();
   return {
     id: 'mp_' + (baseTs + idx) + '_' + Math.floor(Math.random() * 1000),
     kind: 'ai',
-    name: String(m.name || `Mahlzeit ${idx + 1}`).trim(),
+    name: cleanName,
     kcal: Math.max(0, Math.round(Number(m.kcal) || 0)),
     p: Math.max(0, Math.round((Number(m.p) || 0) * 10) / 10),
     c: Math.max(0, Math.round((Number(m.c) || 0) * 10) / 10),
     f: Math.max(0, Math.round((Number(m.f) || 0) * 10) / 10),
+    prepMinutes: Math.max(0, Math.round(Number(m.prepMinutes) || 0)),
+    summary: String(m.summary || '').trim(),
+    steps: (Array.isArray(m.steps) ? m.steps : []).map(s => String(s || '').trim()).filter(Boolean).slice(0, 5),
+    searchQuery: String(m.searchQuery || cleanName).trim(),
     items: (Array.isArray(m.items) ? m.items : [])
       .map(it => ({
         name: String(it.name || '').trim(),
@@ -5079,6 +5129,30 @@ function normalizeAiPlannedMeal(m, baseTs, idx) {
       }))
       .filter(it => it.name)
   };
+}
+
+function renderRecipeReferenceLinksHtml(name, searchQuery = '') {
+  const q = String(searchQuery || name || '').trim();
+  if (!q) return '';
+  const imgUrl = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q + ' Rezept')}`;
+  const chefkochUrl = `https://www.chefkoch.de/rs/s0/${encodeURIComponent(q)}/Rezepte.html`;
+  const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q + ' Rezept')}`;
+  return `
+    <div class="flex flex-wrap items-center gap-1.5 pt-1">
+      <a href="${imgUrl}" target="_blank" rel="noopener noreferrer"
+        class="px-2 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-[10px] font-medium text-sky-300 transition inline-flex items-center gap-1">
+        🖼️ Fotos ansehen
+      </a>
+      <a href="${chefkochUrl}" target="_blank" rel="noopener noreferrer"
+        class="px-2 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-[10px] font-medium text-emerald-300 transition inline-flex items-center gap-1">
+        🍳 Chefkoch
+      </a>
+      <a href="${ytUrl}" target="_blank" rel="noopener noreferrer"
+        class="px-2 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-[10px] font-medium text-rose-300 transition inline-flex items-center gap-1">
+        ▶ Video
+      </a>
+    </div>
+  `;
 }
 
 async function generateAiMealPlan(mode, dateStr) {
@@ -5108,6 +5182,19 @@ async function generateAiMealPlan(mode, dateStr) {
   const targetP = Number(state.proteinGoal) || 150;
   const targetC = Number(state.carbsGoal) || 250;
   const targetF = Number(state.fatGoal) || 70;
+  const dayLogEntries = (state.logs && state.logs[dateStr] && Array.isArray(state.logs[dateStr].entries))
+    ? state.logs[dateStr].entries
+    : [];
+  const loggedTot = dayLogEntries.reduce((acc, e) => ({
+    kcal: acc.kcal + (Number(e.kcal) || 0),
+    p: acc.p + (Number(e.p) || 0),
+    c: acc.c + (Number(e.c) || 0),
+    f: acc.f + (Number(e.f) || 0)
+  }), { kcal: 0, p: 0, c: 0, f: 0 });
+  const remKcal = Math.max(250, Math.round(targetKcal - loggedTot.kcal));
+  const remP = Math.max(20, Math.round(targetP - loggedTot.p));
+  const remC = Math.max(0, Math.round(targetC - loggedTot.c));
+  const remF = Math.max(0, Math.round(targetF - loggedTot.f));
   const existingRecipeNames = (state.recipes || []).map(r => r.name).slice(0, 12).join(', ');
   const langLabel = appLang === 'es' ? 'Spanisch (Español)' : 'Deutsch';
   const weekDays = getMealPlanDates(7);
@@ -5115,11 +5202,11 @@ async function generateAiMealPlan(mode, dateStr) {
   if (dayBtn) dayBtn.disabled = true;
   if (weekBtn) weekBtn.disabled = true;
   if (isWeek && weekBtn) weekBtn.textContent = '⏳ Plant 7 Tage…';
-  if (!isWeek && dayBtn) dayBtn.textContent = '⏳ Plant Tag…';
+  if (!isWeek && dayBtn) dayBtn.textContent = '⏳ KI plant…';
   if (statusEl) {
     statusEl.textContent = isWeek
       ? '⚡ KI erstellt abwechslungsreichen 7-Tage-Wochenplan mit Rezepten & Zutaten…'
-      : '⚡ KI erstellt personalisierten Tagesplan mit Rezepten & Zutaten…';
+      : '⚡ KI erstellt passenden Vorschlag für deine Anfrage…';
     statusEl.className = 'text-[11px] text-zinc-400';
   }
 
@@ -5131,6 +5218,13 @@ async function generateAiMealPlan(mode, dateStr) {
       p: { type: 'number' },
       c: { type: 'number' },
       f: { type: 'number' },
+      prepMinutes: { type: 'number' },
+      summary: { type: 'string' },
+      searchQuery: { type: 'string' },
+      steps: {
+        type: 'array',
+        items: { type: 'string' }
+      },
       items: {
         type: 'array',
         items: {
@@ -5143,7 +5237,7 @@ async function generateAiMealPlan(mode, dateStr) {
         }
       }
     },
-    required: ['name', 'kcal', 'p', 'c', 'f', 'items']
+    required: ['name', 'kcal', 'p', 'c', 'f', 'prepMinutes', 'summary', 'searchQuery', 'steps', 'items']
   };
 
   const promptText = isWeek
@@ -5154,13 +5248,17 @@ ${pref ? `- Vorgaben/Wünsche des Nutzers: "${pref}"` : ''}
 ${mpRecordedAudioBase64 ? '- Berücksichtige unbedingt alle gesprochenen Wünsche aus der angehängten Sprachaufnahme!' : ''}
 ${existingRecipeNames ? `- Typische Rezepte des Nutzers als Stil-Inspiration: ${existingRecipeNames}` : ''}
 Achte auf clevere Zutaten-Wiederverwendung über die Woche für eine effiziente Einkaufsliste. Gib für jede Mahlzeit konkrete Lebensmittel mit Gramm-Mengen ("items") und realistischen Portions-Nährwerten (kcal, p, c, f) an.`
-    : `Erstelle einen praxisnahen Tages-Ernährungsplan (3-4 Mahlzeiten) auf ${langLabel} für diese Tagesziele:
-- Kalorien: ca. ${targetKcal} kcal (±100 kcal)
-- Protein: ca. ${targetP}g · Kohlenhydrate: ca. ${targetC}g · Fett: ca. ${targetF}g
-${pref ? `- Vorgaben/Wünsche des Nutzers: "${pref}"` : ''}
-${mpRecordedAudioBase64 ? '- Berücksichtige unbedingt alle gesprochenen Wünsche aus der angehängten Sprachaufnahme!' : ''}
-${existingRecipeNames ? `- Typische Rezepte des Nutzers als Stil-Inspiration: ${existingRecipeNames}` : ''}
-Gib für jede Mahlzeit die konkreten Lebensmittel mit Gramm-Mengen ("items") sowie realistische Portions-Nährwerte (kcal, p, c, f) an.`;
+    : `Du bist ein präziser Ernährungsplaner (${langLabel}).
+Tagesziele für ${dateStr}: ${targetKcal} kcal · P ${targetP}g · C ${targetC}g · F ${targetF}g.
+${loggedTot.kcal > 0 ? `Heute bereits gegessen: ${Math.round(loggedTot.kcal)} kcal (P ${Math.round(loggedTot.p)}g · C ${Math.round(loggedTot.c)}g · F ${Math.round(loggedTot.f)}g). Noch offen: ca. ${remKcal} kcal, ${remP}g Protein, ${remC}g Carbs, ${remF}g Fett.` : 'Heute noch keine Mahlzeiten geloggt.'}
+${pref ? `Konkreter Wunsch des Nutzers: "${pref}"` : 'Kein eingeschränkter Wunsch (kompletter Tagesplan gewünscht).'}
+${mpRecordedAudioBase64 ? 'Berücksichtige exakt die gesprochenen Wünsche aus der angehängten Sprachaufnahme!' : ''}
+${existingRecipeNames ? `Stil-Inspiration aus vorhandenen Rezepten: ${existingRecipeNames}` : ''}
+
+WICHTIGE REGEL ZUM UMFANG:
+- Wenn der Nutzer NUR eine bestimmte Mahlzeit, Tageszeit oder Ergänzung wünscht (z. B. "heute Abend noch etwas Proteinreiches", "ein schnelles Mittagessen", "nur Frühstück", "noch ein Snack"), gib NUR GENAU diese 1 passende Mahlzeit zurück (orientiert am noch offenen Tagesbudget) und setze "replaceDay": false! Plane in diesem Fall KEINESFALLS ungefragt Frühstück, Mittagessen, Nachmittag und Abendessen für den ganzen Tag!
+- Nur wenn der Nutzer einen kompletten Tag möchte oder keine einzelne Mahlzeit/Tageszeit einschränkt, plane 3–4 Mahlzeiten für den ganzen Tag und setze "replaceDay": true.
+Gib für jede Mahlzeit die konkreten Lebensmittel mit Gramm-Mengen ("items"), realistische Portions-Nährwerte (kcal, p, c, f), Zubereitungszeit in Minuten ("prepMinutes"), eine kurze appetitliche Beschreibung ("summary"), 2–4 knappe Zubereitungsschritte ("steps") und einen präzisen Suchbegriff für Fotos/Rezepte ("searchQuery") an.`;
 
   const parts = [{ text: promptText }];
   if (mpRecordedAudioBase64) {
@@ -5193,9 +5291,10 @@ Gib für jede Mahlzeit die konkreten Lebensmittel mit Gramm-Mengen ("items") sow
     : {
         type: 'object',
         properties: {
+          replaceDay: { type: 'boolean' },
           meals: { type: 'array', items: mealSchema }
         },
-        required: ['meals']
+        required: ['replaceDay', 'meals']
       };
 
   const requestBody = JSON.stringify({
@@ -5271,20 +5370,29 @@ Gib für jede Mahlzeit die konkreten Lebensmittel mit Gramm-Mengen ("items") sow
     } else {
       const meals = Array.isArray(data?.meals) ? data.meals : [];
       if (!meals.length) throw new Error('KI hat keine Mahlzeiten geliefert.');
-      const prev = Array.isArray(mp.days[dateStr]) ? mp.days[dateStr] : [];
-      prev.forEach(it => markDeletedId(it.id));
-      mp.days[dateStr] = meals.map((m, idx) => normalizeAiPlannedMeal(m, now, idx));
+      const normalized = meals.map((m, idx) => normalizeAiPlannedMeal(m, now, idx));
+      const shouldReplace = data?.replaceDay !== false;
+      if (shouldReplace) {
+        const prev = Array.isArray(mp.days[dateStr]) ? mp.days[dateStr] : [];
+        prev.forEach(it => markDeletedId(it.id));
+        mp.days[dateStr] = normalized;
+      } else {
+        if (!Array.isArray(mp.days[dateStr])) mp.days[dateStr] = [];
+        mp.days[dateStr].push(...normalized);
+      }
       saveState();
       render();
       openMealPlanModal(dateStr);
-      showToast(`✨ KI-Plan mit ${meals.length} Mahlzeiten erstellt`);
+      showToast(normalized.length === 1
+        ? `✨ Vorschlag „${normalized[0].name}“ hinzugefügt`
+        : `✨ KI-Plan mit ${normalized.length} Mahlzeiten erstellt`);
     }
   } catch (err) {
     if (statusEl) {
       statusEl.textContent = `Fehler: ${err.message || err}`;
       statusEl.className = 'text-[11px] text-rose-400';
     }
-    if (dayBtn) { dayBtn.disabled = false; dayBtn.textContent = '✨ KI-Tag'; }
+    if (dayBtn) { dayBtn.disabled = false; dayBtn.textContent = '✨ KI-Vorschlag'; }
     if (weekBtn) { weekBtn.disabled = false; weekBtn.textContent = '🗓️ KI-Woche (7T)'; }
   }
 }
@@ -5381,7 +5489,7 @@ function openMealPlanModal(dateOverride = null) {
           </button>
           <button id="mealPlanAiBtn" type="button" onclick="generateAiDayPlan('${activeDate}')"
             class="py-2.5 px-2.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/40 text-violet-300 font-semibold text-xs transition">
-            ✨ KI-Tag
+            ✨ KI-Vorschlag
           </button>
         </div>
         <button type="button" onclick="generateSmartDayPlan('${activeDate}')"
@@ -5390,6 +5498,16 @@ function openMealPlanModal(dateOverride = null) {
         </button>
         <div id="mealPlanAiStatus" class="text-[11px] text-zinc-500"></div>
       </div>
+
+      ${mpLastSavedRecipe ? `
+        <div class="rounded-2xl bg-emerald-500/15 border border-emerald-500/40 px-3 py-2.5 flex items-center justify-between gap-2">
+          <span class="text-xs text-emerald-200 truncate">✓ <strong>${escapeHtmlAttr(mpLastSavedRecipe.name)}</strong> gespeichert</span>
+          <button type="button" onclick="jumpToRecipeFromMealPlan('${mpLastSavedRecipe.id}')"
+            class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-[11px] shrink-0 transition">
+            📖 Zum Rezept →
+          </button>
+        </div>
+      ` : ''}
 
       <!-- Geplante Mahlzeiten -->
       <div class="space-y-2">
@@ -5403,13 +5521,13 @@ function openMealPlanModal(dateOverride = null) {
               </div>
               <div class="flex items-center gap-1 shrink-0">
                 ${m.kind === 'ai' ? `
-                  <button type="button" onclick="savePlannedMealAsRecipe('${activeDate}', '${m.id}')" title="Als eigenes Rezept speichern"
+                  <button type="button" onclick="savePlannedMealAsRecipe('${activeDate}', '${m.id}')" title="${m.savedRecipeId ? 'Direkt zum gespeicherten Rezept springen' : 'Als eigenes Rezept speichern'}"
                     class="px-2 py-1.5 rounded-xl text-[11px] font-semibold border transition ${
                       m.savedAsRecipe
-                        ? 'bg-sky-500/20 border-sky-500/45 text-sky-300'
+                        ? 'bg-sky-500/20 hover:bg-sky-500/30 border-sky-500/50 text-sky-300'
                         : 'bg-zinc-950 hover:bg-sky-500/15 border-zinc-800 hover:border-sky-500/35 text-zinc-300 hover:text-sky-300'
                     }">
-                    ${m.savedAsRecipe ? '✓ Rezept' : '📖'}
+                    ${m.savedAsRecipe ? '📖 Öffnen →' : '📖'}
                   </button>
                 ` : ''}
                 <button type="button" onclick="logMealPlanItemToDay('${activeDate}', '${m.id}')" title="In Tagesbilanz loggen"
@@ -5424,11 +5542,25 @@ function openMealPlanModal(dateOverride = null) {
                   class="w-7 h-7 flex items-center justify-center rounded-xl bg-zinc-950 hover:bg-rose-500/20 border border-zinc-800 text-zinc-400 hover:text-rose-300 text-xs">✕</button>
               </div>
             </div>
+            ${m.summary || m.prepMinutes ? `
+              <div class="text-[11px] text-zinc-300 leading-snug">
+                ${m.prepMinutes ? `<span class="inline-block px-1.5 py-0.5 mr-1 rounded-md bg-zinc-800 text-zinc-200 text-[10px] font-semibold">⏱️ ${m.prepMinutes} Min.</span>` : ''}${escapeHtmlAttr(m.summary || '')}
+              </div>
+            ` : ''}
             ${Array.isArray(m.items) && m.items.length ? `
               <div class="flex flex-wrap gap-1 pt-0.5">
                 ${m.items.map(it => `<span class="px-1.5 py-0.5 rounded-md bg-zinc-950 border border-zinc-800 text-[10px] text-zinc-400">${it.grams}g ${escapeHtmlAttr(it.name)}</span>`).join('')}
               </div>
             ` : ''}
+            ${Array.isArray(m.steps) && m.steps.length ? `
+              <details class="pt-0.5">
+                <summary class="cursor-pointer text-[11px] text-zinc-400 hover:text-zinc-200 select-none">📝 Zubereitung (${m.steps.length} Schritte)</summary>
+                <ol class="list-decimal list-inside space-y-0.5 mt-1 text-[11px] text-zinc-300 pl-1">
+                  ${m.steps.map(st => `<li>${escapeHtmlAttr(st)}</li>`).join('')}
+                </ol>
+              </details>
+            ` : ''}
+            ${m.kind === 'ai' ? renderRecipeReferenceLinksHtml(m.name, m.searchQuery) : ''}
           </div>
         `).join('') : `<p class="text-xs text-zinc-500">Noch nichts geplant – sprich oben deine Wünsche ein oder tippe unten auf ein Rezept.</p>`}
       </div>
@@ -5462,6 +5594,48 @@ function openMealPlanModal(dateOverride = null) {
   `);
 }
 
+let editingShoppingItemId = null;
+
+function suggestShoppingQuantity(rawName) {
+  const n = String(rawName || '').trim().toLowerCase();
+  if (!n) return { amount: 1, unit: 'Stk.' };
+
+  // Typische Stück- / Packungsartikel
+  if (/(^|\b)(eier|ei)(\b|$)/.test(n)) return { amount: 6, unit: 'Stk.' };
+  if (/(banane|apfel|äpfel|birne|orange|mandarine|kiwi)/.test(n)) return { amount: 4, unit: 'Stk.' };
+  if (/(avocado|paprika|zucchini|zitrone|limette|zwiebel|rote zwiebel|proteinriegel|schokoriegel|riegel|snickers|twix|mars|knoppers|hanuta|duplo)/.test(n)) {
+    return { amount: 2, unit: 'Stk.' };
+  }
+  if (/(milch|hafermilch|sojamilch|mandelmilch|pflanzendrink|gurke|salat|eisberg|knoblauch|ingwer|mango|ananas|brot|vollkornbrot|toast|wrap|tortilla|feta|mozzarella|räuchertofu|tofu|thunfisch|mineralwasser|kaffee|tee|spülmittel|toilettenpapier|küchenrolle)/.test(n)) {
+    return { amount: 1, unit: 'Stk.' };
+  }
+
+  // Typische lose / abgewogene Lebensmittel in Gramm
+  if (/(skyr|magerquark|quark|joghurt|haferflocken|reis|basmatireis|nudel|pasta|spaghetti|kartoffel|süßkartoffel|brokkoli|möhre|karotte)/.test(n)) {
+    return { amount: 500, unit: 'g' };
+  }
+  if (/(hähnchen|pute|rind|hackfleisch|fleisch)/.test(n)) {
+    return { amount: 400, unit: 'g' };
+  }
+  if (/(lachs|fisch|garnelen|tomate|spinat|beeren|heidelbeeren|himbeeren|erdbeeren|trauben|olivenöl|öl)/.test(n)) {
+    return { amount: 250, unit: 'g' };
+  }
+  if (/(frischkäse|hüttenkäse|käse|gouda|parmesan|walnuss|walnüsse|mandel|cashew|nüsse|erdnussmus|mandelmus|schokolade)/.test(n)) {
+    return { amount: 200, unit: 'g' };
+  }
+  return { amount: 250, unit: 'g' };
+}
+
+function getShoppingItemUnit(item) {
+  return item && item.unit === 'Stk.' ? 'Stk.' : 'g';
+}
+
+function formatShoppingQty(item) {
+  const amt = Math.max(0, Math.round(Number(item?.grams) || 0));
+  if (amt <= 0) return '';
+  return getShoppingItemUnit(item) === 'Stk.' ? `${amt} Stk.` : `${amt}g`;
+}
+
 function mergeIngredientsIntoShoppingList(rawItems, sourceLabel = 'Rezept') {
   const list = ensureShoppingList();
   let addedOrUpdated = 0;
@@ -5469,10 +5643,11 @@ function mergeIngredientsIntoShoppingList(rawItems, sourceLabel = 'Rezept') {
 
   (rawItems || []).forEach((raw, idx) => {
     const name = String(raw?.name || '').trim();
-    const grams = Math.max(0, Math.round(Number(raw?.grams) || 0));
     if (!name) return;
+    const unit = raw?.unit === 'Stk.' ? 'Stk.' : 'g';
+    const grams = Math.max(0, Math.round(Number(raw?.grams) || 0));
     const norm = name.toLowerCase();
-    const existing = list.find(it => !it.checked && String(it.name || '').trim().toLowerCase() === norm);
+    const existing = list.find(it => !it.checked && String(it.name || '').trim().toLowerCase() === norm && getShoppingItemUnit(it) === unit);
     if (existing) {
       if (grams > 0) existing.grams = (Number(existing.grams) || 0) + grams;
     } else {
@@ -5480,6 +5655,7 @@ function mergeIngredientsIntoShoppingList(rawItems, sourceLabel = 'Rezept') {
         id: 'shop_' + (now + idx) + '_' + Math.floor(Math.random() * 1000),
         name,
         grams,
+        unit,
         checked: false,
         source: sourceLabel
       });
@@ -5552,15 +5728,150 @@ function addSelectedRecipesToShoppingList() {
   showToast(`🛒 ${cnt} Zutat(en) aus Rezepten zur Einkaufsliste hinzugefügt`);
 }
 
+const SHOPPING_STAPLE_SUGGESTIONS = [
+  'Skyr', 'Magerquark', 'Körniger Frischkäse', 'Eier', 'Haferflocken', 'Sojamilch', 'Hafermilch',
+  'Hähnchenbrust', 'Lachs', 'Räuchertofu', 'Tofu', 'Thunfisch', 'Basmatireis', 'Vollkornnudeln',
+  'Vollkornbrot', 'Wraps', 'Kartoffeln', 'Süßkartoffeln', 'Brokkoli', 'Spinat', 'Tomaten',
+  'Paprika', 'Gurke', 'Zucchini', 'Zwiebeln', 'Rote Zwiebeln', 'Knoblauch', 'Ingwer', 'Avocado',
+  'Äpfel', 'Bananen', 'Heidelbeeren', 'Himbeeren', 'Zitronen', 'Olivenöl', 'Walnüsse', 'Mandeln',
+  'Cashews', 'Erdnussmus', 'Proteinriegel', 'Kaffee', 'Mineralwasser', 'Kräuterquark', 'Feta', 'Mozzarella'
+];
+
+function parseShoppingInputWithQty(rawVal) {
+  const trimmed = String(rawVal || '').trim();
+  const gramMatch = trimmed.match(/^(\d+)\s*(?:g|gr|gramm|ml)\s+(.*)$/i);
+  if (gramMatch) {
+    return { explicitAmount: Number(gramMatch[1]), explicitUnit: 'g', query: gramMatch[2].trim() };
+  }
+  const stkMatch = trimmed.match(/^(\d+)\s*(?:stk\.?|stück|x|×)\s*(.*)$/i);
+  if (stkMatch) {
+    return { explicitAmount: Number(stkMatch[1]), explicitUnit: 'Stk.', query: stkMatch[2].trim() };
+  }
+  const plainNumMatch = trimmed.match(/^(\d+)\s+(.+)$/);
+  if (plainNumMatch) {
+    const num = Number(plainNumMatch[1]);
+    const rest = plainNumMatch[2].trim();
+    const sug = suggestShoppingQuantity(rest);
+    return { explicitAmount: num, explicitUnit: num >= 30 ? 'g' : sug.unit, query: rest };
+  }
+  return { explicitAmount: 0, explicitUnit: null, query: trimmed };
+}
+
+function renderShoppingSuggestions(rawVal) {
+  const box = document.getElementById('shopping-suggestions');
+  if (!box) return;
+  const parsed = parseShoppingInputWithQty(rawVal);
+  const qRaw = parsed.query;
+  const q = qRaw.toLowerCase();
+  if (q.length < 2) {
+    box.innerHTML = '';
+    return;
+  }
+
+  const pool = new Map();
+  const addToPool = (label) => {
+    const clean = String(label || '').trim();
+    if (clean.length < 2) return;
+    const key = clean.toLowerCase();
+    if (!pool.has(key)) pool.set(key, clean);
+  };
+  ensureShoppingList().forEach(it => addToPool(it.name));
+  SHOPPING_STAPLE_SUGGESTIONS.forEach(addToPool);
+  getFoodSuggestions(qRaw).forEach(addToPool);
+
+  const starts = [];
+  const contains = [];
+  pool.forEach((label, key) => {
+    if (key.startsWith(q)) starts.push(label);
+    else if (key.includes(q)) contains.push(label);
+  });
+  const matches = [...starts, ...contains].slice(0, 7);
+  if (!matches.length) {
+    box.innerHTML = '';
+    return;
+  }
+
+  box.innerHTML = matches.map(label => {
+    const safe = label.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const sug = suggestShoppingQuantity(label);
+    const amount = parsed.explicitAmount > 0 ? parsed.explicitAmount : sug.amount;
+    const unit = parsed.explicitUnit || sug.unit;
+    const qtyLabel = unit === 'Stk.' ? `${amount} Stk.` : `${amount}g`;
+    return `
+      <button type="button" onclick="pickShoppingSuggestion('${safe}', ${amount}, '${unit}')"
+        class="px-2.5 py-1 rounded-full bg-zinc-900 hover:bg-emerald-500/20 border border-border hover:border-emerald-500/45 text-xs text-zinc-200 hover:text-emerald-300 transition">
+        + <strong class="text-emerald-400">${qtyLabel}</strong> ${escapeHtmlAttr(label)}
+      </button>
+    `;
+  }).join('');
+}
+
+function pickShoppingSuggestion(name, amount = 0, unit = null) {
+  if (!name) return;
+  const sug = suggestShoppingQuantity(name);
+  const finalAmount = Number(amount) > 0 ? Math.round(Number(amount)) : sug.amount;
+  const finalUnit = unit === 'Stk.' || unit === 'g' ? unit : sug.unit;
+  mergeIngredientsIntoShoppingList([{ name, grams: finalAmount, unit: finalUnit }], 'Vorschlag');
+  openShoppingListModal();
+  const inp = document.getElementById('shopping-manual-input');
+  if (inp) inp.focus();
+}
+
 function addManualShoppingItem(event) {
   if (event) event.preventDefault();
   const inp = document.getElementById('shopping-manual-input');
   const raw = (inp?.value || '').trim();
   if (!raw) return;
-  const m = raw.match(/^(\d+)\s*(?:g|gr|gramm|ml)\s+(.+)$/i);
-  const grams = m ? Number(m[1]) : 0;
-  const name = m ? m[2].trim() : raw;
-  mergeIngredientsIntoShoppingList([{ name, grams }], 'Manuell');
+  const parsed = parseShoppingInputWithQty(raw);
+  const name = parsed.query || raw;
+  const sug = suggestShoppingQuantity(name);
+  const amount = parsed.explicitAmount > 0 ? parsed.explicitAmount : sug.amount;
+  const unit = parsed.explicitUnit || sug.unit;
+  mergeIngredientsIntoShoppingList([{ name, grams: amount, unit }], 'Manuell');
+  openShoppingListModal();
+}
+
+function toggleEditShoppingItemQty(id) {
+  editingShoppingItemId = editingShoppingItemId === id ? null : id;
+  openShoppingListModal();
+}
+
+function updateShoppingItemQty(id, newAmount) {
+  const item = ensureShoppingList().find(it => it.id === id);
+  if (!item) return;
+  item.grams = Math.max(1, Math.round(Number(newAmount) || 1));
+  saveState();
+  render();
+  openShoppingListModal();
+}
+
+function toggleShoppingItemUnit(id) {
+  const item = ensureShoppingList().find(it => it.id === id);
+  if (!item) return;
+  const wasStk = getShoppingItemUnit(item) === 'Stk.';
+  if (wasStk) {
+    item.unit = 'g';
+    if ((Number(item.grams) || 0) <= 20) item.grams = 250;
+  } else {
+    item.unit = 'Stk.';
+    if ((Number(item.grams) || 0) >= 30) item.grams = 1;
+  }
+  saveState();
+  render();
+  openShoppingListModal();
+}
+
+function confirmShoppingItemQty(id) {
+  const inp = document.getElementById(`shop-qty-${id}`);
+  if (inp) {
+    const item = ensureShoppingList().find(it => it.id === id);
+    if (item) {
+      item.grams = Math.max(1, Math.round(Number(inp.value) || 1));
+      saveState();
+      render();
+    }
+  }
+  editingShoppingItemId = null;
   openShoppingListModal();
 }
 
@@ -5590,15 +5901,29 @@ function clearCheckedShoppingItems() {
   openShoppingListModal();
 }
 
+function clearAllShoppingItems() {
+  const list = ensureShoppingList();
+  if (!list.length) return;
+  if (!confirm(`Alle ${list.length} Einträge von der Einkaufsliste löschen?`)) return;
+  list.forEach(it => markDeletedId(it.id));
+  state.shoppingList = [];
+  editingShoppingItemId = null;
+  saveState();
+  render();
+  openShoppingListModal();
+  showToast('🗑️ Einkaufsliste geleert');
+}
+
 function copyShoppingListToClipboard() {
   const openItems = ensureShoppingList().filter(it => !it.checked);
   if (!openItems.length) {
     showToast('Keine offenen Artikel auf der Einkaufsliste.');
     return;
   }
-  const text = '🛒 Einkaufsliste (Fuel & Flow)\n' + openItems.map(it =>
-    `- [ ] ${it.grams > 0 ? `${it.grams}g ` : ''}${it.name}`
-  ).join('\n');
+  const text = '🛒 Einkaufsliste (Fuel & Flow)\n' + openItems.map(it => {
+    const q = formatShoppingQty(it);
+    return `- [ ] ${q ? `${q} ` : ''}${it.name}`;
+  }).join('\n');
   if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
     navigator.clipboard.writeText(text)
       .then(() => showToast('📋 Einkaufsliste in Zwischenablage kopiert'))
@@ -5705,22 +6030,62 @@ function openShoppingListModal() {
         ` : ''}
 
         ${list.length > 0 ? `
-          ${[...openItems, ...doneItems].map(it => `
-            <div class="flex items-center justify-between gap-3 px-3.5 py-3 rounded-2xl border transition ${
-              it.checked
-                ? 'bg-zinc-950/60 border-zinc-900 text-zinc-500'
-                : 'bg-card border-border text-zinc-100'
-            }">
-              <button type="button" onclick="toggleShoppingItem('${it.id}')" class="flex-1 min-w-0 flex items-center gap-3 text-left text-sm">
-                <span class="w-5 h-5 rounded-lg border flex items-center justify-center shrink-0 text-xs font-bold ${
-                  it.checked ? 'bg-emerald-500/25 border-emerald-500/50 text-emerald-300' : 'border-zinc-600'
-                }">${it.checked ? '✓' : ''}</span>
-                <span class="truncate ${it.checked ? 'line-through' : 'font-medium'}">${it.grams > 0 ? `<strong class="${it.checked ? '' : 'text-emerald-400'}">${it.grams}g</strong> ` : ''}${escapeHtmlAttr(it.name)}</span>
-              </button>
-              <button type="button" onclick="deleteShoppingItem('${it.id}')" title="Entfernen"
-                class="w-8 h-8 flex items-center justify-center rounded-xl text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 text-xs shrink-0 transition">✕</button>
-            </div>
-          `).join('')}
+          ${[...openItems, ...doneItems].map(it => {
+            const unit = getShoppingItemUnit(it);
+            const curAmt = Math.max(1, Math.round(Number(it.grams) || 1));
+            const qtyStr = formatShoppingQty(it);
+            const step = unit === 'Stk.' ? 1 : (curAmt <= 100 ? 25 : 50);
+            const isEditingQty = editingShoppingItemId === it.id;
+            return `
+              <div class="rounded-2xl border transition ${
+                it.checked
+                  ? 'bg-zinc-950/60 border-zinc-900 text-zinc-500'
+                  : 'bg-card border-border text-zinc-100'
+              }">
+                <div class="flex items-center justify-between gap-2 px-3.5 py-3">
+                  <button type="button" onclick="toggleShoppingItem('${it.id}')" class="flex-1 min-w-0 flex items-center gap-3 text-left text-sm">
+                    <span class="w-5 h-5 rounded-lg border flex items-center justify-center shrink-0 text-xs font-bold ${
+                      it.checked ? 'bg-emerald-500/25 border-emerald-500/50 text-emerald-300' : 'border-zinc-600'
+                    }">${it.checked ? '✓' : ''}</span>
+                    <span class="truncate ${it.checked ? 'line-through' : 'font-medium'}">${escapeHtmlAttr(it.name)}</span>
+                  </button>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <button type="button" onclick="toggleEditShoppingItemQty('${it.id}')" title="Menge / Einheit anpassen"
+                      class="px-2.5 py-1 rounded-xl text-xs font-semibold border transition ${
+                        isEditingQty
+                          ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                          : (it.checked
+                            ? 'bg-zinc-900/60 border-zinc-800 text-zinc-500'
+                            : 'bg-zinc-900 hover:bg-zinc-800 border-border text-emerald-400')
+                      }">
+                      ${qtyStr || 'Menge'}
+                    </button>
+                    <button type="button" onclick="deleteShoppingItem('${it.id}')" title="Entfernen"
+                      class="w-8 h-8 flex items-center justify-center rounded-xl text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 text-xs shrink-0 transition">✕</button>
+                  </div>
+                </div>
+                ${isEditingQty ? `
+                  <div class="flex items-center gap-1.5 px-3.5 pb-3 pt-1 border-t border-zinc-800/80">
+                    <button type="button" onclick="updateShoppingItemQty('${it.id}', Math.max(1, ${curAmt - step}))"
+                      class="px-2.5 py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">−${step}</button>
+                    <div class="flex-1 flex items-center gap-1 bg-zinc-950 border border-zinc-700 focus-within:border-emerald-500 rounded-xl px-2.5 py-1">
+                      <input id="shop-qty-${it.id}" type="number" inputmode="decimal" value="${curAmt}" min="1"
+                        onkeydown="if(event.key==='Enter'){event.preventDefault(); confirmShoppingItemQty('${it.id}');}"
+                        class="w-full bg-transparent text-xs font-semibold text-white text-center focus:outline-none" />
+                    </div>
+                    <button type="button" onclick="updateShoppingItemQty('${it.id}', ${curAmt + step})"
+                      class="px-2.5 py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">+${step}</button>
+                    <button type="button" onclick="toggleShoppingItemUnit('${it.id}')" title="Zwischen g und Stk. wechseln"
+                      class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-sky-300 shrink-0 transition">
+                      ${unit}
+                    </button>
+                    <button type="button" onclick="confirmShoppingItemQty('${it.id}')" title="Übernehmen"
+                      class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold shrink-0 transition">✓</button>
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          }).join('')}
         ` : `
           <div class="rounded-3xl bg-card border border-dashed border-zinc-700 p-8 text-center space-y-3 mt-6">
             <div class="text-3xl">🛒</div>
@@ -5744,22 +6109,30 @@ function openShoppingListModal() {
     <!-- Unten angedockte Eingabe- & Aktionsleiste -->
     <footer class="shrink-0 bg-bg/95 backdrop-blur-md border-t border-border px-4 py-3">
       <div class="max-w-3xl mx-auto space-y-2">
+        <div id="shopping-suggestions" class="flex flex-wrap gap-1.5"></div>
         <form onsubmit="addManualShoppingItem(event)" class="flex gap-2 min-w-0">
-          <input id="shopping-manual-input" type="text" placeholder="Artikel hinzufügen (z. B. 500g Skyr, Zitronen…)"
+          <input id="shopping-manual-input" type="text" placeholder="Artikel eingeben (z. B. Avocado, Milch, Skyr, 500g Reis…)"
+            oninput="renderShoppingSuggestions(this.value)"
             class="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-700 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
           <button type="submit" class="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-sm shrink-0 transition">
             +
           </button>
         </form>
-        <div class="flex gap-2">
+        <div class="flex gap-2 flex-wrap">
           <button type="button" onclick="copyShoppingListToClipboard()"
             class="flex-1 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-200 font-semibold text-xs transition">
-            📋 Liste kopieren
+            📋 Kopieren
           </button>
           ${doneItems.length > 0 ? `
             <button type="button" onclick="clearCheckedShoppingItems()"
-              class="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold text-xs transition">
-              Erledigte löschen (${doneItems.length})
+              class="px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 font-semibold text-xs transition">
+              Erledigte (${doneItems.length})
+            </button>
+          ` : ''}
+          ${list.length > 0 ? `
+            <button type="button" onclick="clearAllShoppingItems()"
+              class="px-3 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold text-xs transition">
+              🗑️ Alle löschen
             </button>
           ` : ''}
         </div>
