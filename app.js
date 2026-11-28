@@ -2637,7 +2637,75 @@ function renderDashboard() {
     </div>
   `;
 
+  const renderMiniRoutineBtn = (key, icon, label) => {
+    const val = normalizeRoutineStatus(log.routines?.[key]);
+    const cls = val === true
+      ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+      : (val === false
+        ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
+        : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
+    const sym = val === true ? '✓' : (val === false ? '✕' : '·');
+    return `
+      <button onclick="toggleRoutine('${key}')"
+        class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${cls}">
+        <span>${icon}</span><span>${label}</span><span class="font-bold ml-0.5">${sym}</span>
+      </button>
+    `;
+  };
+
+  const alcStatus = normalizeHabitStatus(log.badHabits?.alcohol);
+  const alcCls = alcStatus === 'clean'
+    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+    : (alcStatus === 'consumed'
+      ? 'bg-rose-500/25 border-rose-500/55 text-rose-300'
+      : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
+  const alcSym = alcStatus === 'clean' ? '✕' : (alcStatus === 'consumed' ? '✓' : '·');
+
+  const nicStatus = getCombinedNicotineStatus(log);
+  const nicCls = nicStatus === 'clean'
+    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+    : (nicStatus === 'consumed'
+      ? 'bg-rose-500/25 border-rose-500/55 text-rose-300'
+      : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
+  const nicSym = nicStatus === 'clean' ? '✕' : (nicStatus === 'consumed' ? '✓' : '·');
+
+  const quickHabitsHtml = `
+    <section class="bg-card border border-border rounded-2xl px-3 py-2.5 space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">Schnell-Check</span>
+        <button onclick="switchTab('habits')" class="text-[10px] text-emerald-400 hover:text-emerald-300 font-medium">Details →</button>
+      </div>
+      <div class="flex flex-wrap gap-1.5">
+        ${renderMiniRoutineBtn('sertraline', '💊', 'Sertralin')}
+        ${renderMiniRoutineBtn('creatine', '💊', 'Kreatin')}
+        ${renderMiniRoutineBtn('skincare', '🧴', 'Skincare')}
+        <button onclick="cycleBadHabitDay('alcohol', '${state.selectedDate}')"
+          class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${alcCls}">
+          <span>🍷</span><span>Alkohol</span><span class="font-bold ml-0.5">${alcSym}</span>
+        </button>
+        <button onclick="cycleCombinedNicotineDay('${state.selectedDate}')"
+          class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${nicCls}">
+          <span>💨</span><span>Nikotin</span><span class="font-bold ml-0.5">${nicSym}</span>
+        </button>
+        ${(state.sportHabits || []).map(sp => {
+          const done = Array.isArray(log.sportDone) && log.sportDone.includes(sp.id);
+          return `
+            <button onclick="toggleSportHabit('${sp.id}', '${state.selectedDate}')"
+              class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${
+                done
+                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                  : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+              }">
+              <span>⚡</span><span>${sp.name}</span><span class="font-bold ml-0.5">${done ? '✓' : '·'}</span>
+            </button>
+          `;
+        }).join('')}
+      </div>
+    </section>
+  `;
+
   const bilanzSectionHtml = `
+    ${quickHabitsHtml}
     <!-- Calories & Macros Card -->
     <section class="bg-card border border-border rounded-3xl p-4 space-y-4">
       <div class="flex items-start justify-between">
@@ -4706,7 +4774,7 @@ async function analyzeMealWithGemini() {
   preview.innerHTML = '';
 
   const promptText = `Du bist ein präziser Ernährungs-Tracker. Analysiere diese Mahlzeit${hint ? ` (Hinweis des Nutzers: "${hint}")` : ''}.
-Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Bratöl, Sauce, Dressing) mit ungefährem Gewicht in Gramm sowie Kalorien (kcal), Protein (p), Kohlenhydraten (c) und Fett (f) für diese Portionsgröße. Antworte auf Deutsch.`;
+Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Bratöl, Sauce, Dressing) mit ungefährem Gewicht in Gramm sowie Kalorien (kcal), Protein (p), Kohlenhydraten (c) und Fett (f) für diese Portionsgröße. ${appLang === 'es' ? 'Responde en español.' : 'Antworte auf Deutsch.'}`;
 
   const parts = [{ text: promptText }];
   if (aiSelectedImageBase64) {
@@ -4959,6 +5027,12 @@ const ES_EXACT = {
   'Habits': 'Hábitos',
 
   // Dashboard & Tagesbilanz
+  'Schnell-Check': 'Chequeo rápido',
+  'Details →': 'Detalles →',
+  'Gym / Krafttraining': 'Gym / Fuerza',
+  'Laufen': 'Correr',
+  'Surfen / Mobility': 'Surf / Movilidad',
+  "Optionaler Hinweis (z. B. 'in 1 EL Olivenöl gebraten' oder nur Text)": "Nota opcional (ej. 'frito con 1 cda de aceite' o solo texto)",
   'Tagesbilanz': 'Balance diario',
   'Gewicht & Körperwerte': 'Peso y cuerpo',
   '+ Mahlzeit': '+ Comida',
