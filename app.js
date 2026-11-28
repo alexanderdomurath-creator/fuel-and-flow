@@ -5304,6 +5304,7 @@ function openModal(html) {
 
 function closeModal() {
   if (typeof stopVoiceRecipeStreamOnly === 'function') stopVoiceRecipeStreamOnly();
+  if (typeof stopVoiceQuickLogStreamOnly === 'function') stopVoiceQuickLogStreamOnly();
   document.getElementById('modal-backdrop').classList.add('hidden');
 }
 
@@ -6875,6 +6876,590 @@ function saveAiMealToLog(asSingleEntry) {
   closeAiMealModal();
   dashboardSection = 'bilanz';
   switchTab('dashboard');
+}
+
+// ---------- SPRACH-QUICK-LOG (MAHLZEITEN & HABITS VIA GEMINI) ----------
+let vqlMediaRecorder = null;
+let vqlAudioStream = null;
+let vqlAudioChunks = [];
+let vqlRecTimer = null;
+let vqlRecSeconds = 0;
+let vqlAbortController = null;
+let vqlDraft = null;
+
+function stopVoiceQuickLogStreamOnly() {
+  clearInterval(vqlRecTimer);
+  vqlRecTimer = null;
+  if (vqlMediaRecorder && vqlMediaRecorder.state !== 'inactive') {
+    try { vqlMediaRecorder.onstop = null; vqlMediaRecorder.stop(); } catch (e) {}
+  }
+  vqlMediaRecorder = null;
+  if (vqlAudioStream) {
+    vqlAudioStream.getTracks().forEach(t => t.stop());
+    vqlAudioStream = null;
+  }
+  if (vqlAbortController) {
+    try { vqlAbortController.abort(); } catch (e) {}
+    vqlAbortController = null;
+  }
+}
+
+function saveVqlGeminiKey() {
+  const inp = document.getElementById('vqlGeminiKeyInput');
+  if (!inp || !inp.value.trim()) return;
+  localStorage.setItem(GEMINI_KEY_STORAGE, inp.value.trim());
+  const det = document.getElementById('vqlKeyDetails');
+  if (det) det.open = false;
+  showToast(appLang === 'es' ? '✓ Clave API guardada' : '✓ Gemini API Key gespeichert');
+}
+
+function openVoiceQuickLogModal() {
+  stopVoiceQuickLogStreamOnly();
+  vqlDraft = null;
+  const savedKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <h3 class="text-base font-semibold text-white">🎙️ Sprach-Quick-Log</h3>
+          <p class="text-[11px] text-zinc-400">Mahlzeiten & Habits für <strong class="text-zinc-200">${formatDisplayDate(state.selectedDate)}</strong> einsprechen</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+
+      <details id="vqlKeyDetails" ${savedKey ? '' : 'open'} class="bg-zinc-950 border border-border rounded-2xl px-3 py-2">
+        <summary class="cursor-pointer text-xs text-zinc-400 select-none">🔑 Gemini API Key konfigurieren</summary>
+        <div class="flex gap-2 mt-2">
+          <input id="vqlGeminiKeyInput" type="password" value="${savedKey}" placeholder="AIzaSy..."
+            class="flex-1 min-w-0 px-2.5 py-1.5 rounded-xl bg-zinc-900 border border-border text-xs text-white" />
+          <button type="button" onclick="saveVqlGeminiKey()" class="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-white font-medium shrink-0">
+            Speichern
+          </button>
+        </div>
+      </details>
+
+      <div class="rounded-2xl bg-zinc-900/90 border border-border p-4 text-center space-y-3">
+        <div id="vqlStatus" class="text-xs text-zinc-300 leading-relaxed">
+          Beispiel: „250g Skyr mit 30g Haferflocken und einer Banane gegessen, Kreatin erledigt, heute kein Alkohol“
+        </div>
+        <div id="vqlTimerBadge" class="hidden text-lg font-mono font-bold text-rose-400 animate-pulse">00:00</div>
+        <button id="vqlMainBtn" type="button" onclick="toggleVoiceQuickLogRecording()"
+          class="w-full py-3.5 rounded-2xl bg-violet-500 hover:bg-violet-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-violet-500/20">
+          <span>🎙️</span><span>Aufnahme starten</span>
+        </button>
+      </div>
+
+      <div class="space-y-2 pt-1 border-t border-border">
+        <label class="text-[11px] text-zinc-400 block">Oder kurz als Text eingeben:</label>
+        <textarea id="vqlTextInput" rows="2" placeholder="z. B. 1 Snickers gegessen, Skincare erledigt, kein Nikotin"
+          class="w-full px-3 py-2.5 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500"></textarea>
+        <button id="vqlTextSubmitBtn" type="button" onclick="submitVoiceQuickLogToGemini(null, null)"
+          class="w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-border text-zinc-200 font-semibold text-xs transition">
+          ✨ Aus Text erkennen
+        </button>
+      </div>
+
+      <div id="vqlError" class="hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2"></div>
+      <div id="vqlPreview" class="space-y-3"></div>
+    </div>
+  `);
+}
+
+async function toggleVoiceQuickLogRecording() {
+  const errEl = document.getElementById('vqlError');
+  if (errEl) errEl.classList.add('hidden');
+
+  let apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+  if (!apiKey) {
+    const typed = (document.getElementById('vqlGeminiKeyInput')?.value || '').trim();
+    if (typed) {
+      apiKey = typed;
+      try { localStorage.setItem(GEMINI_KEY_STORAGE, apiKey); } catch (e) {}
+      const det = document.getElementById('vqlKeyDetails');
+      if (det) det.open = false;
+    }
+  }
+  if (!apiKey) {
+    const det = document.getElementById('vqlKeyDetails');
+    if (det) det.open = true;
+    if (errEl) {
+      errEl.textContent = 'Bitte zuerst oben deinen Gemini API Key speichern.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (vqlMediaRecorder && vqlMediaRecorder.state === 'recording') {
+    clearInterval(vqlRecTimer);
+    const btn = document.getElementById('vqlMainBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳</span><span>Werte Sprach-Log aus…</span>';
+    }
+    vqlMediaRecorder.stop();
+    return;
+  }
+
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Mikrofon wird in diesem Browser nicht unterstützt.');
+    }
+    vqlAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = pickSupportedAudioMime();
+    vqlAudioChunks = [];
+    vqlMediaRecorder = mime ? new MediaRecorder(vqlAudioStream, { mimeType: mime }) : new MediaRecorder(vqlAudioStream);
+
+    vqlMediaRecorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) vqlAudioChunks.push(ev.data);
+    };
+
+    vqlMediaRecorder.onstop = async () => {
+      const actualMime = (vqlMediaRecorder && vqlMediaRecorder.mimeType) || mime || 'audio/webm';
+      if (vqlAudioStream) {
+        vqlAudioStream.getTracks().forEach(t => t.stop());
+        vqlAudioStream = null;
+      }
+      vqlMediaRecorder = null;
+      const blob = new Blob(vqlAudioChunks, { type: actualMime });
+      if (!blob.size) return;
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result || '').split(',')[1] || '');
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      await submitVoiceQuickLogToGemini(base64, actualMime.split(';')[0]);
+    };
+
+    vqlMediaRecorder.start();
+    vqlRecSeconds = 0;
+    const timerBadge = document.getElementById('vqlTimerBadge');
+    const statusEl = document.getElementById('vqlStatus');
+    const mainBtn = document.getElementById('vqlMainBtn');
+    if (timerBadge) {
+      timerBadge.textContent = '00:00';
+      timerBadge.classList.remove('hidden');
+    }
+    if (statusEl) {
+      statusEl.textContent = '🔴 Aufnahme läuft… Sprich Mahlzeiten, Snacks und/oder Habits ein.';
+    }
+    if (mainBtn) {
+      mainBtn.className = 'w-full py-3.5 rounded-2xl bg-rose-500 hover:bg-rose-400 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-rose-500/25';
+      mainBtn.innerHTML = '<span>⏹</span><span>Stopp & auswerten</span>';
+    }
+
+    vqlRecTimer = setInterval(() => {
+      vqlRecSeconds++;
+      const mm = String(Math.floor(vqlRecSeconds / 60)).padStart(2, '0');
+      const ss = String(vqlRecSeconds % 60).padStart(2, '0');
+      const tb = document.getElementById('vqlTimerBadge');
+      if (tb) tb.textContent = `${mm}:${ss}`;
+    }, 1000);
+  } catch (err) {
+    stopVoiceQuickLogStreamOnly();
+    if (errEl) {
+      errEl.textContent = `Mikrofon-Fehler: ${err.message || err}`;
+      errEl.classList.remove('hidden');
+    }
+  }
+}
+
+function buildVoiceQuickLogHabitCatalog() {
+  const cfg = getHabitConfig();
+  const lines = [];
+  if (cfg.categories.alcohol !== false) {
+    lines.push('- target "badHabit:alcohol" | Name: Alkohol | erlaubte Werte: "clean" (kein Alkohol) oder "consumed" (Alkohol getrunken)');
+  }
+  if (cfg.categories.nicotine !== false) {
+    lines.push('- target "badHabit:nicotine" | Name: Nikotin gesamt | erlaubte Werte: "clean" oder "consumed"');
+    lines.push('- target "badHabit:cigarettes" | Name: Zigaretten | erlaubte Werte: "clean" oder "consumed"');
+    lines.push('- target "badHabit:vape" | Name: Vape | erlaubte Werte: "clean" oder "consumed"');
+  }
+  getEnabledBuiltinRoutines().forEach(r => {
+    lines.push(`- target "routine:${r.id}" | Name: ${r.name} | erlaubte Werte: "yes" (erledigt) oder "no" (nicht erledigt)`);
+  });
+  getCustomHabits(true).forEach(h => {
+    const valDesc = h.type === 'avoid' ? '"clean" (vermieden) oder "consumed" (konsumiert)' : '"yes" (erledigt) oder "no" (nicht erledigt)';
+    lines.push(`- target "custom:${h.id}" | Name: ${h.name} | erlaubte Werte: ${valDesc}`);
+  });
+  return lines;
+}
+
+function parseVoiceQuickLogResult(data) {
+  const meals = (Array.isArray(data?.meals) ? data.meals : [])
+    .map((m, idx) => ({
+      id: `vql_m_${idx}`,
+      checked: true,
+      name: String(m?.name || '').trim(),
+      grams: Math.max(1, Math.round(Number(m?.grams) || 100)),
+      kcal: Math.max(0, Math.round(Number(m?.kcal) || 0)),
+      p: Math.max(0, Math.round((Number(m?.p) || 0) * 10) / 10),
+      c: Math.max(0, Math.round((Number(m?.c) || 0) * 10) / 10),
+      f: Math.max(0, Math.round((Number(m?.f) || 0) * 10) / 10)
+    }))
+    .filter(m => m.name);
+
+  const validHabitTargets = new Set([
+    'badHabit:alcohol', 'badHabit:nicotine', 'badHabit:cigarettes', 'badHabit:vape',
+    'routine:creatine', 'routine:skincare', 'routine:sertraline'
+  ]);
+  getCustomHabits(false).forEach(h => validHabitTargets.add(`custom:${h.id}`));
+
+  const habitUpdates = [];
+  const seenTargets = new Set();
+  (Array.isArray(data?.habitUpdates) ? data.habitUpdates : []).forEach((h, idx) => {
+    const target = String(h?.target || '').trim();
+    const rawVal = String(h?.value || '').trim().toLowerCase();
+    if (!validHabitTargets.has(target) || seenTargets.has(target)) return;
+    let normalizedVal = null;
+    if (target.startsWith('badHabit:')) {
+      if (rawVal === 'clean' || rawVal === 'no' || rawVal === 'false') normalizedVal = 'clean';
+      else if (rawVal === 'consumed' || rawVal === 'yes' || rawVal === 'true') normalizedVal = 'consumed';
+    } else if (target.startsWith('routine:')) {
+      if (rawVal === 'yes' || rawVal === 'true' || rawVal === 'clean') normalizedVal = 'yes';
+      else if (rawVal === 'no' || rawVal === 'false' || rawVal === 'consumed') normalizedVal = 'no';
+    } else if (target.startsWith('custom:')) {
+      const ch = getCustomHabitById(target.slice(7));
+      if (!ch) return;
+      if (ch.type === 'avoid') {
+        if (rawVal === 'clean' || rawVal === 'no') normalizedVal = 'clean';
+        else if (rawVal === 'consumed' || rawVal === 'yes') normalizedVal = 'consumed';
+      } else {
+        if (rawVal === 'yes' || rawVal === 'true') normalizedVal = 'yes';
+        else if (rawVal === 'no' || rawVal === 'false') normalizedVal = 'no';
+      }
+    }
+    if (!normalizedVal) return;
+    seenTargets.add(target);
+    habitUpdates.push({
+      id: `vql_h_${idx}`,
+      checked: true,
+      target,
+      label: String(h?.label || target).trim(),
+      value: normalizedVal
+    });
+  });
+
+  return {
+    transcript: String(data?.transcript || '').trim(),
+    meals,
+    habitUpdates
+  };
+}
+
+async function submitVoiceQuickLogToGemini(audioBase64, audioMimeType) {
+  const errEl = document.getElementById('vqlError');
+  const previewEl = document.getElementById('vqlPreview');
+  const textNote = (document.getElementById('vqlTextInput')?.value || '').trim();
+  const mainBtn = document.getElementById('vqlMainBtn');
+  const txtBtn = document.getElementById('vqlTextSubmitBtn');
+
+  if (errEl) errEl.classList.add('hidden');
+  let apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+  if (!apiKey) {
+    const typed = (document.getElementById('vqlGeminiKeyInput')?.value || '').trim();
+    if (typed) {
+      apiKey = typed;
+      try { localStorage.setItem(GEMINI_KEY_STORAGE, apiKey); } catch (e) {}
+      const det = document.getElementById('vqlKeyDetails');
+      if (det) det.open = false;
+    }
+  }
+  if (!apiKey) {
+    const det = document.getElementById('vqlKeyDetails');
+    if (det) det.open = true;
+    if (errEl) {
+      errEl.textContent = 'Bitte zuerst oben deinen Gemini API Key speichern.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+  if (!audioBase64 && !textNote) {
+    if (errEl) {
+      errEl.textContent = 'Bitte zuerst eine Sprachaufnahme starten oder unten Text eingeben.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (mainBtn) mainBtn.disabled = true;
+  if (txtBtn) {
+    txtBtn.disabled = true;
+    txtBtn.textContent = '⏳ Analysiere Eingabe…';
+  }
+  if (previewEl) {
+    previewEl.innerHTML = '<div class="text-xs text-zinc-400 text-center py-2">⏳ Gemini analysiert Mahlzeiten & Habits…</div>';
+  }
+
+  const habitCatalog = buildVoiceQuickLogHabitCatalog();
+  const targetLang = appLang === 'es' ? 'Spanisch (Español)' : 'Deutsch';
+  const promptText = `Du bist ein präziser Quick-Log-Assistent für eine Ernährungs- & Habit-App.
+Extrahiere aus der Sprachaufnahme${textNote ? ` bzw. dem Text ("${textNote}")` : ''} alle genannten:
+1. Mahlzeiten / Snacks ("meals"): Schätze realistisch Portionsgewicht in Gramm ("grams") sowie Kalorien ("kcal"), Protein ("p"), Kohlenhydrate ("c") und Fett ("f") für genau diese verzehrte Portionsgröße (NICHT pro 100g!). Benenne sie klar auf ${targetLang}. Wenn keine Mahlzeit genannt wurde, gib ein leeres Array [] zurück.
+2. Habit-Updates ("habitUpdates"): Nur Habits aufnehmen, die explizit erwähnt wurden! Nutze exakt die passenden target-IDs aus dieser aktiven Liste:
+${habitCatalog.length ? habitCatalog.join('\n') : '(Keine aktiven Habits)'}
+3. Gib in "transcript" kurz wieder, was verstanden wurde.`;
+
+  const parts = [{ text: promptText }];
+  if (audioBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: audioMimeType || 'audio/webm',
+        data: audioBase64
+      }
+    });
+  }
+
+  const requestBody = JSON.stringify({
+    contents: [{ parts }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseJsonSchema: {
+        type: 'object',
+        properties: {
+          transcript: { type: 'string' },
+          meals: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                grams: { type: 'number' },
+                kcal: { type: 'number' },
+                p: { type: 'number' },
+                c: { type: 'number' },
+                f: { type: 'number' }
+              },
+              required: ['name', 'grams', 'kcal', 'p', 'c', 'f']
+            }
+          },
+          habitUpdates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                target: { type: 'string' },
+                label: { type: 'string' },
+                value: { type: 'string' }
+              },
+              required: ['target', 'label', 'value']
+            }
+          }
+        },
+        required: ['meals', 'habitUpdates']
+      }
+    }
+  });
+
+  try {
+    let res = null;
+    let lastError = 'Unbekannter Fehler';
+    for (const model of GEMINI_MODELS_TO_TRY) {
+      const controller = new AbortController();
+      vqlAbortController = controller;
+      let timedOut = false;
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        try { controller.abort(); } catch (e) {}
+      }, GEMINI_FETCH_TIMEOUT_MS);
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: requestBody,
+          signal: controller.signal
+        });
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (timedOut) {
+          lastError = `Zeitüberschreitung bei ${model}`;
+          res = null;
+          continue;
+        }
+        throw fetchErr;
+      } finally {
+        clearTimeout(timeoutId);
+        if (vqlAbortController === controller) vqlAbortController = null;
+      }
+      if (res.ok) break;
+      const errData = await res.json().catch(() => ({}));
+      lastError = errData.error?.message || `HTTP ${res.status}`;
+      if (![404, 429, 500, 502, 503, 504].includes(res.status)) throw new Error(lastError);
+      res = null;
+    }
+    if (!res) throw new Error(lastError);
+
+    const result = await res.json();
+    const rawJson = extractGeminiJsonText(result);
+    const parsed = parseVoiceQuickLogResult(JSON.parse(rawJson));
+    if (!parsed.meals.length && !parsed.habitUpdates.length) {
+      throw new Error('Es wurden weder Mahlzeiten noch aktive Habits erkannt. Versuch es etwas konkreter.');
+    }
+    vqlDraft = parsed;
+    renderVoiceQuickLogPreview();
+  } catch (err) {
+    if (previewEl) previewEl.innerHTML = '';
+    if (errEl) {
+      errEl.textContent = `Fehler: ${err.message || err}`;
+      errEl.classList.remove('hidden');
+    }
+  } finally {
+    const tb = document.getElementById('vqlTimerBadge');
+    if (tb) tb.classList.add('hidden');
+    if (mainBtn) {
+      mainBtn.disabled = false;
+      mainBtn.className = 'w-full py-3.5 rounded-2xl bg-violet-500 hover:bg-violet-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-violet-500/20';
+      mainBtn.innerHTML = '<span>🎙️</span><span>Neu aufnehmen</span>';
+    }
+    if (txtBtn) {
+      txtBtn.disabled = false;
+      txtBtn.textContent = '✨ Aus Text erkennen';
+    }
+  }
+}
+
+function toggleVqlDraftItem(kind, idx) {
+  if (!vqlDraft) return;
+  const arr = kind === 'meal' ? vqlDraft.meals : vqlDraft.habitUpdates;
+  if (!arr || !arr[idx]) return;
+  arr[idx].checked = !arr[idx].checked;
+  renderVoiceQuickLogPreview();
+}
+
+function renderVoiceQuickLogPreview() {
+  const previewEl = document.getElementById('vqlPreview');
+  if (!previewEl || !vqlDraft) return;
+
+  const selectedMeals = vqlDraft.meals.filter(m => m.checked);
+  const selectedHabits = vqlDraft.habitUpdates.filter(h => h.checked);
+  const totalSelected = selectedMeals.length + selectedHabits.length;
+  const totalKcal = selectedMeals.reduce((s, m) => s + m.kcal, 0);
+
+  const habitBadge = (val) => {
+    if (val === 'yes') return '<span class="px-2 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-semibold">✓ Ja</span>';
+    if (val === 'clean') return '<span class="px-2 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-semibold">✓ Clean</span>';
+    if (val === 'no') return '<span class="px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[10px] font-semibold">✕ Nein</span>';
+    return '<span class="px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[10px] font-semibold">✕ Konsumiert</span>';
+  };
+
+  previewEl.innerHTML = `
+    <div class="rounded-2xl bg-zinc-950 border border-violet-500/35 p-3.5 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-xs font-semibold text-white">Vorschau vor dem Speichern</span>
+        <span class="text-[11px] text-zinc-400">${formatDisplayDate(state.selectedDate)}</span>
+      </div>
+
+      ${vqlDraft.transcript ? `
+        <div class="text-[11px] italic text-zinc-400 bg-zinc-900/70 rounded-xl px-2.5 py-1.5">„${escapeHtmlAttr(vqlDraft.transcript)}“</div>
+      ` : ''}
+
+      ${vqlDraft.meals.length > 0 ? `
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-[11px] font-semibold text-zinc-300">
+            <span>🍽️ Mahlzeiten (${selectedMeals.length}/${vqlDraft.meals.length})</span>
+            <span class="text-emerald-400">${totalKcal} kcal</span>
+          </div>
+          ${vqlDraft.meals.map((m, idx) => `
+            <button type="button" onclick="toggleVqlDraftItem('meal', ${idx})"
+              class="w-full text-left flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border text-xs transition ${
+                m.checked
+                  ? 'bg-zinc-900 border-emerald-500/40 text-white'
+                  : 'bg-zinc-950 border-zinc-800 text-zinc-500 opacity-60'
+              }">
+              <div class="min-w-0 flex-1">
+                <div class="font-medium truncate">${m.checked ? '☑' : '☐'} ${escapeHtmlAttr(m.name)} (${m.grams}g)</div>
+                <div class="text-[10px] text-zinc-400">${m.kcal} kcal · P ${m.p}g · C ${m.c}g · F ${m.f}g</div>
+              </div>
+            </button>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      ${vqlDraft.habitUpdates.length > 0 ? `
+        <div class="space-y-1.5">
+          <div class="text-[11px] font-semibold text-zinc-300">⚡ Habits (${selectedHabits.length}/${vqlDraft.habitUpdates.length})</div>
+          ${vqlDraft.habitUpdates.map((h, idx) => `
+            <button type="button" onclick="toggleVqlDraftItem('habit', ${idx})"
+              class="w-full text-left flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border text-xs transition ${
+                h.checked
+                  ? 'bg-zinc-900 border-emerald-500/40 text-white'
+                  : 'bg-zinc-950 border-zinc-800 text-zinc-500 opacity-60'
+              }">
+              <span class="truncate">${h.checked ? '☑' : '☐'} ${escapeHtmlAttr(h.label)}</span>
+              ${habitBadge(h.value)}
+            </button>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      <button type="button" onclick="applyVoiceQuickLogDraft()" ${totalSelected === 0 ? 'disabled' : ''}
+        class="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-zinc-950 font-semibold text-xs transition">
+        ✓ Ausgewählte übernehmen (${totalSelected})
+      </button>
+    </div>
+  `;
+  previewEl.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+}
+
+function applyVoiceQuickLogDraft() {
+  if (!vqlDraft) return;
+  const log = ensureDayLog(state.selectedDate);
+  const now = Date.now();
+  let mealCount = 0;
+  let habitCount = 0;
+
+  vqlDraft.meals.filter(m => m.checked).forEach((m, idx) => {
+    log.entries.push({
+      id: 'ent_' + (now + idx),
+      name: `${m.name} (${m.grams}g)`,
+      kcal: m.kcal,
+      p: m.p,
+      c: m.c,
+      f: m.f
+    });
+    mealCount++;
+  });
+
+  vqlDraft.habitUpdates.filter(h => h.checked).forEach(h => {
+    if (h.target === 'badHabit:alcohol') {
+      log.badHabits.alcohol = h.value;
+      habitCount++;
+    } else if (h.target === 'badHabit:nicotine') {
+      log.badHabits.cigarettes = h.value;
+      log.badHabits.vape = h.value;
+      habitCount++;
+    } else if (h.target === 'badHabit:cigarettes') {
+      log.badHabits.cigarettes = h.value;
+      habitCount++;
+    } else if (h.target === 'badHabit:vape') {
+      log.badHabits.vape = h.value;
+      habitCount++;
+    } else if (h.target.startsWith('routine:')) {
+      const rKey = h.target.slice(8);
+      if (Object.prototype.hasOwnProperty.call(log.routines, rKey)) {
+        log.routines[rKey] = h.value === 'yes';
+        habitCount++;
+      }
+    } else if (h.target.startsWith('custom:')) {
+      const cId = h.target.slice(7);
+      const ch = getCustomHabitById(cId);
+      if (ch) {
+        log.customHabits[cId] = ch.type === 'avoid' ? h.value : (h.value === 'yes');
+        habitCount++;
+      }
+    }
+  });
+
+  if (mealCount === 0 && habitCount === 0) return;
+  vqlDraft = null;
+  saveState();
+  closeModal();
+  render();
+  const parts = [];
+  if (mealCount > 0) parts.push(`${mealCount} Mahlzeit${mealCount === 1 ? '' : 'en'}`);
+  if (habitCount > 0) parts.push(`${habitCount} Habit${habitCount === 1 ? '' : 's'}`);
+  showToast(`✓ ${parts.join(' & ')} übernommen`);
 }
 
 // ---------- KI-SPRACHDIKTAT FÜR REZEPTE (GEMINI AUDIO & TEXT) ----------

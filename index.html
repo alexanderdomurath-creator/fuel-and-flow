@@ -61,6 +61,9 @@
       </div>
 
       <div class="flex items-center gap-1.5">
+        <button id="headerVoiceBtn" onclick="openVoiceQuickLogModal()" class="px-2.5 py-1.5 rounded-xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/35 text-violet-300 text-xs font-semibold transition flex items-center gap-1" title="Sprach-Quick-Log für Mahlzeiten & Habits">
+          <span>🎙️</span><span class="hidden sm:inline">Quick-Log</span>
+        </button>
         <button id="langToggleBtn" onclick="toggleAppLanguage()" class="px-2.5 py-1.5 rounded-xl bg-card hover:bg-cardHover border border-border text-zinc-300 text-xs font-medium transition flex items-center gap-1" title="Sprache wechseln / Cambiar idioma">
           <span id="langBadgeDe" class="text-emerald-400 font-bold">DE</span><span class="text-zinc-600">/</span><span id="langBadgeEs" class="text-zinc-500">ES</span>
         </button>
@@ -103,8 +106,8 @@
 
   <!-- Ausgelagerte Anwendungslogik -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-  <script src="app.js?v=20261128-12"></script>
-  <script src="sport.js?v=20261128-12"></script>
+  <script src="app.js?v=20261128-13"></script>
+  <script src="sport.js?v=20261128-13"></script>
 
 <!-- Barcode & Schnell-Portionierung Modal -->
   <div id="barcodeModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-3">
