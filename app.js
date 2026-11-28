@@ -3613,17 +3613,19 @@ function renderRecipesTab() {
               </button>
             </div>
           </div>
-          <div class="flex gap-2">
-            <input id="builder-search-input" type="text" placeholder="Deutsch suchen (z. B. rote Zwiebeln, Olivenöl, Tofu…)"
+          <div class="relative flex items-center min-w-0">
+            <span class="pointer-events-none absolute left-3.5 text-zinc-400 text-sm">🔍</span>
+            <input id="builder-search-input" type="text" placeholder="Zutat eintippen (z. B. rote Zwiebeln, Olivenöl, Tofu…)"
               oninput="renderFoodSuggestions('builder', this.value)"
-              onkeydown="if(event.key==='Enter') runBuilderSearch()"
-              class="flex-1 px-3 py-2.5 rounded-xl bg-zinc-900 border border-border text-xs text-white" />
-            <button onclick="runBuilderSearch()" class="px-3.5 py-2.5 rounded-xl bg-emerald-500 text-zinc-950 font-semibold text-xs">
-              Suchen
+              onkeydown="if(event.key==='Enter'){event.preventDefault(); runBuilderSearch();}"
+              class="w-full min-w-0 pl-10 pr-12 py-3.5 rounded-2xl bg-zinc-900 border border-zinc-700 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 transition" />
+            <button type="button" onclick="runBuilderSearch()" title="Jetzt suchen" aria-label="Jetzt suchen"
+              class="absolute right-2 px-2.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+              ↵
             </button>
           </div>
           <div id="builder-search-suggestions" class="flex flex-wrap gap-1.5"></div>
-          <div id="builder-search-results" class="space-y-1.5 max-h-60 overflow-y-auto"></div>
+          <div id="builder-search-results" class="space-y-2 max-h-64 overflow-y-auto"></div>
         </div>
 
         <div id="rec-validation-error" class="hidden rounded-xl bg-rose-500/15 border border-rose-500/40 px-3 py-2 text-xs text-rose-300 font-medium"></div>
@@ -3885,19 +3887,20 @@ function renderSnacksSection() {
         </button>
       </div>
 
-      <div class="space-y-2">
-        <div class="flex gap-2 min-w-0">
-          <input id="snack-search-input" type="text" placeholder="Snack suchen (z. B. Schokoriegel, Proteinriegel, Apfel…)"
+      <div class="space-y-2.5">
+        <div class="relative flex items-center min-w-0">
+          <span class="pointer-events-none absolute left-3.5 text-zinc-400 text-sm">🔍</span>
+          <input id="snack-search-input" type="text" placeholder="Snack eintippen (z. B. Snickers, Proteinriegel, Apfel…)"
             oninput="renderFoodSuggestions('snack', this.value)"
             onkeydown="if(event.key==='Enter'){event.preventDefault(); runSnackSearch();}"
-            class="flex-1 min-w-0 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400" />
-          <button type="button" onclick="runSnackSearch()"
-            class="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs shrink-0 transition">
-            Suchen
+            class="w-full min-w-0 pl-10 pr-12 py-3.5 rounded-2xl bg-zinc-900 border border-zinc-700 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400 transition" />
+          <button type="button" onclick="runSnackSearch()" title="Jetzt suchen" aria-label="Jetzt suchen"
+            class="absolute right-2 px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs transition">
+            ↵
           </button>
         </div>
         <div id="snack-search-suggestions" class="flex flex-wrap gap-1.5"></div>
-        <div id="snack-search-results" class="space-y-1.5 max-h-52 overflow-y-auto"></div>
+        <div id="snack-search-results" class="space-y-2 max-h-64 overflow-y-auto"></div>
       </div>
 
       ${snacks.length > 0 ? `
