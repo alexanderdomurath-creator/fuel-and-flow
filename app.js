@@ -650,8 +650,71 @@ function setHeatmapMetric(metric) {
   render();
 }
 
+const LANG_STORAGE_KEY = 'fuel_and_flow_lang';
+let appLang = (() => {
+  try {
+    return localStorage.getItem(LANG_STORAGE_KEY) === 'es' ? 'es' : 'de';
+  } catch (e) {
+    return 'de';
+  }
+})();
+
+function getAppLocale() {
+  return appLang === 'es' ? 'es-ES' : 'de-DE';
+}
+
 // ---------- FOOD API (OPEN FOOD FACTS + USDA) ----------
 const DE_TO_EN = {
+  // Español (Búsqueda rápida de ingredientes)
+  'pollo': 'chicken breast raw',
+  'pechuga de pollo': 'chicken breast raw',
+  'pavo': 'turkey breast raw',
+  'ternera': 'beef lean raw',
+  'carne picada': 'ground beef lean',
+  'atún': 'tuna canned in water',
+  'atun': 'tuna canned in water',
+  'salmón': 'salmon raw',
+  'salmon': 'salmon raw',
+  'huevo': 'egg whole raw',
+  'huevos': 'egg whole raw',
+  'arroz': 'rice raw',
+  'avena': 'oats rolled',
+  'copos de avena': 'oats rolled',
+  'pasta': 'pasta dry',
+  'pan': 'bread whole wheat',
+  'patata': 'potatoes raw',
+  'patatas': 'potatoes raw',
+  'papa': 'potatoes raw',
+  'boniato': 'sweet potato raw',
+  'leche': 'milk whole',
+  'yogur': 'yogurt plain',
+  'queso fresco': 'cottage cheese',
+  'requesón': 'cottage cheese',
+  'requeson': 'cottage cheese',
+  'queso': 'gouda cheese',
+  'tofu': 'tofu firm',
+  'aceite de oliva': 'olive oil',
+  'mantequilla': 'butter',
+  'aguacate': 'avocado raw',
+  'plátano': 'banana raw',
+  'platano': 'banana raw',
+  'manzana': 'apple raw',
+  'fresas': 'strawberries raw',
+  'arándanos': 'blueberries raw',
+  'cebolla': 'onion raw',
+  'cebolla roja': 'red onion raw',
+  'ajo': 'garlic raw',
+  'tomate': 'tomatoes raw',
+  'pepino': 'cucumber raw',
+  'pimiento': 'bell pepper raw',
+  'brócoli': 'broccoli raw',
+  'brocoli': 'broccoli raw',
+  'espinacas': 'spinach raw',
+  'lentejas': 'lentils cooked',
+  'garbanzos': 'chickpeas cooked',
+  'frijoles': 'kidney beans cooked',
+  'nueces': 'walnuts',
+  'almendras': 'almonds',
   // Gemüse & Kräuter
   'rote zwiebel': 'red onion raw',
   'rote zwiebeln': 'red onion raw',
@@ -1083,15 +1146,18 @@ function changeSelectedDate(offsetDays) {
 }
 
 function formatDisplayDate(dateStr) {
-  if (dateStr === getTodayStr()) return 'Heute';
-  if (dateStr === getPastDateStr(1)) return 'Gestern';
+  if (dateStr === getTodayStr()) return appLang === 'es' ? 'Hoy' : 'Heute';
+  if (dateStr === getPastDateStr(1)) return appLang === 'es' ? 'Ayer' : 'Gestern';
   const [y, m, d] = dateStr.split('-');
   return `${d}.${m}.${y}`;
 }
 
 function getLastNDays(n) {
   const days = [];
-  const weekdays = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+  const weekdays = appLang === 'es'
+    ? ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
+    : ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+  const todayWord = appLang === 'es' ? 'Hoy' : 'Heute';
   for (let i = n - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
@@ -1102,7 +1168,7 @@ function getLastNDays(n) {
       monthNum: String(d.getMonth() + 1).padStart(2, '0'),
       weekdayIdx: d.getDay(),
       weekdayShort: weekdays[d.getDay()],
-      label: i === 0 ? 'Heute' : weekdays[d.getDay()]
+      label: i === 0 ? todayWord : weekdays[d.getDay()]
     });
   }
   return days;
@@ -2126,8 +2192,9 @@ function renderCalorieMacroHistoryCard() {
     const cPct = mSum > 0 ? Math.round((cKcal / mSum) * 100) : 0;
     const fPct = mSum > 0 ? Math.max(0, 100 - pPct - cPct) : 0;
     const dt = new Date(dateStr + 'T12:00:00');
-    const shortLabel = dt.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
-    const wdLabel = dt.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+    const loc = getAppLocale();
+    const shortLabel = dt.toLocaleDateString(loc, { day: '2-digit', month: '2-digit' });
+    const wdLabel = dt.toLocaleDateString(loc, { weekday: 'short', day: '2-digit', month: '2-digit' });
     days.push({
       dateStr, shortLabel, wdLabel, kcal, p, c, f, tdee,
       sportBonus: t.sportBonus, pPct, cPct, fPct, mSum,
@@ -2301,7 +2368,8 @@ function renderCalorieMacroHistoryCard() {
         <svg viewBox="0 0 ${W} ${H}" class="w-full h-auto block"
           style="touch-action: pan-y; user-select: none; -webkit-user-select: none;"
           onpointerdown="scrubCalorieChart(event, this)"
-          onpointermove="if(event.buttons===1||event.pointerType==='touch')scrubCalorieChart(event, this)"
+          onpointermove="if(event.buttons===1||event.pointerType==='mouse'||event.pointerType==='touch')scrubCalorieChart(event, this)"
+          onmousemove="scrubCalorieChart(event, this)"
           ontouchstart="scrubCalorieChart(event, this)"
           ontouchmove="scrubCalorieChart(event, this)">
           ${gridSvg}
@@ -2382,6 +2450,9 @@ function render() {
   else if (currentTab === 'food') container.innerHTML = renderFoodTab();
   else if (currentTab === 'sport') container.innerHTML = renderSportTab();
   else if (currentTab === 'habits') container.innerHTML = renderHabitsTab();
+  if (appLang === 'es' && typeof applyI18nToSubtree === 'function') {
+    applyI18nToSubtree(container, false);
+  }
 }
 
 // ---------- DYNAMISCHES KALORIENZIEL ----------
@@ -2952,7 +3023,9 @@ function renderHabitsTab() {
 
   const mainCounts = getCountsForMetric(selectedHeatmapMetric);
 
-  const weekHeaderLabels = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+  const weekHeaderLabels = appLang === 'es'
+    ? ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
+    : ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
   const leadingEmptyDays = days30.length ? (days30[0].weekdayIdx + 6) % 7 : 0;
   const todayIso = getTodayStr();
 
@@ -3641,7 +3714,11 @@ const importFitDaysCsv = importFitdaysCsv;
 
 // ---------- MODALS ----------
 function openModal(html) {
-  document.getElementById('modal-box').innerHTML = html;
+  const box = document.getElementById('modal-box');
+  box.innerHTML = html;
+  if (appLang === 'es' && typeof applyI18nToSubtree === 'function') {
+    applyI18nToSubtree(box, false);
+  }
   document.getElementById('modal-backdrop').classList.remove('hidden');
 }
 
@@ -4868,7 +4945,513 @@ function saveAiMealToLog(asSingleEntry) {
   switchTab('dashboard');
 }
 
+// ---------- SPRACHWECHSEL (DE ⇄ ES) ----------
+const ES_EXACT = {
+  // Header & Navigation
+  '← Zurück': '← Volver',
+  'Kalorien · Rezepte · Habits': 'Calorías · Recetas · Hábitos',
+  'Daten sichern / wiederherstellen': 'Guardar / restaurar datos',
+  'Backup': 'Copia',
+  'Heute': 'Hoy',
+  'Gestern': 'Ayer',
+  'Food': 'Comida',
+  'Sport': 'Deporte',
+  'Habits': 'Hábitos',
+
+  // Dashboard & Tagesbilanz
+  'Tagesbilanz': 'Balance diario',
+  'Gewicht & Körperwerte': 'Peso y cuerpo',
+  '+ Mahlzeit': '+ Comida',
+  'Protein': 'Proteína',
+  'Carbs': 'Carbohidratos',
+  'Fett': 'Grasa',
+  'Kalorien': 'Calorías',
+  'Berechnung des Tagesbedarfs anzeigen': 'Mostrar cálculo del gasto diario',
+  'Info zur Berechnung des Tagesbedarfs': 'Info sobre el cálculo del gasto diario',
+  'Berechnung Tagesbedarf': 'Cálculo del gasto diario',
+  'Grundumsatz (BMR)': 'Metabolismo basal (BMR)',
+  'Alltagsbedarf (Basis)': 'Gasto cotidiano (base)',
+  'Ziel-Offset (Defizit / Überschuss)': 'Ajuste de objetivo (déficit / superávit)',
+  'Tagesbedarf gesamt': 'Gasto diario total',
+  'Verstanden': 'Entendido',
+  'Eintrag löschen': 'Eliminar entrada',
+
+  // Kalorien- & Makro-Verlauf
+  'Kalorien- & Makro-Verlauf': 'Historial de calorías y macros',
+  'Aufnahme (P/C/F) vs. Tagesverbrauch': 'Ingesta (P/C/G) vs. gasto diario',
+  'Aufnahme:': 'Ingesta:',
+  'Verbrauch:': 'Gasto:',
+  'Verbrauch': 'Gasto',
+  'Keine Mahlzeiten': 'Sin comidas',
+  'Öffnen': 'Abrir',
+  'Ø Protein': 'Ø Proteína',
+  'Ø Carbs': 'Ø Carbos',
+  'Ø Fett': 'Ø Grasa',
+  '7T': '7D',
+  '14T': '14D',
+  '30T': '30D',
+  '90T': '90D',
+  '1J': '1A',
+  '5J': '5A',
+
+  // Körperwerte & FitDays
+  'FitDays CSV': 'CSV FitDays',
+  '30T-Pflege': 'Edición 30D',
+  '+ Gewicht': '+ Peso',
+  'Aktuelles Gewicht': 'Peso actual',
+  'Körperfett': 'Grasa corporal',
+  'Smartwaage': 'Báscula inteligente',
+  'Muskelmasse': 'Masa muscular',
+  'Bio-Alter': 'Edad bio.',
+  'Stoffwechsel': 'Metabolismo',
+  'Gewicht': 'Peso',
+  'Biol. Alter': 'Edad biol.',
+  'BMI': 'IMC',
+  'Subkutanfett': 'Grasa subcutánea',
+  'Viszeralfett': 'Grasa visceral',
+  'Körperwasser': 'Agua corporal',
+  'Skelettmuskel': 'Músculo esquelético',
+  'Knochenmasse': 'Masa ósea',
+  'Herzfrequenz': 'Frecuencia cardíaca',
+  'Herzindex': 'Índice cardíaco',
+  'Basis': 'Base',
+  'Muskel & Wasser': 'Músculo y agua',
+  'Herz & Stoffwechsel': 'Corazón y metabolismo',
+  'Einzelne Kennzahlen wählen': 'Elegir métricas individuales',
+  'Kennzahlen im Chart': 'Métricas en el gráfico',
+  'Fertig': 'Listo',
+  '(fortg.)': '(est.)',
+  'Körperwerte eintragen': 'Registrar valores corporales',
+  'Datum der Messung': 'Fecha de medición',
+  'Datum': 'Fecha',
+  'Fett %': '% Grasa',
+  'Muskel': 'Músculo',
+  'Alter': 'Edad',
+  'Tagesziele anpassen': 'Ajustar objetivos diarios',
+  'Ziele speichern': 'Guardar objetivos',
+  'Alle 30 Tage speichern (Enter)': 'Guardar los 30 días (Enter)',
+  '0 = Erhalt, -300 = Defizit': '0 = mantenimiento, -300 = déficit',
+
+  // Food, KI, Rezepte & Barcode
+  'KI-Analyse': 'Análisis IA',
+  'Meine Rezepte': 'Mis recetas',
+  'Vorlagen auswählen, loggen oder flexibel anpassen': 'Elige plantillas, regístralas o ajústalas',
+  '+ Neues Rezept': '+ Nueva receta',
+  'Neues Rezept': 'Nueva receta',
+  'Rezept-Baukasten': 'Editor de recetas',
+  'Abbrechen': 'Cancelar',
+  'Rezeptname': 'Nombre de la receta',
+  'Entfernen': 'Quitar',
+  'Zutat entfernen': 'Quitar ingrediente',
+  'Gramm-Angabe übernehmen': 'Confirmar gramos',
+  'Übernehmen': 'Confirmar',
+  'Zutat hinzufügen': 'Añadir ingrediente',
+  'Barcode scannen': 'Escanear código',
+  'Deutsch suchen (z. B. rote Zwiebeln, Olivenöl, Tofu…)': 'Buscar alimento (ej. pollo, arroz, cebolla, avena…)',
+  'Lebensmittel eingeben (z. B. Zwiebeln, Haferflocken, Quark)...': 'Escribe un alimento (ej. cebolla, avena, pollo)...',
+  'Suchen': 'Buscar',
+  'Speichern': 'Guardar',
+  'Als Kopie': 'Como copia',
+  'Heute loggen': 'Registrar hoy',
+  'Rezept anpassen': 'Editar receta',
+  'Rezept löschen': 'Eliminar receta',
+  'Mahlzeit eintragen': 'Registrar comida',
+  'Aus deinen Rezepten': 'De tus recetas',
+  'Loggen': 'Registrar',
+  'Schnelleingabe': 'Entrada rápida',
+  'Bezeichnung (z. B. Snack)': 'Nombre (ej. snack)',
+  'Eintrag speichern': 'Guardar entrada',
+  'Suche läuft...': 'Buscando...',
+  'Keine Treffer gefunden.': 'No se encontraron resultados.',
+  'Suche in Open Food Facts & USDA...': 'Buscando en Open Food Facts y USDA...',
+  'Barcode-Scanner & Portion': 'Escáner de código y porción',
+  'Kamera wird gestartet…': 'Iniciando cámara…',
+  'EAN-Code manuell eingeben (z. B. 4000417025005)': 'Introducir código EAN manualmente',
+  'Menge (g):': 'Cantidad (g):',
+  '+ Ins Tages-Log': '+ Al registro diario',
+  '+ Ins Rezept': '+ A la receta',
+  '✨ KI-Mahlzeit scannen': '✨ Escanear comida con IA',
+  '🔑 Gemini API Key konfigurieren': '🔑 Configurar clave API de Gemini',
+  '📸 Kamera': '📸 Cámara',
+  '🖼️ Galerie': '🖼️ Galería',
+  '✨ Jetzt analysieren': '✨ Analizar ahora',
+  '✓ API Key lokal gespeichert.': '✓ Clave API guardada localmente.',
+  'Bitte zuerst deinen Gemini API Key oben speichern.': 'Guarda primero tu clave API de Gemini arriba.',
+  'Bitte ein Foto aufnehmen oder zumindest kurz beschreiben, was du gegessen hast.': 'Toma una foto o describe brevemente lo que comiste.',
+  'Keine Zutaten mehr in der Liste.': 'No quedan ingredientes en la lista.',
+  'Als Einzelzutaten': 'Por ingredientes',
+  'Als 1 Gericht': 'Como 1 plato',
+  '📖 Als Rezept speichern': '📖 Guardar como receta',
+
+  // Sport, Anatomie & Live-Workout
+  'Training starten': 'Iniciar entrenamiento',
+  'Aus bisherigem Workout starten oder frei anlegen': 'Desde entrenamiento previo o sesión libre',
+  'Freie Einheit starten': 'Iniciar sesión libre',
+  'Neue Einheit': 'Nueva sesión',
+  'Neu': 'Nuevo',
+  '+ Neu': '+ Nuevo',
+  'RepCount CSV importieren': 'Importar CSV de RepCount',
+  'RepCount CSV-Import': 'Importación CSV de RepCount',
+  'Importiert Workouts und vereinheitlicht Übungsnamen automatisch': 'Importa entrenamientos y unifica nombres automáticamente',
+  'CSV importieren': 'Importar CSV',
+  '☁️ Aus Cloud laden': '☁️ Cargar de la nube',
+  'Auf diesem Gerät sind aktuell 0 Workouts gespeichert.': 'Actualmente hay 0 entrenamientos guardados en este dispositivo.',
+  'Aktuelle Leistungen': 'Rendimiento actual',
+  '⚙ Auswahl': '⚙ Selección',
+  'KPI-Übungen anpassen': 'Personalizar ejercicios clave',
+  'KPI-Übungen wählen': 'Elegir ejercicios clave',
+  'Welche Übungen sollen in deiner Leistungsübersicht stehen?': '¿Qué ejercicios quieres ver en tu resumen de rendimiento?',
+  'Muskel-Fokus': 'Enfoque muscular',
+  'Muskel-Fokus dieser Einheit anzeigen': 'Mostrar enfoque muscular de esta sesión',
+  'VORDERSEITE': 'FRONTAL',
+  'RÜCKSEITE': 'ESPALDA',
+  'Einheit': 'Sesión',
+  'Leicht': 'Ligero',
+  'Mittel': 'Medio',
+  'Top-Fokus': 'Máximo foco',
+  'Keine Kraftsätze in diesem Zeitraum.': 'Sin series de fuerza en este período.',
+  'Sätze nach Muskelgruppe': 'Series por grupo muscular',
+  'Rücken': 'Espalda',
+  'Brust': 'Pecho',
+  'Beine': 'Piernas',
+  'Schultern': 'Hombros',
+  'Trizeps': 'Tríceps',
+  'Bizeps': 'Bíceps',
+  'Bauch/Core': 'Abdomen/Core',
+  'Sonstige': 'Otros',
+  'Fortschritt & Bestleistungen': 'Progreso y récords',
+  'Volumen': 'Volumen',
+  'Max. Wdh.': 'Reps máx.',
+  'Alle': 'Todos',
+  'Verlauf': 'Historial',
+  'Suche (Übung, Gym…)': 'Buscar (ejercicio, gym…)',
+  'Suche nach Training oder Übung (z. B. Hygia, Dips…)': 'Buscar sesión o ejercicio (ej. press, dominadas…)',
+  'Übung suchen oder neuen Namen tippen…': 'Buscar ejercicio o escribir nombre nuevo…',
+  'Keine Einträge in diesem Zeitraum.': 'Sin entradas en este período.',
+  'Keine passenden Workouts im Verlauf gefunden.': 'No se encontraron entrenamientos coincidentes.',
+  'Als Vorlage für neues Training nutzen': 'Usar como plantilla para nuevo entreno',
+  'Als Vorlage nutzen': 'Usar plantilla',
+  '📋 Vorlage': '📋 Plantilla',
+  '📋 Bisheriges Training als Vorlage laden': '📋 Cargar entrenamiento previo como plantilla',
+  'Vorlage aus Verlauf wählen': 'Elegir plantilla del historial',
+  'Bearbeiten': 'Editar',
+  'Löschen': 'Eliminar',
+  'Verwerfen': 'Descartar',
+  'Einheit bearbeiten': 'Editar sesión',
+  'Trainingsname': 'Nombre del entrenamiento',
+  'Pausen-Timer': 'Temporizador de descanso',
+  'Übung hinzufügen': 'Añadir ejercicio',
+  'Tauschen': 'Cambiar',
+  'Übung austauschen': 'Cambiar ejercicio',
+  'Übung entfernen': 'Quitar ejercicio',
+  'Nach oben verschieben': 'Mover arriba',
+  'Nach unten verschieben': 'Mover abajo',
+  'Satz': 'Serie',
+  'Satz abhaken': 'Marcar serie',
+  'Satz entfernen': 'Quitar serie',
+  'Satz-Typ wechseln (Normal / Warm-up / Dropset)': 'Cambiar tipo de serie (Normal / Calentamiento / Dropset)',
+  'Wdh.': 'Reps',
+  'Sek.': 'Seg.',
+  'Auto aus Timer': 'Auto del cronómetro',
+  'Gefühl, Energie, Hinweise…': 'Sensaciones, energía, notas…',
+  '🏁 Training beendet & speichern': '🏁 Finalizar y guardar entreno',
+  'Änderungen speichern': 'Guardar cambios',
+  'Übungsnamen konsolidieren': 'Unificar nombres de ejercicios',
+  'Bereinigen': 'Unificar',
+
+  // Habits, Heatmaps & Insights
+  '30-Tage-Heatmap': 'Mapa de calor de 30 días',
+  'Tippe auf einen Tag zum Umschalten (Grün / Rot / Gelb)': 'Toca un día para cambiar (Verde / Rojo / Amarillo)',
+  '🍷 Alkohol': '🍷 Alcohol',
+  '💨 Nikotin': '💨 Nicotina',
+  '⚡ Sport': '⚡ Deporte',
+  '✨ Routine': '✨ Rutina',
+  '💨 Nikotin (30 Tage)': '💨 Nicotina (30 días)',
+  '✨ Routine & Supplements (30 Tage)': '✨ Rutina y suplementos (30 días)',
+  '🚬 Zigaretten': '🚬 Cigarrillos',
+  '💨 Vape': '💨 Vapeo',
+  '💊 Kreatin': '💊 Creatina',
+  '🧴 Skincare': '🧴 Skincare',
+  '💊 Sertralin': '💊 Sertralina',
+  'Kreatin': 'Creatina',
+  'Sertralin': 'Sertralina',
+  'Alkohol': 'Alcohol',
+  'Nikotin': 'Nicotina',
+  'Zigaretten': 'Cigarrillos',
+  'Ja': 'Sí',
+  'Nein': 'No',
+  'Nicht erfasst': 'Sin registrar',
+  'Absolviert': 'Completado',
+  'Clean': 'Limpio',
+  'Konsumiert': 'Consumido',
+  'Letzte 30 Tage': 'Últimos 30 días',
+  'Routine & Supplements': 'Rutina y suplementos',
+  'Habit-Korrelations-Insights': 'Correlaciones de hábitos',
+  'Live-Muster aus Workouts, Makros, Körperwerten & Routinen (30T)': 'Patrones en vivo de entrenos, macros, cuerpo y rutinas (30D)',
+  'Konsum & Verzicht Übersicht': 'Resumen de consumo y abstinencia',
+  'Training & Nikotin-Balance': 'Entrenamiento y nicotina',
+  'Training & Verzicht-Korrelation': 'Correlación entreno y abstinencia',
+  'Protein an Trainingstagen': 'Proteína en días de entreno',
+  'Protein-Versorgung': 'Ingesta de proteína',
+  'Protein & Trainings-Korrelation': 'Correlación proteína y entreno',
+  'Kalorienbilanz & Körpertrend': 'Balance calórico y tendencia corporal',
+  'Alkohol-Effekt (Kalorien & Waage)': 'Efecto del alcohol (calorías y báscula)',
+  'Routine-Konstanz (Kreatin · Skincare · Sertralin)': 'Constancia de rutina (Creatina · Skincare · Sertralina)',
+  'Routine-Konstanz & Clean-Korrelation': 'Constancia de rutina y días limpios',
+  'Wochentags-Muster': 'Patrón por día de la semana',
+  '30T-Rhythmus': 'Ritmo 30D',
+  'Wartet auf Logs': 'Esperando registros',
+  'Sammelt Daten': 'Recopilando datos',
+
+  // Cloud-Sync & Backup
+  'Cloud-Sync & Backup': 'Sincronización y copia',
+  '☁️ Supabase Auto-Sync': '☁️ Auto-Sync con Supabase',
+  'Aktiv': 'Activo',
+  'Nicht eingerichtet': 'No configurado',
+  'Verbinde...': 'Conectando...',
+  'Sende in Cloud...': 'Enviando a la nube...',
+  'Sync starten': 'Iniciar Sync',
+  '↑ Senden': '↑ Enviar',
+  '↓ Laden': '↓ Cargar',
+  'Daten dieses Geräts in die Cloud senden': 'Enviar datos de este dispositivo a la nube',
+  'Cloud-Stand direkt auf dieses Gerät laden': 'Cargar estado de la nube en este dispositivo',
+  'Als Excel-Tabelle exportieren (.csv)': 'Exportar como tabla Excel (.csv)',
+  'Komplett-Backup herunterladen (.json)': 'Descargar copia completa (.json)',
+  'JSON-Backup wiederherstellen': 'Restaurar copia JSON',
+  'Dein persönlicher Sync-Key (z. B. alex-ff-2026)': 'Tu clave personal de Sync (ej. alex-ff-2026)'
+};
+
+const ES_WEEKDAY_MAP = {
+  'Montag': 'lunes', 'Dienstag': 'martes', 'Mittwoch': 'miércoles',
+  'Donnerstag': 'jueves', 'Freitag': 'viernes', 'Samstag': 'sábado', 'Sonntag': 'domingo'
+};
+
+const ES_PATTERNS = [
+  [/^(\d+) Messungen gespeichert · ab (.+)$/, '$1 mediciones guardadas · desde $2'],
+  [/^(\d+) Messungen gespeichert$/, '$1 mediciones guardadas'],
+  [/^Stand (.+)$/, 'Fecha $1'],
+  [/^([+\-]?[\d.,]+) kg Trend$/, 'Tendencia $1 kg'],
+  [/^([\d.,]+) J\.$/, '$1 a.'],
+  [/^Noch keine Mahlzeiten für (.+) eingetragen\.$/, 'Aún no hay comidas registradas para $1.'],
+  [/^([\d.,]+) kg · Basis (\d+)(.*)$/, (_, w, b, rest) => `${w} kg · Base ${b}${rest.replace(' Sport', ' Deporte').replace(' Ziel', ' Obj.')}`],
+  [/^⚡ \+(\d+) Sport$/, '⚡ +$1 Deporte'],
+  [/^([+\-−]\d+) kcal Defizit$/, '$1 kcal déficit'],
+  [/^([+\-−]\d+) kcal Überschuss$/, '$1 kcal superávit'],
+  [/^Ø kcal \((\d+)T\)$/, 'Ø kcal ($1D)'],
+  [/^Bed\. ([\d.,]+)$/, 'Gasto $1'],
+  [/^Sobald du Mahlzeiten einträgst, erscheinen hier deine täglichen Kalorien- und Makro-Balken im Vergleich zum Tagesverbrauch \(([\d.,]+) kcal Ø\)\.$/, 'Cuando registres comidas, verás aquí tus barras diarias de calorías y macros frente al gasto diario ($1 kcal Ø).'],
+  [/^Dynamische Formel für (.+)$/, 'Fórmula dinámica para $1'],
+  [/^Sport-Bonus: (.+)$/, 'Bono deporte: $1'],
+  [/^Sport-Bonus \((.+)\)$/, 'Bono deporte ($1)'],
+  [/^Grundumsatz × ([\d,]+) \(Büro \/ Alltag ohne Sport\)$/, 'Metabolismo basal × $1 (oficina / día sin deporte)'],
+  [/^(\d+) von (\d+) aktiv \(mind\. 1 bleibt sichtbar\)$/, '$1 de $2 activas (mín. 1 visible)'],
+  [/^Zutaten \((\d+)\)$/, 'Ingredientes ($1)'],
+  [/^✓ „(.+)“ auf der Startseite hinzugefügt$/, '✓ «$1» añadido al balance diario'],
+  [/^Synchron \((\d+) Wo\. · (.+)\)$/, 'Sincronizado ($1 entr. · $2)'],
+  [/^Gesendet \((\d+) Wo\., (\d+) KB · (.+)\)$/, 'Enviado ($1 entr., $2 KB · $3)'],
+  [/^Geladen \((\d+) Wo\. · (.+)\)$/, 'Cargado ($1 entr. · $2)'],
+  [/^Tägliche Basics für (.+)$/, 'Básicos diarios para $1'],
+  [/^(\d+)\/3 erledigt$/, '$1/3 completados'],
+  [/^(\d+)d clean$/, '$1d limpio'],
+  [/^(\d+)d Streak$/, 'Racha $1d'],
+  [/^Ja · (\d+)d Streak$/, 'Sí · Racha $1d'],
+  [/^(\d+)\/30 aktiv$/, '$1/30 activos'],
+  [/^(\d+) Sporttage$/, '$1 días deporte'],
+  [/^(\d+) % Ziel$/, '$1 % obj.'],
+  [/^(\d+)\/30T 3\/3$/, '$1/30D 3/3'],
+  [/^(\d+)\/3 Tage$/, '$1/3 días'],
+  [/^(\d+)T Bilanz$/, 'Balance $1D'],
+  [/^Zigaretten: (\d+)d · Vape: (\d+)d$/, 'Cigarrillos: $1d · Vapeo: $2d'],
+  [/^Auf diesem Gerät:$/, 'En este dispositivo:'],
+  [/^Workouts ·$/, 'Entrenos ·'],
+  [/^Gewichtstage ·$/, 'Días de peso ·'],
+  [/^Rezepte$/, 'Recetas']
+];
+
+function translateTextDeToEs(raw) {
+  if (!raw || appLang !== 'es') return raw;
+  const lead = raw.match(/^\s*/)[0];
+  const trail = raw.match(/\s*$/)[0];
+  const trimmed = raw.trim();
+  if (!trimmed) return raw;
+
+  if (Object.prototype.hasOwnProperty.call(ES_EXACT, trimmed)) {
+    return lead + ES_EXACT[trimmed] + trail;
+  }
+
+  for (let i = 0; i < ES_PATTERNS.length; i++) {
+    const [rx, rep] = ES_PATTERNS[i];
+    if (rx.test(trimmed)) {
+      return lead + trimmed.replace(rx, rep) + trail;
+    }
+  }
+
+  let out = trimmed;
+  let changed = false;
+  const subPairs = [
+    ['An Trainingstagen (', 'En días de entreno ('],
+    [' aktiv in 30T) bist du zu ', ' activos en 30D) estás un '],
+    [' nikotinfrei – gegenüber ', ' libre de nicotina, frente a '],
+    [' an Ruhetagen', ' en días de descanso'],
+    ['%-Punkte', ' pts. %'],
+    ['An Trainingstagen liegt deine nikotinfreie Quote bei ', 'En días de entreno tu tasa sin nicotina es de '],
+    ['Ruhetage:', 'Descanso:'],
+    ['Inkl. Sport-Tab wurden ', 'Incluyendo Deporte se detectaron '],
+    [' Trainingstage', ' días de entreno'],
+    [' erkannt. Sobald je mind. 2 Trainings- und Ruhetage mit Nikotin-Status erfasst sind, erscheint dein Vergleich', '. Con al menos 2 días de entreno y 2 de descanso registrados verás la comparación'],
+    ['An Trainingstagen erreichst du im Schnitt ', 'En días de entreno alcanzas de media '],
+    [' g Protein', ' g de proteína'],
+    ['(Ziel: ', '(obj.: '],
+    ['Sobald du Mahlzeiten einträgst, vergleicht diese Karte deine Protein-Zufuhr zwischen Trainings- und Ruhetagen direkt gegen dein Ziel', 'Cuando registres comidas, esta tarjeta comparará tu proteína en días de entreno vs. descanso frente a tu objetivo'],
+    ['Gewicht in 30T:', 'Peso en 30D:'],
+    [', Körperfett ', ', grasa corporal '],
+    ['Ø Kalorienbilanz über ', 'Ø Balance calórico en '],
+    [' erfasste Tage: ', ' días registrados: '],
+    [' kcal Defizit', ' kcal de déficit'],
+    [' kcal Überschuss', ' kcal de superávit'],
+    ['/Tag zum dynamischen Verbrauch.', '/día respecto al gasto dinámico.'],
+    ['Trage Mahlzeiten ein, um den 30T-Gewichtstrend direkt mit deinem täglichen Kaloriendefizit abzugleichen.', 'Registra comidas para cruzar tu tendencia de peso de 30D con tu déficit calórico diario.'],
+    ['An Alkohol-Tagen nimmst du im Schnitt ', 'En días con alcohol ingieres de media '],
+    [' kcal gegenüber Clean-Tagen mit ', ' kcal frente a días limpios con '],
+    ['Waage am Folgetag:', 'Báscula al día siguiente:'],
+    [' nach Alkohol vs. ', ' tras alcohol vs. '],
+    [' nach Clean-Tagen.', ' tras días limpios.'],
+    ['Sobald mindestens je 1 Alkohol- und 1 Clean-Tag mit Mahlzeiten oder Folgetags-Gewicht erfasst sind, siehst du hier Kalorien- und Waagen-Delta.', 'Con al menos 1 día con alcohol y 1 día limpio registrados verás aquí la diferencia en calorías y báscula.'],
+    [' von 30 Tagen', ' de 30 días'],
+    [' waren alle 3 Routinen komplett.', ' completaste las 3 rutinas.'],
+    ['Am konstantesten:', 'Más constante:'],
+    [', Ausbaupotenzial bei ', ', margen de mejora en '],
+    ['An 3/3-Routine-Tagen bist du zu ', 'En días de rutina 3/3 estás un '],
+    [' komplett clean (vs. ', ' totalmente limpio (vs. '],
+    [' an unvollständigen Tagen). Stärkste Routine:', ' en días incompletos). Mejor rutina:'],
+    ['Hake Kreatin, Skincare und Sertralin regelmäßig ab – ab 3 erfassten Tagen zeigt dir diese Karte deine Routine-Stabilität und den Zusammenhang mit Clean-Tagen.', 'Marca Creatina, Skincare y Sertralina regularmente: a partir de 3 días verás tu constancia y su relación con días limpios.'],
+    ['Stärkster Trainingstag:', 'Día más fuerte de entreno:'],
+    [' in 30T).', ' en 30D).'],
+    ['Konsum trat am häufigsten am ', 'El consumo fue más frecuente el '],
+    [' Ereignisse).', ' veces).'],
+    [' auf (', ' ('],
+    ['clean ·', 'limpios ·'],
+    ['kons. ·', 'cons. ·'],
+    ['ja ·', 'sí ·'],
+    ['nein ·', 'no ·'],
+    ['offen', 'abiertos'],
+    ['Gesamt:', 'Total:'],
+    ['Komplett:', 'Completos:'],
+    ['Aktive Bereiche:', 'Áreas activas:'],
+    ['sowie', 'y'],
+    ['(gebündelt aus', '(agrupa'],
+    ['und', 'y']
+  ];
+  for (let i = 0; i < subPairs.length; i++) {
+    if (out.includes(subPairs[i][0])) {
+      out = out.split(subPairs[i][0]).join(subPairs[i][1]);
+      changed = true;
+    }
+  }
+  if (changed) {
+    Object.keys(ES_WEEKDAY_MAP).forEach(deWd => {
+      if (out.includes(deWd)) out = out.split(deWd).join(ES_WEEKDAY_MAP[deWd]);
+    });
+    return lead + out + trail;
+  }
+  return raw;
+}
+
+let isApplyingI18n = false;
+let i18nObserver = null;
+
+function applyI18nToSubtree(root, storeOriginals = false) {
+  if (!root || typeof document === 'undefined' || typeof document.createTreeWalker !== 'function') return;
+  isApplyingI18n = true;
+  try {
+    const attrs = ['placeholder', 'title', 'aria-label'];
+    const els = root.querySelectorAll ? [root, ...root.querySelectorAll('*')] : [];
+    els.forEach(el => {
+      if (!el || !el.getAttribute) return;
+      if (el.id === 'langToggleBtn' || el.closest?.('#langToggleBtn')) return;
+      attrs.forEach(attr => {
+        const origKey = `data-orig-${attr}`;
+        const cur = el.getAttribute(attr);
+        if (cur === null) return;
+        if (storeOriginals && !el.hasAttribute(origKey)) {
+          el.setAttribute(origKey, cur);
+        }
+        const baseVal = el.hasAttribute(origKey) ? el.getAttribute(origKey) : cur;
+        const targetVal = appLang === 'es' ? translateTextDeToEs(baseVal) : baseVal;
+        if (cur !== targetVal) el.setAttribute(attr, targetVal);
+      });
+    });
+
+    const walker = document.createTreeWalker(root, 4);
+    let node;
+    while ((node = walker.nextNode())) {
+      const parent = node.parentElement;
+      if (!parent) continue;
+      const tag = parent.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE') continue;
+      if (parent.id === 'langToggleBtn' || parent.closest?.('#langToggleBtn')) continue;
+
+      if (storeOriginals && node._origDe === undefined) {
+        node._origDe = node.nodeValue;
+      }
+      const baseText = node._origDe !== undefined ? node._origDe : node.nodeValue;
+      const nextText = appLang === 'es' ? translateTextDeToEs(baseText) : baseText;
+      if (node.nodeValue !== nextText) {
+        node.nodeValue = nextText;
+      }
+    }
+  } finally {
+    if (i18nObserver) i18nObserver.takeRecords();
+    isApplyingI18n = false;
+  }
+}
+
+function syncStaticShellLanguage() {
+  if (typeof document === 'undefined') return;
+  if (document.documentElement) document.documentElement.lang = appLang;
+  if (document.title) {
+    document.title = appLang === 'es'
+      ? 'Fuel & Flow — Calorías, Recetas y Hábitos'
+      : 'Fuel & Flow — Kalorien, Rezepte & Habits';
+  }
+  const deSpan = document.getElementById('langBadgeDe');
+  const esSpan = document.getElementById('langBadgeEs');
+  if (deSpan && esSpan) {
+    deSpan.className = appLang === 'de' ? 'text-emerald-400 font-bold' : 'text-zinc-500';
+    esSpan.className = appLang === 'es' ? 'text-emerald-400 font-bold' : 'text-zinc-500';
+  }
+  ['header', 'nav', '#barcodeModal'].forEach(sel => {
+    const el = document.querySelector?.(sel);
+    if (el) applyI18nToSubtree(el, true);
+  });
+}
+
+function toggleAppLanguage() {
+  appLang = appLang === 'es' ? 'de' : 'es';
+  try { localStorage.setItem(LANG_STORAGE_KEY, appLang); } catch (e) {}
+  syncStaticShellLanguage();
+  render();
+  const appRoot = document.getElementById('app-content');
+  if (appRoot && appLang === 'es') applyI18nToSubtree(appRoot, false);
+  showToast(appLang === 'es' ? '🇪🇸 Idioma cambiado a Español' : '🇩🇪 Sprache auf Deutsch gewechselt');
+}
+
+syncStaticShellLanguage();
 render();
+if (appLang === 'es' && typeof document !== 'undefined') {
+  applyI18nToSubtree(document.getElementById('app-content'), false);
+}
+if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.body) {
+  i18nObserver = new MutationObserver((mutations) => {
+    if (isApplyingI18n || appLang !== 'es') return;
+    mutations.forEach(m => {
+      if (m.target && m.target.nodeType === 1) {
+        applyI18nToSubtree(m.target, false);
+      }
+    });
+  });
+  i18nObserver.observe(document.body, { childList: true, subtree: true });
+}
 
 pullStateFromCloud();
 document.addEventListener('visibilitychange', () => {
