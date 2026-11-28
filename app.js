@@ -2687,19 +2687,6 @@ function renderDashboard() {
           class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${nicCls}">
           <span>💨</span><span>Nikotin</span><span class="font-bold ml-0.5">${nicSym}</span>
         </button>
-        ${(state.sportHabits || []).map(sp => {
-          const done = Array.isArray(log.sportDone) && log.sportDone.includes(sp.id);
-          return `
-            <button onclick="toggleSportHabit('${sp.id}', '${state.selectedDate}')"
-              class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${
-                done
-                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                  : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-              }">
-              <span>⚡</span><span>${sp.name}</span><span class="font-bold ml-0.5">${done ? '✓' : '·'}</span>
-            </button>
-          `;
-        }).join('')}
       </div>
     </section>
   `;
@@ -2897,12 +2884,18 @@ function renderRecipesTab() {
         </div>
 
         <div class="pt-2 border-t border-border space-y-2.5">
-          <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center justify-between gap-2 flex-wrap">
             <div class="text-xs font-semibold text-zinc-300">Zutat hinzufügen</div>
-            <button type="button" onclick="openBarcodeModal()"
-              class="px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 text-xs font-semibold flex items-center gap-1.5 transition">
-              <span>📷</span><span>Barcode scannen</span>
-            </button>
+            <div class="flex items-center gap-1.5">
+              <button type="button" onclick="openVoiceRecipeModal(true)"
+                class="px-3 py-1.5 rounded-xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/35 text-violet-300 text-xs font-semibold flex items-center gap-1.5 transition">
+                <span>🎙️</span><span>Einsprechen</span>
+              </button>
+              <button type="button" onclick="openBarcodeModal()"
+                class="px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 text-xs font-semibold flex items-center gap-1.5 transition">
+                <span>📷</span><span>Barcode scannen</span>
+              </button>
+            </div>
           </div>
           <div class="flex gap-2">
             <input id="builder-search-input" type="text" placeholder="Deutsch suchen (z. B. rote Zwiebeln, Olivenöl, Tofu…)"
@@ -2931,14 +2924,19 @@ function renderRecipesTab() {
 
   return `
     <div class="space-y-3">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
         <div>
           <h2 class="text-base font-semibold text-white">Meine Rezepte</h2>
           <p class="text-xs text-zinc-400">Vorlagen auswählen, loggen oder flexibel anpassen</p>
         </div>
-        <button onclick="startNewRecipe()" class="px-3.5 py-2 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs">
-          + Neues Rezept
-        </button>
+        <div class="flex items-center gap-1.5">
+          <button onclick="openVoiceRecipeModal(false)" class="px-3 py-2 rounded-2xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/35 text-violet-300 font-semibold text-xs flex items-center gap-1.5 transition">
+            <span>🎙️</span><span>Diktieren</span>
+          </button>
+          <button onclick="startNewRecipe()" class="px-3.5 py-2 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs">
+            + Neues Rezept
+          </button>
+        </div>
       </div>
 
       ${state.recipes.map(rec => {
@@ -3791,6 +3789,7 @@ function openModal(html) {
 }
 
 function closeModal() {
+  if (typeof stopVoiceRecipeStreamOnly === 'function') stopVoiceRecipeStreamOnly();
   document.getElementById('modal-backdrop').classList.add('hidden');
 }
 
@@ -4424,13 +4423,37 @@ function setScannedGrams(grams) {
   updateScannedPreview();
 }
 
+function stepScannedGrams(dir) {
+  const inp = document.getElementById('scannedGramsInput');
+  if (!inp) return;
+  const cur = Math.max(1, Number(inp.value) || 100);
+  const step = cur <= 25 ? 5 : 10;
+  inp.value = Math.max(1, cur + dir * step);
+  updateScannedPreview();
+}
+
+function confirmScannedPrimary() {
+  if (typeof editingRecipe !== 'undefined' && editingRecipe) {
+    confirmScannedFood('recipe');
+  } else {
+    confirmScannedFood('log');
+  }
+}
+
 function updateScannedPreview() {
   if (!currentScannedFood) return;
   const g = Math.max(1, Number(document.getElementById('scannedGramsInput').value) || 0);
+  const step = g <= 25 ? 5 : 10;
+  const downBtn = document.getElementById('scanStepDownBtn');
+  const upBtn = document.getElementById('scanStepUpBtn');
+  if (downBtn) downBtn.textContent = `−${step}`;
+  if (upBtn) upBtn.textContent = `+${step}`;
   const factor = g / 100;
   const kcal = Math.round(currentScannedFood.kcal100 * factor);
   const p = Math.round(currentScannedFood.p100 * factor * 10) / 10;
-  document.getElementById('scannedLiveMacros').textContent = `${kcal} kcal · ${p}g Protein`;
+  const c = Math.round(currentScannedFood.c100 * factor * 10) / 10;
+  const f = Math.round(currentScannedFood.f100 * factor * 10) / 10;
+  document.getElementById('scannedLiveMacros').textContent = `${kcal} kcal · P ${p}g · C ${c}g · F ${f}g`;
 }
 
 function confirmScannedFood(target) {
@@ -4786,7 +4809,7 @@ Schätze realistisch alle sichtbaren und typischen versteckten Zutaten (z. B. Br
     });
   }
 
-  const modelsToTry =['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'];
+  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'];
   const requestBody = JSON.stringify({
     contents: [{ parts }],
     generationConfig: {
@@ -5013,6 +5036,346 @@ function saveAiMealToLog(asSingleEntry) {
   switchTab('dashboard');
 }
 
+// ---------- KI-SPRACHDIKTAT FÜR REZEPTE (GEMINI AUDIO & TEXT) ----------
+let voiceRecipeAppendMode = false;
+let voiceMediaRecorder = null;
+let voiceAudioStream = null;
+let voiceAudioChunks = [];
+let voiceRecTimer = null;
+let voiceRecSeconds = 0;
+
+function stopVoiceRecipeStreamOnly() {
+  clearInterval(voiceRecTimer);
+  voiceRecTimer = null;
+  if (voiceMediaRecorder && voiceMediaRecorder.state !== 'inactive') {
+    try { voiceMediaRecorder.onstop = null; voiceMediaRecorder.stop(); } catch (e) {}
+  }
+  voiceMediaRecorder = null;
+  if (voiceAudioStream) {
+    voiceAudioStream.getTracks().forEach(t => t.stop());
+    voiceAudioStream = null;
+  }
+}
+
+function saveVoiceGeminiKey() {
+  const inp = document.getElementById('voiceGeminiKeyInput');
+  if (!inp || !inp.value.trim()) return;
+  localStorage.setItem(GEMINI_KEY_STORAGE, inp.value.trim());
+  const det = document.getElementById('voiceKeyDetails');
+  if (det) det.open = false;
+  showToast(appLang === 'es' ? '✓ Clave API guardada' : '✓ Gemini API Key gespeichert');
+}
+
+function openVoiceRecipeModal(appendToCurrent = false) {
+  stopVoiceRecipeStreamOnly();
+  voiceRecipeAppendMode = Boolean(appendToCurrent && editingRecipe);
+  const savedKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold text-white">🎙️ Rezept per Sprache erfassen</h3>
+          <p class="text-[11px] text-zinc-400">Zutaten & Mengen einfach vorlesen – Gemini baut das Rezept</p>
+        </div>
+        <button onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+
+      <details id="voiceKeyDetails" ${savedKey ? '' : 'open'} class="bg-zinc-950 border border-border rounded-2xl px-3 py-2">
+        <summary class="cursor-pointer text-xs text-zinc-400 select-none">🔑 Gemini API Key konfigurieren</summary>
+        <div class="flex gap-2 mt-2">
+          <input id="voiceGeminiKeyInput" type="password" value="${savedKey}" placeholder="AIzaSy..."
+            class="flex-1 px-2.5 py-1.5 rounded-xl bg-zinc-900 border border-border text-xs text-white" />
+          <button type="button" onclick="saveVoiceGeminiKey()" class="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-white font-medium">
+            Speichern
+          </button>
+        </div>
+      </details>
+
+      <div class="rounded-2xl bg-zinc-900/90 border border-border p-4 text-center space-y-3">
+        <div id="voiceRecStatus" class="text-xs text-zinc-300">
+          Beispiel: „Protein-Bowl mit 150 Gramm Hähnchen, 80 Gramm Reis, 150 Gramm Brokkoli und 10 Gramm Olivenöl“
+        </div>
+        <div id="voiceRecTimerBadge" class="hidden text-lg font-mono font-bold text-rose-400 animate-pulse">00:00</div>
+        <button id="voiceRecMainBtn" type="button" onclick="toggleVoiceRecipeRecording()"
+          class="w-full py-3.5 rounded-2xl bg-violet-500 hover:bg-violet-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-violet-500/20">
+          <span>🎙️</span><span>Aufnahme starten</span>
+        </button>
+      </div>
+
+      <div class="space-y-2 pt-1 border-t border-border">
+        <label class="text-[11px] text-zinc-400 block">Oder als Text eingeben / ergänzen:</label>
+        <textarea id="voiceRecipeTextInput" rows="2" placeholder="z. B. Protein-Pfannkuchen: 80g Haferflocken, 2 Eier, 150g Magerquark, 1 Banane"
+          class="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white focus:outline-none focus:border-violet-500"></textarea>
+        <button id="voiceTextSubmitBtn" type="button" onclick="submitVoiceRecipeToGemini(null, null)"
+          class="w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-border text-zinc-200 font-semibold text-xs transition">
+          ✨ Aus Text erstellen
+        </button>
+      </div>
+
+      <div id="voiceRecipeError" class="hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2"></div>
+    </div>
+  `);
+}
+
+function pickSupportedAudioMime() {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return '';
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  for (const c of candidates) {
+    if (MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return '';
+}
+
+async function toggleVoiceRecipeRecording() {
+  const errEl = document.getElementById('voiceRecipeError');
+  if (errEl) errEl.classList.add('hidden');
+
+  const apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+  if (!apiKey) {
+    const det = document.getElementById('voiceKeyDetails');
+    if (det) det.open = true;
+    if (errEl) {
+      errEl.textContent = appLang === 'es'
+        ? 'Guarda primero tu clave API de Gemini arriba.'
+        : 'Bitte zuerst oben deinen Gemini API Key speichern.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  // Falls Aufnahme bereits läuft -> stoppen & direkt auswerten!
+  if (voiceMediaRecorder && voiceMediaRecorder.state === 'recording') {
+    clearInterval(voiceRecTimer);
+    const btn = document.getElementById('voiceRecMainBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<span>⏳</span><span>${appLang === 'es' ? 'Gemini está creando la receta...' : 'Gemini erstellt Rezept...'}</span>`;
+    }
+    voiceMediaRecorder.stop();
+    return;
+  }
+
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error(appLang === 'es' ? 'Micrófono no disponible en este navegador.' : 'Mikrofon wird in diesem Browser nicht unterstützt.');
+    }
+    voiceAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = pickSupportedAudioMime();
+    voiceAudioChunks = [];
+    voiceMediaRecorder = mime ? new MediaRecorder(voiceAudioStream, { mimeType: mime }) : new MediaRecorder(voiceAudioStream);
+
+    voiceMediaRecorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) voiceAudioChunks.push(ev.data);
+    };
+
+    voiceMediaRecorder.onstop = async () => {
+      const actualMime = (voiceMediaRecorder && voiceMediaRecorder.mimeType) || mime || 'audio/webm';
+      if (voiceAudioStream) {
+        voiceAudioStream.getTracks().forEach(t => t.stop());
+        voiceAudioStream = null;
+      }
+      voiceMediaRecorder = null;
+      const blob = new Blob(voiceAudioChunks, { type: actualMime });
+      if (!blob.size) return;
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result || '').split(',')[1] || '');
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      await submitVoiceRecipeToGemini(base64, actualMime.split(';')[0]);
+    };
+
+    voiceMediaRecorder.start();
+    voiceRecSeconds = 0;
+    const timerBadge = document.getElementById('voiceRecTimerBadge');
+    const statusEl = document.getElementById('voiceRecStatus');
+    const mainBtn = document.getElementById('voiceRecMainBtn');
+    if (timerBadge) {
+      timerBadge.textContent = '00:00';
+      timerBadge.classList.remove('hidden');
+    }
+    if (statusEl) {
+      statusEl.textContent = appLang === 'es'
+        ? '🔴 Grabando… Di el nombre de la receta y los ingredientes con sus gramos.'
+        : '🔴 Aufnahme läuft… Sprich Rezeptname und Zutaten mit Mengenangaben ein.';
+    }
+    if (mainBtn) {
+      mainBtn.className = 'w-full py-3.5 rounded-2xl bg-rose-500 hover:bg-rose-400 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-rose-500/25';
+      mainBtn.innerHTML = `<span>⏹</span><span>${appLang === 'es' ? 'Detener y crear receta' : 'Stopp & Rezept erstellen'}</span>`;
+    }
+
+    voiceRecTimer = setInterval(() => {
+      voiceRecSeconds++;
+      const mm = String(Math.floor(voiceRecSeconds / 60)).padStart(2, '0');
+      const ss = String(voiceRecSeconds % 60).padStart(2, '0');
+      const tb = document.getElementById('voiceRecTimerBadge');
+      if (tb) tb.textContent = `${mm}:${ss}`;
+    }, 1000);
+  } catch (err) {
+    stopVoiceRecipeStreamOnly();
+    if (errEl) {
+      errEl.textContent = (appLang === 'es' ? 'Error de micrófono: ' : 'Mikrofon-Fehler: ') + (err.message || err);
+      errEl.classList.remove('hidden');
+    }
+  }
+}
+
+async function submitVoiceRecipeToGemini(audioBase64, audioMimeType) {
+  const apiKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
+  const errEl = document.getElementById('voiceRecipeError');
+  const textNote = (document.getElementById('voiceRecipeTextInput')?.value || '').trim();
+  const mainBtn = document.getElementById('voiceRecMainBtn');
+  const txtBtn = document.getElementById('voiceTextSubmitBtn');
+
+  if (errEl) errEl.classList.add('hidden');
+  if (!apiKey) {
+    const det = document.getElementById('voiceKeyDetails');
+    if (det) det.open = true;
+    if (errEl) {
+      errEl.textContent = appLang === 'es'
+        ? 'Guarda primero tu clave API de Gemini arriba.'
+        : 'Bitte zuerst oben deinen Gemini API Key speichern.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+  if (!audioBase64 && !textNote) {
+    if (errEl) {
+      errEl.textContent = appLang === 'es'
+        ? 'Graba un audio o escribe los ingredientes abajo.'
+        : 'Bitte zuerst eine Sprachaufnahme starten oder unten Text eingeben.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (mainBtn) mainBtn.disabled = true;
+  if (txtBtn) {
+    txtBtn.disabled = true;
+    txtBtn.textContent = appLang === 'es' ? '⏳ Creando receta...' : '⏳ Erstelle Rezept...';
+  }
+
+  const targetLang = appLang === 'es' ? 'Spanisch (Español)' : 'Deutsch';
+  const promptText = `Du bist ein präziser Rezept-Assistent für eine Ernährungs-App. Extrahiere aus der gesprochenen Aufnahme${textNote ? ` bzw. dem Text ("${textNote}")` : ''} ein vollständiges Rezept mit allen genannten Zutaten.
+WICHTIGE REGELN:
+1. Benenne "recipeName" passend und prägnant auf ${targetLang} (falls kein Rezeptname genannt wurde, leite einen passenden Namen aus den Zutaten ab).
+2. Benenne jede Zutat ("name") klar auf ${targetLang} (bei Stückzahlen z. B. "Eier (2 Stk.)" oder "Banane (1 Stk.)").
+3. "grams" ist das tatsächliche Portionsgewicht dieser Zutat im Rezept in Gramm (wandle Stück, EL, TL, Becher, ml realistisch in Gramm um, z. B. 1 Ei = 55g, 1 EL Öl = 10g, 1 Banane = 120g).
+4. ACHTUNG: "kcal100", "p100", "c100" und "f100" müssen zwingend die realistischen Nährwerte PRO 100 GRAMM des jeweiligen Lebensmittels sein (NICHT auf "grams" hochgerechnet!), da die App selbst mit (grams / 100) multipliziert.`;
+
+  const parts = [{ text: promptText }];
+  if (audioBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: audioMimeType || 'audio/webm',
+        data: audioBase64
+      }
+    });
+  }
+
+  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.5-flash'];
+  const requestBody = JSON.stringify({
+    contents: [{ parts }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseJsonSchema: {
+        type: 'object',
+        properties: {
+          recipeName: { type: 'string' },
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                grams: { type: 'number' },
+                kcal100: { type: 'number' },
+                p100: { type: 'number' },
+                c100: { type: 'number' },
+                f100: { type: 'number' }
+              },
+              required: ['name', 'grams', 'kcal100', 'p100', 'c100', 'f100']
+            }
+          }
+        },
+        required: ['recipeName', 'items']
+      }
+    }
+  });
+
+  try {
+    let res = null;
+    let lastError = 'Unbekannter Fehler';
+    for (const model of modelsToTry) {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: requestBody
+      });
+      if (res.ok) break;
+      const errData = await res.json().catch(() => ({}));
+      lastError = errData.error?.message || `HTTP ${res.status}`;
+      if (![404, 429, 503].includes(res.status)) throw new Error(lastError);
+      res = null;
+    }
+    if (!res) throw new Error(lastError);
+
+    const result = await res.json();
+    const rawJson = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    const data = JSON.parse(rawJson);
+    const now = Date.now();
+    const newItems = (data.items || []).map((it, idx) => ({
+      id: 'it_' + (now + idx),
+      name: String(it.name || 'Zutat').trim(),
+      grams: Math.max(1, Math.round(Number(it.grams) || 100)),
+      kcal100: Math.max(0, Math.round(Number(it.kcal100) || 0)),
+      p100: Math.max(0, Math.round((Number(it.p100) || 0) * 10) / 10),
+      c100: Math.max(0, Math.round((Number(it.c100) || 0) * 10) / 10),
+      f100: Math.max(0, Math.round((Number(it.f100) || 0) * 10) / 10)
+    }));
+
+    if (!newItems.length) {
+      throw new Error(appLang === 'es' ? 'No se detectaron ingredientes.' : 'Es wurden keine Zutaten erkannt.');
+    }
+
+    if (voiceRecipeAppendMode && editingRecipe) {
+      editingRecipe.items.push(...newItems);
+      if ((!editingRecipe.name || editingRecipe.name === 'Neues Rezept' || editingRecipe.name === 'Nueva receta') && data.recipeName) {
+        editingRecipe.name = data.recipeName.trim();
+      }
+    } else {
+      editingRecipe = {
+        id: 'rec_' + now,
+        name: (data.recipeName || (appLang === 'es' ? 'Nueva receta' : 'Neues Rezept')).trim(),
+        items: newItems
+      };
+    }
+
+    currentTab = 'food';
+    closeModal();
+    render();
+    showToast(appLang === 'es'
+      ? `✓ ${newItems.length} ingredientes añadidos por voz`
+      : `✓ ${newItems.length} Zutaten per Sprache übernommen`);
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = (appLang === 'es' ? 'Error en el análisis: ' : 'Fehler bei der Auswertung: ') + (err.message || err);
+      errEl.classList.remove('hidden');
+    }
+    if (mainBtn) {
+      mainBtn.disabled = false;
+      mainBtn.className = 'w-full py-3.5 rounded-2xl bg-violet-500 hover:bg-violet-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-violet-500/20';
+      mainBtn.innerHTML = `<span>🎙️</span><span>${appLang === 'es' ? 'Iniciar grabación' : 'Aufnahme starten'}</span>`;
+    }
+    if (txtBtn) {
+      txtBtn.disabled = false;
+      txtBtn.textContent = appLang === 'es' ? '✨ Crear desde texto' : '✨ Aus Text erstellen';
+    }
+  }
+}
+
 // ---------- SPRACHWECHSEL (DE ⇄ ES) ----------
 const ES_EXACT = {
   // Header & Navigation
@@ -5121,6 +5484,18 @@ const ES_EXACT = {
   'Übernehmen': 'Confirmar',
   'Zutat hinzufügen': 'Añadir ingrediente',
   'Barcode scannen': 'Escanear código',
+  'Diktieren': 'Dictar',
+  'Einsprechen': 'Dictar',
+  '🎙️ Rezept per Sprache erfassen': '🎙️ Dictar receta por voz',
+  'Zutaten & Mengen einfach vorlesen – Gemini baut das Rezept': 'Lee los ingredientes y gramos: Gemini crea la receta',
+  'Aufnahme starten': 'Iniciar grabación',
+  'Oder als Text eingeben / ergänzen:': 'O escríbelo / complétalo como texto:',
+  'z. B. Protein-Pfannkuchen: 80g Haferflocken, 2 Eier, 150g Magerquark, 1 Banane': 'ej. Tortitas proteicas: 80g avena, 2 huevos, 150g queso fresco, 1 plátano',
+  '✨ Aus Text erstellen': '✨ Crear desde texto',
+  'Menge in Gramm': 'Cantidad en gramos',
+  'Gramm-Angabe bestätigen': 'Confirmar gramos',
+  'Bestätigen': 'Confirmar',
+  '✓ Ins Rezept übernehmen': '✓ Añadir a la receta',
   'Deutsch suchen (z. B. rote Zwiebeln, Olivenöl, Tofu…)': 'Buscar alimento (ej. pollo, arroz, cebolla, avena…)',
   'Lebensmittel eingeben (z. B. Zwiebeln, Haferflocken, Quark)...': 'Escribe un alimento (ej. cebolla, avena, pollo)...',
   'Suchen': 'Buscar',
