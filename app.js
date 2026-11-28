@@ -90,6 +90,116 @@ function getCombinedNicotineStatus(log) {
   return null;
 }
 
+const BUILTIN_ROUTINE_DEFS = [
+  { id: 'creatine', name: 'Kreatin', icon: '💊' },
+  { id: 'skincare', name: 'Skincare', icon: '🧴' },
+  { id: 'sertraline', name: 'Sertralin', icon: '💊' }
+];
+
+function createDefaultHabitConfig() {
+  return {
+    categories: {
+      alcohol: true,
+      nicotine: true,
+      sport: true,
+      routine: true
+    },
+    routineItems: {
+      creatine: true,
+      skincare: true,
+      sertraline: true
+    },
+    customHabits: []
+  };
+}
+
+function normalizeHabitConfig(raw) {
+  const def = createDefaultHabitConfig();
+  if (!raw || typeof raw !== 'object') return def;
+  const rawCats = raw.categories && typeof raw.categories === 'object' ? raw.categories : {};
+  const rawRoutines = raw.routineItems && typeof raw.routineItems === 'object' ? raw.routineItems : {};
+  const rawCustom = Array.isArray(raw.customHabits) ? raw.customHabits : [];
+
+  const seen = new Set();
+  const customHabits = [];
+  rawCustom.forEach((h, idx) => {
+    if (!h || typeof h !== 'object') return;
+    const id = String(h.id || `ch_${idx}`).trim();
+    const name = String(h.name || '').trim();
+    if (!id || !name || seen.has(id)) return;
+    seen.add(id);
+    customHabits.push({
+      id,
+      name,
+      icon: String(h.icon || '⭐').trim().slice(0, 4) || '⭐',
+      type: h.type === 'avoid' ? 'avoid' : 'positive',
+      enabled: h.enabled !== false,
+      showInQuickCheck: h.showInQuickCheck !== false
+    });
+  });
+
+  return {
+    categories: {
+      alcohol: rawCats.alcohol !== false,
+      nicotine: rawCats.nicotine !== false,
+      sport: rawCats.sport !== false,
+      routine: rawCats.routine !== false
+    },
+    routineItems: {
+      creatine: rawRoutines.creatine !== false,
+      skincare: rawRoutines.skincare !== false,
+      sertraline: rawRoutines.sertraline !== false
+    },
+    customHabits
+  };
+}
+
+function getHabitConfig() {
+  state.habitConfig = normalizeHabitConfig(state.habitConfig);
+  return state.habitConfig;
+}
+
+function isHabitCategoryEnabled(catId) {
+  const cfg = getHabitConfig();
+  return Boolean(cfg.categories[catId]);
+}
+
+function getEnabledBuiltinRoutines() {
+  const cfg = getHabitConfig();
+  if (!cfg.categories.routine) return [];
+  return BUILTIN_ROUTINE_DEFS.filter(r => cfg.routineItems[r.id] !== false);
+}
+
+function getCustomHabits(onlyEnabled = false) {
+  const list = getHabitConfig().customHabits;
+  return onlyEnabled ? list.filter(h => h.enabled !== false) : list;
+}
+
+function getCustomHabitById(habitId) {
+  return getHabitConfig().customHabits.find(h => h.id === habitId) || null;
+}
+
+function getCustomHabitValue(log, habit) {
+  if (!log || !log.customHabits || !habit) return null;
+  const raw = log.customHabits[habit.id];
+  return habit.type === 'avoid' ? normalizeHabitStatus(raw) : normalizeRoutineStatus(raw);
+}
+
+function getAvailableHeatmapTabs() {
+  const cfg = getHabitConfig();
+  const tabs = [];
+  if (cfg.categories.alcohol) tabs.push({ id: 'alcohol', label: '🍷 Alkohol', kind: 'builtin' });
+  if (cfg.categories.nicotine) tabs.push({ id: 'nicotine', label: '💨 Nikotin', kind: 'builtin' });
+  if (cfg.categories.sport) tabs.push({ id: 'sport', label: '⚡ Sport', kind: 'builtin' });
+  if (cfg.categories.routine && getEnabledBuiltinRoutines().length > 0) {
+    tabs.push({ id: 'routine', label: '✨ Routine', kind: 'builtin' });
+  }
+  getCustomHabits(true).forEach(h => {
+    tabs.push({ id: `custom:${h.id}`, label: `${h.icon} ${h.name}`, kind: 'custom', customHabit: h });
+  });
+  return tabs;
+}
+
 function buildInitialState() {
   const today = getTodayStr();
   const logs = {};
@@ -139,6 +249,7 @@ function buildInitialState() {
       { id: 'sp_run', name: 'Laufen' },
       { id: 'sp_surf', name: 'Surfen / Mobility' }
     ],
+    habitConfig: createDefaultHabitConfig(),
     weightHistory: [],
     logs: {}
   };
@@ -179,6 +290,7 @@ let state = (() => {
           try { localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)); } catch (e) {}
         }
         parsed.logs = parsed.logs && typeof parsed.logs === 'object' ? parsed.logs : {};
+        parsed.habitConfig = normalizeHabitConfig(parsed.habitConfig);
         return parsed;
       }
     }
@@ -202,6 +314,7 @@ function normalizeLoadedState(obj) {
   obj.workouts = Array.isArray(obj.workouts) ? obj.workouts : [];
   obj.weightHistory = stripDemoWeightEntries(Array.isArray(obj.weightHistory) ? obj.weightHistory : []);
   obj.logs = obj.logs && typeof obj.logs === 'object' ? obj.logs : {};
+  obj.habitConfig = normalizeHabitConfig(obj.habitConfig);
   return obj;
 }
 
@@ -220,6 +333,7 @@ function mergeCloudStates(localSt, remoteSt) {
   const secondary = localNewer ? rem : loc;
 
   const merged = { ...secondary, ...primary };
+  merged.habitConfig = normalizeHabitConfig(primary.habitConfig || secondary.habitConfig);
   merged.workouts = mergeByKey(primary.workouts, secondary.workouts, w => w.id)
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')) || String(a.id || '').localeCompare(String(b.id || '')));
   merged.weightHistory = mergeByKey(primary.weightHistory, secondary.weightHistory, w => w.date)
@@ -242,7 +356,11 @@ function mergeCloudStates(localSt, remoteSt) {
     Object.keys(pLog.routines || {}).forEach(k => {
       if (pLog.routines[k] !== null && pLog.routines[k] !== undefined) routines[k] = pLog.routines[k];
     });
-    mergedLogs[dateKey] = { ...sLog, ...pLog, entries, sportDone, badHabits, routines };
+    const customHabits = { ...(sLog.customHabits || {}) };
+    Object.keys(pLog.customHabits || {}).forEach(k => {
+      if (pLog.customHabits[k] !== null && pLog.customHabits[k] !== undefined) customHabits[k] = pLog.customHabits[k];
+    });
+    mergedLogs[dateKey] = { ...sLog, ...pLog, entries, sportDone, badHabits, routines, customHabits };
   });
   merged.logs = mergedLogs;
   merged._updatedAt = localNewer ? (loc._updatedAt || rem._updatedAt) : (rem._updatedAt || loc._updatedAt);
@@ -522,7 +640,8 @@ function ensureDayLog(dateStr) {
       entries: [],
       sportDone: [],
       badHabits: { cigarettes: null, vape: null, alcohol: null },
-      routines: { creatine: null, skincare: null, sertraline: null }
+      routines: { creatine: null, skincare: null, sertraline: null },
+      customHabits: {}
     };
   }
   if (!state.logs[dateStr].badHabits) {
@@ -537,6 +656,9 @@ function ensureDayLog(dateStr) {
   state.logs[dateStr].routines.creatine = normalizeRoutineStatus(state.logs[dateStr].routines.creatine);
   state.logs[dateStr].routines.skincare = normalizeRoutineStatus(state.logs[dateStr].routines.skincare);
   state.logs[dateStr].routines.sertraline = normalizeRoutineStatus(state.logs[dateStr].routines.sertraline);
+  if (!state.logs[dateStr].customHabits || typeof state.logs[dateStr].customHabits !== 'object') {
+    state.logs[dateStr].customHabits = {};
+  }
   return state.logs[dateStr];
 }
 
@@ -556,20 +678,64 @@ function toggleRoutine(key) {
 function toggleHeatmapRoutineDay(key, dateStr) {
   const day = ensureDayLog(dateStr);
   if (key === 'routine') {
-    const c = day.routines.creatine;
-    const s = day.routines.skincare;
-    const se = day.routines.sertraline;
+    const activeRoutines = getEnabledBuiltinRoutines();
+    const keys = activeRoutines.length ? activeRoutines.map(r => r.id) : ['creatine', 'skincare', 'sertraline'];
+    const vals = keys.map(k => day.routines[k]);
     let nextVal = true;
-    if (c === true && s === true && se === true) nextVal = false;
-    else if (c === false && s === false && se === false) nextVal = null;
-    day.routines.creatine = nextVal;
-    day.routines.skincare = nextVal;
-    day.routines.sertraline = nextVal;
+    if (vals.every(v => v === true)) nextVal = false;
+    else if (vals.every(v => v === false)) nextVal = null;
+    keys.forEach(k => { day.routines[k] = nextVal; });
   } else {
     day.routines[key] = nextRoutineState(day.routines[key]);
   }
   saveState();
   render();
+}
+
+function cycleCustomHabitDay(habitId, dateStr = state.selectedDate) {
+  const habit = getCustomHabitById(habitId);
+  if (!habit) return;
+  const day = ensureDayLog(dateStr);
+  if (habit.type === 'avoid') {
+    const cur = normalizeHabitStatus(day.customHabits[habitId]);
+    day.customHabits[habitId] = cur === null ? 'clean' : (cur === 'clean' ? 'consumed' : null);
+  } else {
+    const cur = normalizeRoutineStatus(day.customHabits[habitId]);
+    day.customHabits[habitId] = nextRoutineState(cur);
+  }
+  saveState();
+  render();
+}
+
+function getCustomHabitStreak(habitId) {
+  const habit = getCustomHabitById(habitId);
+  if (!habit) return 0;
+  let streak = 0;
+  if (habit.type === 'avoid') {
+    for (let i = 0; i < 60; i++) {
+      const ds = getPastDateStr(i);
+      const val = getCustomHabitValue(state.logs[ds], habit);
+      if (val === 'clean') {
+        streak++;
+      } else if (i === 0 && val === null) {
+        continue;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
+  const cursor = new Date(state.selectedDate + 'T12:00:00');
+  while (streak < 365) {
+    const iso = formatDateStr(cursor);
+    if (getCustomHabitValue(state.logs[iso], habit) === true) {
+      streak++;
+      cursor.setDate(cursor.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+  return streak;
 }
 
 function getRoutineStreak(key) {
@@ -660,6 +826,244 @@ function openManageHabits(sectionId) {
 function setHeatmapMetric(metric) {
   selectedHeatmapMetric = metric;
   render();
+}
+
+function escapeHtmlAttr(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function ensureValidSelectedHeatmapMetric() {
+  const tabs = getAvailableHeatmapTabs();
+  if (!tabs.length) {
+    selectedHeatmapMetric = '';
+    return tabs;
+  }
+  if (!tabs.some(t => t.id === selectedHeatmapMetric)) {
+    selectedHeatmapMetric = tabs[0].id;
+  }
+  return tabs;
+}
+
+function toggleHabitCategory(catId) {
+  const cfg = getHabitConfig();
+  if (!Object.prototype.hasOwnProperty.call(cfg.categories, catId)) return;
+  cfg.categories[catId] = !cfg.categories[catId];
+  ensureValidSelectedHeatmapMetric();
+  saveState();
+  render();
+  openHabitCustomizerModal();
+}
+
+function toggleBuiltinRoutineItem(key) {
+  const cfg = getHabitConfig();
+  if (!Object.prototype.hasOwnProperty.call(cfg.routineItems, key)) return;
+  cfg.routineItems[key] = !cfg.routineItems[key];
+  ensureValidSelectedHeatmapMetric();
+  saveState();
+  render();
+  openHabitCustomizerModal();
+}
+
+function toggleCustomHabitEnabled(habitId) {
+  const habit = getCustomHabitById(habitId);
+  if (!habit) return;
+  habit.enabled = !habit.enabled;
+  ensureValidSelectedHeatmapMetric();
+  saveState();
+  render();
+  openHabitCustomizerModal();
+}
+
+function toggleCustomHabitQuickCheck(habitId) {
+  const habit = getCustomHabitById(habitId);
+  if (!habit) return;
+  habit.showInQuickCheck = habit.showInQuickCheck === false;
+  saveState();
+  render();
+  openHabitCustomizerModal();
+}
+
+function pickCustomHabitIcon(emoji) {
+  const inp = document.getElementById('custom-habit-icon');
+  if (inp) inp.value = emoji;
+}
+
+function addCustomHabitFromModal(event) {
+  if (event) event.preventDefault();
+  const nameInput = document.getElementById('custom-habit-name');
+  const iconInput = document.getElementById('custom-habit-icon');
+  const typeInput = document.getElementById('custom-habit-type');
+  const name = (nameInput?.value || '').trim();
+  if (!name) {
+    if (nameInput) nameInput.focus();
+    return;
+  }
+  const icon = (iconInput?.value || '⭐').trim().slice(0, 4) || '⭐';
+  const type = typeInput?.value === 'avoid' ? 'avoid' : 'positive';
+  const cfg = getHabitConfig();
+  const newHabit = {
+    id: 'ch_' + Date.now(),
+    name,
+    icon,
+    type,
+    enabled: true,
+    showInQuickCheck: true
+  };
+  cfg.customHabits.push(newHabit);
+  selectedHeatmapMetric = `custom:${newHabit.id}`;
+  saveState();
+  render();
+  openHabitCustomizerModal();
+  if (typeof showToast === 'function') {
+    showToast(`✓ Habit „${icon} ${name}“ hinzugefügt`);
+  }
+}
+
+function deleteCustomHabit(habitId) {
+  const cfg = getHabitConfig();
+  const habit = cfg.customHabits.find(h => h.id === habitId);
+  if (!habit) return;
+  if (!confirm(`Eigenes Habit „${habit.icon} ${habit.name}“ dauerhaft löschen?`)) return;
+  cfg.customHabits = cfg.customHabits.filter(h => h.id !== habitId);
+  ensureValidSelectedHeatmapMetric();
+  saveState();
+  render();
+  openHabitCustomizerModal();
+}
+
+function openHabitCustomizerModal() {
+  const cfg = getHabitConfig();
+  const builtInCards = [
+    { id: 'alcohol', icon: '🍷', label: 'Alkohol', desc: 'Verzicht / Konsum (Clean vs. Konsumiert)' },
+    { id: 'nicotine', icon: '💨', label: 'Nikotin', desc: 'Zigaretten & Vape gebündelt' },
+    { id: 'sport', icon: '⚡', label: 'Sport', desc: 'Trainingstage in der 30-Tage-Heatmap' },
+    { id: 'routine', icon: '✨', label: 'Routine & Supplements', desc: 'Tägliche Basics (Kreatin, Skincare, Sertralin)' }
+  ];
+  const emojiPresets = ['💧', '📚', '🧘', '😴', '🍬', '☕', '📱', '💊', '🚶', '🥗', '🧠', '✨'];
+
+  const renderTogglePill = (active, onClickJs) => `
+    <button type="button" onclick="${onClickJs}"
+      class="px-3 py-1.5 rounded-xl text-[11px] font-semibold border transition shrink-0 ${
+        active
+          ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+          : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'
+      }">
+      ${active ? 'Aktiv' : 'Aus'}
+    </button>
+  `;
+
+  openModal(`
+    <div class="space-y-4">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <h3 class="text-base font-semibold text-white">⚙️ Habits anpassen</h3>
+          <p class="text-[11px] text-zinc-400 mt-0.5">Karten flexibel an-/abwählen oder eigene Habits erstellen. Vorhandene Logs bleiben beim Ausblenden erhalten.</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+
+      <!-- Standard-Karten -->
+      <div class="space-y-2">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Standard-Karten</div>
+        ${builtInCards.map(card => {
+          const active = cfg.categories[card.id] !== false;
+          return `
+            <div class="bg-zinc-900/90 border border-border rounded-2xl p-3 space-y-2">
+              <div class="flex items-center justify-between gap-2">
+                <div class="min-w-0">
+                  <div class="text-xs font-semibold text-white">${card.icon} ${card.label}</div>
+                  <div class="text-[11px] text-zinc-400">${card.desc}</div>
+                </div>
+                ${renderTogglePill(active, `toggleHabitCategory('${card.id}')`)}
+              </div>
+              ${card.id === 'routine' && active ? `
+                <div class="flex flex-wrap gap-1.5 pt-2 border-t border-zinc-800">
+                  ${BUILTIN_ROUTINE_DEFS.map(r => {
+                    const rActive = cfg.routineItems[r.id] !== false;
+                    return `
+                      <button type="button" onclick="toggleBuiltinRoutineItem('${r.id}')"
+                        class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${
+                          rActive
+                            ? 'bg-emerald-500/15 border-emerald-500/45 text-emerald-300'
+                            : 'bg-zinc-950 border-zinc-800 text-zinc-500 line-through hover:text-zinc-300'
+                        }">
+                        <span>${r.icon}</span><span>${r.name}</span><span>${rActive ? '✓' : '✕'}</span>
+                      </button>
+                    `;
+                  }).join('')}
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <!-- Eigene Habits -->
+      <div class="space-y-2">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Eigene Habits (${cfg.customHabits.length})</div>
+        ${cfg.customHabits.length > 0 ? `
+          <div class="space-y-1.5">
+            ${cfg.customHabits.map(h => `
+              <div class="bg-zinc-900/90 border border-border rounded-2xl p-2.5 flex items-center justify-between gap-2">
+                <div class="min-w-0">
+                  <div class="text-xs font-semibold text-white truncate">${escapeHtmlAttr(h.icon)} ${escapeHtmlAttr(h.name)}</div>
+                  <div class="text-[10px] text-zinc-400">
+                    ${h.type === 'avoid' ? '🚫 Verzicht (Clean / Konsumiert)' : '✓ Routine (Ja / Nein)'}
+                  </div>
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0">
+                  <button type="button" onclick="toggleCustomHabitQuickCheck('${h.id}')" title="Im Dashboard Schnell-Check anzeigen"
+                    class="px-2 py-1.5 rounded-xl text-[11px] border transition ${
+                      h.showInQuickCheck !== false
+                        ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
+                        : 'bg-zinc-950 border-zinc-800 text-zinc-500'
+                    }">⚡</button>
+                  ${renderTogglePill(h.enabled !== false, `toggleCustomHabitEnabled('${h.id}')`)}
+                  <button type="button" onclick="deleteCustomHabit('${h.id}')" title="Löschen"
+                    class="px-2 py-1.5 rounded-xl text-[11px] bg-zinc-950 hover:bg-rose-500/20 border border-zinc-800 hover:border-rose-500/40 text-zinc-400 hover:text-rose-300 transition">✕</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : `<p class="text-xs text-zinc-500">Noch keine eigenen Habits angelegt – erstelle unten dein erstes.</p>`}
+      </div>
+
+      <!-- Neues Habit erstellen -->
+      <form onsubmit="addCustomHabitFromModal(event)" class="bg-zinc-950/80 border border-border rounded-2xl p-3 space-y-2.5">
+        <div class="text-xs font-semibold text-white">+ Eigenes Habit erstellen</div>
+        <div class="flex flex-wrap gap-1">
+          ${emojiPresets.map(em => `
+            <button type="button" onclick="pickCustomHabitIcon('${em}')"
+              class="w-7 h-7 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-sm flex items-center justify-center transition">${em}</button>
+          `).join('')}
+        </div>
+        <div class="flex gap-2">
+          <input id="custom-habit-icon" type="text" value="💧" maxlength="4"
+            class="w-12 text-center bg-zinc-900 border border-border rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+          <input id="custom-habit-name" type="text" placeholder="Name (z. B. 2L Wasser, Zuckerfrei, Lesen)"
+            class="flex-1 bg-zinc-900 border border-border rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
+        </div>
+        <div class="flex gap-2 items-center">
+          <select id="custom-habit-type"
+            class="flex-1 bg-zinc-900 border border-border rounded-xl px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500">
+            <option value="positive">✓ Positive Routine (Ja / Nein / Offen)</option>
+            <option value="avoid">🚫 Verzicht / Konsum (Clean / Konsumiert / Offen)</option>
+          </select>
+          <button type="submit" class="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs shrink-0 transition">
+            + Hinzufügen
+          </button>
+        </div>
+      </form>
+
+      <button type="button" onclick="closeModal()" class="w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold text-xs transition">
+        Fertig
+      </button>
+    </div>
+  `);
 }
 
 const LANG_STORAGE_KEY = 'fuel_and_flow_lang';
@@ -1256,6 +1660,11 @@ function computeHabitInsights() {
   const days30 = getLastNDays(30);
   const insights = [];
   const weekdayNames = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+  const habitCfg = getHabitConfig();
+  const enabledRoutines = getEnabledBuiltinRoutines();
+  const enabledCustomHabits = getCustomHabits(true);
+  const alcoholEnabled = habitCfg.categories.alcohol !== false;
+  const nicotineEnabled = habitCfg.categories.nicotine !== false;
 
   // Workouts & Gewichtsmessungen nach Datum indizieren
   const workoutDates = new Set();
@@ -1297,6 +1706,11 @@ function computeHabitInsights() {
   let fullRoutineCleanDays = 0, fullRoutineKonsumTracked = 0;
   let partialRoutineCleanDays = 0, partialRoutineKonsumTracked = 0;
 
+  const customStats = {};
+  enabledCustomHabits.forEach(h => {
+    customStats[h.id] = { habit: h, good: 0, bad: 0, tracked: 0 };
+  });
+
   const weekdayConsumedCounts = [0, 0, 0, 0, 0, 0, 0];
   const weekdaySportCounts = [0, 0, 0, 0, 0, 0, 0];
 
@@ -1316,8 +1730,8 @@ function computeHabitInsights() {
     const wEntry = weightByDate[d.dateStr];
     if (wEntry) weightsIn30.push(wEntry);
 
-    const nicStatus = log ? getCombinedNicotineStatus(log) : null;
-    const alc = log && log.badHabits ? normalizeHabitStatus(log.badHabits.alcohol) : null;
+    const nicStatus = nicotineEnabled && log ? getCombinedNicotineStatus(log) : null;
+    const alc = alcoholEnabled && log && log.badHabits ? normalizeHabitStatus(log.badHabits.alcohol) : null;
 
     if (nicStatus !== null) {
       if (hasSport) {
@@ -1371,20 +1785,23 @@ function computeHabitInsights() {
       }
     }
 
-    // Routine & Supplements (Kreatin, Skincare, Sertralin)
-    if (log && log.routines) {
+    // Routine & Supplements (nur aktivierte Routine-Items)
+    if (enabledRoutines.length > 0 && log && log.routines) {
       const r = log.routines;
-      const doneCnt = (r.creatine ? 1 : 0) + (r.skincare ? 1 : 0) + (r.sertraline ? 1 : 0);
-      if (r.creatine) routineCounts.creatine++;
-      if (r.skincare) routineCounts.skincare++;
-      if (r.sertraline) routineCounts.sertraline++;
+      let doneCnt = 0;
+      enabledRoutines.forEach(item => {
+        if (r[item.id] === true) {
+          doneCnt++;
+          routineCounts[item.id] = (routineCounts[item.id] || 0) + 1;
+        }
+      });
       if (doneCnt > 0) routineAnyTracked++;
-      if (doneCnt === 3) routineFullDays++;
+      if (doneCnt === enabledRoutines.length) routineFullDays++;
 
       const hasKonsumData = alc !== null || nicStatus !== null;
       if (hasKonsumData) {
         const isFullyClean = (alc !== 'consumed') && (nicStatus !== 'consumed');
-        if (doneCnt === 3) {
+        if (doneCnt === enabledRoutines.length) {
           fullRoutineKonsumTracked++;
           if (isFullyClean) fullRoutineCleanDays++;
         } else {
@@ -1394,32 +1811,52 @@ function computeHabitInsights() {
       }
     }
 
+    // Eigene Habits
+    enabledCustomHabits.forEach(h => {
+      const val = getCustomHabitValue(log, h);
+      if (val === null) return;
+      const st = customStats[h.id];
+      st.tracked++;
+      if (h.type === 'avoid') {
+        if (val === 'clean') st.good++;
+        else if (val === 'consumed') {
+          st.bad++;
+          weekdayConsumedCounts[d.weekdayIdx]++;
+        }
+      } else {
+        if (val === true) st.good++;
+        else if (val === false) st.bad++;
+      }
+    });
+
     if (alc === 'consumed') weekdayConsumedCounts[d.weekdayIdx]++;
     if (nicStatus === 'consumed') weekdayConsumedCounts[d.weekdayIdx]++;
   });
 
-  // 1) Training (inkl. Sport-Tab Workouts) & Nikotin-Balance
-  if (sportTracked >= 2 && restTracked >= 2) {
-    const sportPct = Math.round((sportNicClean / sportTracked) * 100);
-    const restPct = Math.round((restNicClean / restTracked) * 100);
-    const diff = sportPct - restPct;
-    insights.push({
-      icon: '🏋️',
-      title: 'Training & Nikotin-Balance',
-      badge: diff > 0 ? `+${diff} %` : `${sportPct} % clean`,
-      badgeTone: diff >= 0 ? 'emerald' : 'amber',
-      text: diff >= 0
-        ? `An Trainingstagen (${totalSportDays30} aktiv in 30T) bist du zu <strong>${sportPct} %</strong> nikotinfrei – gegenüber <strong>${restPct} %</strong> an Ruhetagen${diff > 0 ? ` (+${diff} %-Punkte)` : ''}.`
-        : `An Trainingstagen liegt deine nikotinfreie Quote bei <strong>${sportPct} %</strong> (Ruhetage: ${restPct} %).`
-    });
-  } else {
-    insights.push({
-      icon: '🏋️',
-      title: 'Training & Verzicht-Korrelation',
-      badge: `${totalSportDays30} Sporttage`,
-      badgeTone: 'zinc',
-      text: `Inkl. Sport-Tab wurden <strong>${totalSportDays30} Trainingstage</strong> erkannt. Sobald je mind. 2 Trainings- und Ruhetage mit Nikotin-Status erfasst sind, erscheint dein Vergleich (${sportTracked + restTracked}/4).`
-    });
+  // 1) Training (inkl. Sport-Tab Workouts) & Nikotin-Balance (nur wenn Nikotin aktiv)
+  if (nicotineEnabled) {
+    if (sportTracked >= 2 && restTracked >= 2) {
+      const sportPct = Math.round((sportNicClean / sportTracked) * 100);
+      const restPct = Math.round((restNicClean / restTracked) * 100);
+      const diff = sportPct - restPct;
+      insights.push({
+        icon: '🏋️',
+        title: 'Training & Nikotin-Balance',
+        badge: diff > 0 ? `+${diff} %` : `${sportPct} % clean`,
+        badgeTone: diff >= 0 ? 'emerald' : 'amber',
+        text: diff >= 0
+          ? `An Trainingstagen (${totalSportDays30} aktiv in 30T) bist du zu <strong>${sportPct} %</strong> nikotinfrei – gegenüber <strong>${restPct} %</strong> an Ruhetagen${diff > 0 ? ` (+${diff} %-Punkte)` : ''}.`
+          : `An Trainingstagen liegt deine nikotinfreie Quote bei <strong>${sportPct} %</strong> (Ruhetage: ${restPct} %).`
+      });
+    } else {
+      insights.push({
+        icon: '🏋️',
+        title: 'Training & Verzicht-Korrelation',
+        badge: `${totalSportDays30} Sporttage`,
+        badgeTone: 'zinc',
+        text: `Inkl. Sport-Tab wurden <strong>${totalSportDays30} Trainingstage</strong> erkannt. Sobald je mind. 2 Trainings- und Ruhetage mit Nikotin-Status erfasst sind, erscheint dein Vergleich (${sportTracked + restTracked}/4).`
+      });
+    }
   }
 
   // 2) Training & Protein-Versorgung
@@ -1487,71 +1924,95 @@ function computeHabitInsights() {
     });
   }
 
-  // 4) Alkohol-Effekt (Kalorien & Folgetag-Gewicht)
-  if ((alcKcalDays >= 1 && cleanAlcKcalDays >= 1) || (alcNextWeightDays >= 1 && cleanNextWeightDays >= 1)) {
-    const parts = [];
-    let badge = 'Aktiv';
-    let tone = 'amber';
-    if (alcKcalDays >= 1 && cleanAlcKcalDays >= 1) {
-      const avgAlc = Math.round(alcKcalSum / alcKcalDays);
-      const avgClean = Math.round(cleanAlcKcalSum / cleanAlcKcalDays);
-      const delta = avgAlc - avgClean;
-      badge = delta > 0 ? `+${delta} kcal` : `${delta} kcal`;
-      tone = delta > 150 ? 'rose' : 'emerald';
-      parts.push(`An Alkohol-Tagen nimmst du im Schnitt <strong>${avgAlc} kcal</strong> auf (${delta >= 0 ? '+' : ''}${delta} kcal gegenüber Clean-Tagen mit ${avgClean} kcal).`);
+  // 4) Alkohol-Effekt (nur wenn Alkohol aktiv)
+  if (alcoholEnabled) {
+    if ((alcKcalDays >= 1 && cleanAlcKcalDays >= 1) || (alcNextWeightDays >= 1 && cleanNextWeightDays >= 1)) {
+      const parts = [];
+      let badge = 'Aktiv';
+      let tone = 'amber';
+      if (alcKcalDays >= 1 && cleanAlcKcalDays >= 1) {
+        const avgAlc = Math.round(alcKcalSum / alcKcalDays);
+        const avgClean = Math.round(cleanAlcKcalSum / cleanAlcKcalDays);
+        const delta = avgAlc - avgClean;
+        badge = delta > 0 ? `+${delta} kcal` : `${delta} kcal`;
+        tone = delta > 150 ? 'rose' : 'emerald';
+        parts.push(`An Alkohol-Tagen nimmst du im Schnitt <strong>${avgAlc} kcal</strong> auf (${delta >= 0 ? '+' : ''}${delta} kcal gegenüber Clean-Tagen mit ${avgClean} kcal).`);
+      }
+      if (alcNextWeightDays >= 1 && cleanNextWeightDays >= 1) {
+        const avgAlcW = Math.round((alcNextWeightDiffSum / alcNextWeightDays) * 10) / 10;
+        const avgCleanW = Math.round((cleanNextWeightDiffSum / cleanNextWeightDays) * 10) / 10;
+        if (parts.length === 0) badge = `${avgAlcW > 0 ? '+' : ''}${avgAlcW.toFixed(1)} kg`;
+        parts.push(`Waage am Folgetag: <strong>${avgAlcW > 0 ? '+' : ''}${avgAlcW.toFixed(1)} kg</strong> nach Alkohol vs. <strong>${avgCleanW > 0 ? '+' : ''}${avgCleanW.toFixed(1)} kg</strong> nach Clean-Tagen.`);
+      }
+      insights.push({
+        icon: '🍷',
+        title: 'Alkohol-Effekt (Kalorien & Waage)',
+        badge,
+        badgeTone: tone,
+        text: parts.join(' ')
+      });
+    } else {
+      insights.push({
+        icon: '🍷',
+        title: 'Alkohol-Effekt (Kalorien & Waage)',
+        badge: 'Sammelt Daten',
+        badgeTone: 'zinc',
+        text: `Sobald mindestens je 1 Alkohol- und 1 Clean-Tag mit Mahlzeiten oder Folgetags-Gewicht erfasst sind, siehst du hier Kalorien- und Waagen-Delta.`
+      });
     }
-    if (alcNextWeightDays >= 1 && cleanNextWeightDays >= 1) {
-      const avgAlcW = Math.round((alcNextWeightDiffSum / alcNextWeightDays) * 10) / 10;
-      const avgCleanW = Math.round((cleanNextWeightDiffSum / cleanNextWeightDays) * 10) / 10;
-      if (parts.length === 0) badge = `${avgAlcW > 0 ? '+' : ''}${avgAlcW.toFixed(1)} kg`;
-      parts.push(`Waage am Folgetag: <strong>${avgAlcW > 0 ? '+' : ''}${avgAlcW.toFixed(1)} kg</strong> nach Alkohol vs. <strong>${avgCleanW > 0 ? '+' : ''}${avgCleanW.toFixed(1)} kg</strong> nach Clean-Tagen.`);
-    }
-    insights.push({
-      icon: '🍷',
-      title: 'Alkohol-Effekt (Kalorien & Waage)',
-      badge,
-      badgeTone: tone,
-      text: parts.join(' ')
-    });
-  } else {
-    insights.push({
-      icon: '🍷',
-      title: 'Alkohol-Effekt (Kalorien & Waage)',
-      badge: 'Sammelt Daten',
-      badgeTone: 'zinc',
-      text: `Sobald mindestens je 1 Alkohol- und 1 Clean-Tag mit Mahlzeiten oder Folgetags-Gewicht erfasst sind, siehst du hier Kalorien- und Waagen-Delta.`
-    });
   }
 
-  // 5) Routine & Supplements (Kreatin, Skincare, Sertralin)
-  if (routineAnyTracked >= 3) {
-    const rList = [
-      { name: 'Kreatin', c: routineCounts.creatine },
-      { name: 'Skincare', c: routineCounts.skincare },
-      { name: 'Sertralin', c: routineCounts.sertraline }
-    ].sort((a, b) => b.c - a.c);
-    const fullPct = Math.round((routineFullDays / 30) * 100);
-    let corrNote = `Am konstantesten: <strong>${rList[0].name}</strong> (${rList[0].c}/30T), Ausbaupotenzial bei <strong>${rList[2].name}</strong> (${rList[2].c}/30T).`;
-    if (fullRoutineKonsumTracked >= 2 && partialRoutineKonsumTracked >= 2) {
-      const fCleanPct = Math.round((fullRoutineCleanDays / fullRoutineKonsumTracked) * 100);
-      const pCleanPct = Math.round((partialRoutineCleanDays / partialRoutineKonsumTracked) * 100);
-      corrNote = `An 3/3-Routine-Tagen bist du zu <strong>${fCleanPct} %</strong> komplett clean (vs. ${pCleanPct} % an unvollständigen Tagen). Stärkste Routine: <strong>${rList[0].name}</strong> (${rList[0].c}/30T).`;
+  // 5) Routine & Supplements (nur aktivierte Routine-Items)
+  if (enabledRoutines.length > 0) {
+    const rCount = enabledRoutines.length;
+    const rNamesJoined = enabledRoutines.map(r => r.name).join(' · ');
+    if (routineAnyTracked >= 3) {
+      const rList = enabledRoutines.map(r => ({ name: r.name, c: routineCounts[r.id] || 0 })).sort((a, b) => b.c - a.c);
+      const fullPct = Math.round((routineFullDays / 30) * 100);
+      let corrNote = rList.length > 1
+        ? `Am konstantesten: <strong>${rList[0].name}</strong> (${rList[0].c}/30T), Ausbaupotenzial bei <strong>${rList[rList.length - 1].name}</strong> (${rList[rList.length - 1].c}/30T).`
+        : `<strong>${rList[0].name}</strong> wurde an ${rList[0].c} von 30 Tagen erledigt.`;
+      if (fullRoutineKonsumTracked >= 2 && partialRoutineKonsumTracked >= 2) {
+        const fCleanPct = Math.round((fullRoutineCleanDays / fullRoutineKonsumTracked) * 100);
+        const pCleanPct = Math.round((partialRoutineCleanDays / partialRoutineKonsumTracked) * 100);
+        corrNote = `An ${rCount}/${rCount}-Routine-Tagen bist du zu <strong>${fCleanPct} %</strong> komplett clean (vs. ${pCleanPct} % an unvollständigen Tagen). Stärkste Routine: <strong>${rList[0].name}</strong> (${rList[0].c}/30T).`;
+      }
+      insights.push({
+        icon: '💊',
+        title: `Routine-Konstanz (${rNamesJoined})`,
+        badge: `${routineFullDays}/30T ${rCount}/${rCount}`,
+        badgeTone: fullPct >= 60 ? 'emerald' : 'amber',
+        text: `<strong>${routineFullDays} von 30 Tagen</strong> waren alle ${rCount} aktiven Routinen komplett. ${corrNote}`
+      });
+    } else {
+      insights.push({
+        icon: '💊',
+        title: 'Routine-Konstanz',
+        badge: `${routineAnyTracked}/3 Tage`,
+        badgeTone: 'zinc',
+        text: `Hake ${rNamesJoined} regelmäßig ab – ab 3 erfassten Tagen zeigt dir diese Karte deine Routine-Stabilität.`
+      });
     }
-    insights.push({
-      icon: '💊',
-      title: 'Routine-Konstanz (Kreatin · Skincare · Sertralin)',
-      badge: `${routineFullDays}/30T 3/3`,
-      badgeTone: fullPct >= 60 ? 'emerald' : 'amber',
-      text: `<strong>${routineFullDays} von 30 Tagen</strong> waren alle 3 Routinen komplett. ${corrNote}`
-    });
-  } else {
-    insights.push({
-      icon: '💊',
-      title: 'Routine-Konstanz & Clean-Korrelation',
-      badge: `${routineAnyTracked}/3 Tage`,
-      badgeTone: 'zinc',
-      text: `Hake Kreatin, Skincare und Sertralin regelmäßig ab – ab 3 erfassten Tagen zeigt dir diese Karte deine Routine-Stabilität und den Zusammenhang mit Clean-Tagen.`
-    });
+  }
+
+  // 5b) Eigene Habits Konstanz (wenn angelegt & aktiv)
+  if (enabledCustomHabits.length > 0) {
+    const trackedCustom = Object.values(customStats).filter(s => s.tracked > 0);
+    if (trackedCustom.length > 0) {
+      const sortedCustom = [...trackedCustom].sort((a, b) => (b.good / b.tracked) - (a.good / a.tracked));
+      const best = sortedCustom[0];
+      const bestPct = Math.round((best.good / best.tracked) * 100);
+      const summary = sortedCustom.slice(0, 3)
+        .map(s => `<strong>${escapeHtmlAttr(s.habit.icon)} ${escapeHtmlAttr(s.habit.name)}</strong> (${s.good}/${s.tracked}T)`)
+        .join(', ');
+      insights.push({
+        icon: '⭐',
+        title: 'Eigene Habits (30T)',
+        badge: `${bestPct} % Top`,
+        badgeTone: bestPct >= 70 ? 'emerald' : 'amber',
+        text: `Aktive Eigen-Habits: ${summary}. Stärkste Konstanz aktuell bei <strong>${escapeHtmlAttr(best.habit.name)}</strong> (${bestPct} %).`
+      });
+    }
   }
 
   // 6) Wochentags-Muster (Training & Konsum kombiniert)
@@ -2665,43 +3126,87 @@ function renderDashboard() {
     `;
   };
 
-  const alcStatus = normalizeHabitStatus(log.badHabits?.alcohol);
-  const alcCls = alcStatus === 'clean'
-    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-    : (alcStatus === 'consumed'
-      ? 'bg-rose-500/25 border-rose-500/55 text-rose-300'
-      : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
-  const alcSym = alcStatus === 'clean' ? '✕' : (alcStatus === 'consumed' ? '✓' : '·');
+  const habitCfg = getHabitConfig();
+  const quickBtns = [];
+  if (habitCfg.categories.routine !== false) {
+    const routineOrder = [
+      { id: 'sertraline', icon: '💊', label: 'Sertralin' },
+      { id: 'creatine', icon: '💊', label: 'Kreatin' },
+      { id: 'skincare', icon: '🧴', label: 'Skincare' }
+    ];
+    routineOrder.forEach(r => {
+      if (habitCfg.routineItems[r.id] !== false) {
+        quickBtns.push(renderMiniRoutineBtn(r.id, r.icon, r.label));
+      }
+    });
+  }
 
-  const nicStatus = getCombinedNicotineStatus(log);
-  const nicCls = nicStatus === 'clean'
-    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-    : (nicStatus === 'consumed'
-      ? 'bg-rose-500/25 border-rose-500/55 text-rose-300'
-      : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
-  const nicSym = nicStatus === 'clean' ? '✕' : (nicStatus === 'consumed' ? '✓' : '·');
+  if (habitCfg.categories.alcohol !== false) {
+    const alcStatus = normalizeHabitStatus(log.badHabits?.alcohol);
+    const alcCls = alcStatus === 'clean'
+      ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+      : (alcStatus === 'consumed'
+        ? 'bg-rose-500/25 border-rose-500/55 text-rose-300'
+        : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
+    const alcSym = alcStatus === 'clean' ? '✕' : (alcStatus === 'consumed' ? '✓' : '·');
+    quickBtns.push(`
+      <button onclick="cycleBadHabitDay('alcohol', '${state.selectedDate}')"
+        class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${alcCls}">
+        <span>🍷</span><span>Alkohol</span><span class="font-bold ml-0.5">${alcSym}</span>
+      </button>
+    `);
+  }
 
-  const quickHabitsHtml = `
+  if (habitCfg.categories.nicotine !== false) {
+    const nicStatus = getCombinedNicotineStatus(log);
+    const nicCls = nicStatus === 'clean'
+      ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+      : (nicStatus === 'consumed'
+        ? 'bg-rose-500/25 border-rose-500/55 text-rose-300'
+        : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
+    const nicSym = nicStatus === 'clean' ? '✕' : (nicStatus === 'consumed' ? '✓' : '·');
+    quickBtns.push(`
+      <button onclick="cycleCombinedNicotineDay('${state.selectedDate}')"
+        class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${nicCls}">
+        <span>💨</span><span>Nikotin</span><span class="font-bold ml-0.5">${nicSym}</span>
+      </button>
+    `);
+  }
+
+  getCustomHabits(true).forEach(h => {
+    if (h.showInQuickCheck === false) return;
+    const val = getCustomHabitValue(log, h);
+    let cls = 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800';
+    let sym = '·';
+    if (h.type === 'avoid') {
+      if (val === 'clean') { cls = 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'; sym = '✕'; }
+      else if (val === 'consumed') { cls = 'bg-rose-500/25 border-rose-500/55 text-rose-300'; sym = '✓'; }
+    } else {
+      if (val === true) { cls = 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'; sym = '✓'; }
+      else if (val === false) { cls = 'bg-rose-500/20 border-rose-500/50 text-rose-300'; sym = '✕'; }
+    }
+    quickBtns.push(`
+      <button onclick="cycleCustomHabitDay('${h.id}', '${state.selectedDate}')"
+        class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${cls}">
+        <span>${escapeHtmlAttr(h.icon)}</span><span>${escapeHtmlAttr(h.name)}</span><span class="font-bold ml-0.5">${sym}</span>
+      </button>
+    `);
+  });
+
+  const quickHabitsHtml = quickBtns.length > 0 ? `
     <section class="bg-card border border-border rounded-2xl px-3 py-2.5 space-y-2">
       <div class="flex items-center justify-between">
         <span class="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">Schnell-Check</span>
-        <button onclick="switchTab('habits')" class="text-[10px] text-emerald-400 hover:text-emerald-300 font-medium">Details →</button>
+        <div class="flex items-center gap-2.5">
+          <button onclick="openHabitCustomizerModal()" class="text-[10px] text-zinc-400 hover:text-zinc-200 font-medium">⚙️ Anpassen</button>
+          <button onclick="switchTab('habits')" class="text-[10px] text-emerald-400 hover:text-emerald-300 font-medium">Details →</button>
+        </div>
       </div>
       <div class="flex flex-wrap gap-1.5">
-        ${renderMiniRoutineBtn('sertraline', '💊', 'Sertralin')}
-        ${renderMiniRoutineBtn('creatine', '💊', 'Kreatin')}
-        ${renderMiniRoutineBtn('skincare', '🧴', 'Skincare')}
-        <button onclick="cycleBadHabitDay('alcohol', '${state.selectedDate}')"
-          class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${alcCls}">
-          <span>🍷</span><span>Alkohol</span><span class="font-bold ml-0.5">${alcSym}</span>
-        </button>
-        <button onclick="cycleCombinedNicotineDay('${state.selectedDate}')"
-          class="px-2.5 py-1 rounded-xl text-[11px] font-medium border transition inline-flex items-center gap-1 ${nicCls}">
-          <span>💨</span><span>Nikotin</span><span class="font-bold ml-0.5">${nicSym}</span>
-        </button>
+        ${quickBtns.join('')}
       </div>
     </section>
-  `;
+  ` : '';
 
   const bilanzSectionHtml = `
     <!-- Calories & Macros Card -->
@@ -3062,32 +3567,43 @@ function renderHabitsTab() {
   const days30 = getLastNDays(30);
   const insights = computeHabitInsights();
   const todayLog = ensureDayLog(state.selectedDate);
-  const creatineStreak = getRoutineStreak('creatine');
-  const skincareStreak = getRoutineStreak('skincare');
-  const sertralineStreak = getRoutineStreak('sertraline');
-
-  const metricTabs = [
-    { id: 'alcohol', label: '🍷 Alkohol' },
-    { id: 'nicotine', label: '💨 Nikotin' },
-    { id: 'sport', label: '⚡ Sport' },
-    { id: 'routine', label: '✨ Routine' }
-  ];
+  const habitCfg = getHabitConfig();
+  const enabledRoutines = getEnabledBuiltinRoutines();
+  const enabledCustomHabits = getCustomHabits(true);
+  const enabledPositiveCustom = enabledCustomHabits.filter(h => h.type !== 'avoid');
+  const enabledAvoidCustom = enabledCustomHabits.filter(h => h.type === 'avoid');
+  const metricTabs = ensureValidSelectedHeatmapMetric();
+  const activeTabObj = metricTabs.find(t => t.id === selectedHeatmapMetric) || null;
+  const activeCustomHabit = activeTabObj?.customHabit || null;
 
   const getCombinedRoutineStatus = (log) => {
-    const c = normalizeRoutineStatus(log?.routines?.creatine);
-    const s = normalizeRoutineStatus(log?.routines?.skincare);
-    const se = normalizeRoutineStatus(log?.routines?.sertraline);
-    if (c === true && s === true && se === true) return 'yes';
-    if (c === false || s === false || se === false) return 'no';
-    if (c === true || s === true || se === true) return 'partial';
+    if (!enabledRoutines.length) return null;
+    const vals = enabledRoutines.map(r => normalizeRoutineStatus(log?.routines?.[r.id]));
+    if (vals.every(v => v === true)) return 'yes';
+    if (vals.some(v => v === false)) return 'no';
+    if (vals.some(v => v === true)) return 'partial';
     return null;
   };
 
   const getCountsForMetric = (metricKey) => {
     let clean = 0, consumed = 0, open = 0;
+    const isCustom = typeof metricKey === 'string' && metricKey.startsWith('custom:');
+    const customHabit = isCustom ? getCustomHabitById(metricKey.slice(7)) : null;
+
     days30.forEach(d => {
       const log = state.logs[d.dateStr];
-      if (metricKey === 'sport') {
+      if (customHabit) {
+        const val = getCustomHabitValue(log, customHabit);
+        if (customHabit.type === 'avoid') {
+          if (val === 'clean') clean++;
+          else if (val === 'consumed') consumed++;
+          else open++;
+        } else {
+          if (val === true) clean++;
+          else if (val === false) consumed++;
+          else open++;
+        }
+      } else if (metricKey === 'sport') {
         const done = log && Array.isArray(log.sportDone) && log.sportDone.length > 0;
         if (done) clean++;
         else open++;
@@ -3116,7 +3632,7 @@ function renderHabitsTab() {
     return { clean, consumed, open };
   };
 
-  const mainCounts = getCountsForMetric(selectedHeatmapMetric);
+  const mainCounts = selectedHeatmapMetric ? getCountsForMetric(selectedHeatmapMetric) : { clean: 0, consumed: 0, open: 0 };
 
   const weekHeaderLabels = appLang === 'es'
     ? ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
@@ -3124,7 +3640,11 @@ function renderHabitsTab() {
   const leadingEmptyDays = days30.length ? (days30[0].weekdayIdx + 6) % 7 : 0;
   const todayIso = getTodayStr();
 
-  const renderHeatmapGrid = (metricKey, compact = false) => `
+  const renderHeatmapGrid = (metricKey, compact = false) => {
+    const isCustom = typeof metricKey === 'string' && metricKey.startsWith('custom:');
+    const customHabit = isCustom ? getCustomHabitById(metricKey.slice(7)) : null;
+
+    return `
     <div class="space-y-1">
       <div class="grid grid-cols-7 gap-1 text-center">
         ${weekHeaderLabels.map((wd, idx) => `
@@ -3139,7 +3659,27 @@ function renderHabitsTab() {
           let statusIcon = '?';
           let clickHandler = '';
 
-          if (metricKey === 'sport') {
+          if (customHabit) {
+            const val = getCustomHabitValue(log, customHabit);
+            if (customHabit.type === 'avoid') {
+              if (val === 'clean') {
+                tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
+                statusIcon = '✕';
+              } else if (val === 'consumed') {
+                tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
+                statusIcon = '✓';
+              }
+            } else {
+              if (val === true) {
+                tileStyle = 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30';
+                statusIcon = '✓';
+              } else if (val === false) {
+                tileStyle = 'bg-rose-500/25 border-rose-500/60 text-rose-300 hover:bg-rose-500/35';
+                statusIcon = '✕';
+              }
+            }
+            clickHandler = `cycleCustomHabitDay('${customHabit.id}', '${d.dateStr}')`;
+          } else if (metricKey === 'sport') {
             const done = log && Array.isArray(log.sportDone) && log.sportDone.length > 0;
             tileStyle = done
               ? 'bg-emerald-500/20 border-emerald-500/55 text-emerald-300 hover:bg-emerald-500/30'
@@ -3205,15 +3745,13 @@ function renderHabitsTab() {
       </div>
     </div>
   `;
+  };
 
   const cigCounts = getCountsForMetric('cigarettes');
   const vapeCounts = getCountsForMetric('vape');
-  const creatineCounts = getCountsForMetric('creatine');
-  const skincareCounts = getCountsForMetric('skincare');
-  const sertralineCounts = getCountsForMetric('sertraline');
 
   const renderLegend = () => {
-    if (selectedHeatmapMetric === 'routine') {
+    if (selectedHeatmapMetric === 'routine' || (activeCustomHabit && activeCustomHabit.type !== 'avoid')) {
       return `
         <span class="flex items-center gap-1 text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-500"></span> Ja</span>
         <span class="flex items-center gap-1 text-rose-300"><span class="w-2 h-2 rounded-full bg-rose-500"></span> Nein</span>
@@ -3233,8 +3771,7 @@ function renderHabitsTab() {
     `;
   };
 
-  const renderRoutineCardButton = (key, title, streak) => {
-    const val = todayLog.routines[key];
+  const renderPositiveCardButton = (onClickJs, title, val, streak) => {
     let cardStyle = 'bg-zinc-900 border-border text-zinc-300 hover:bg-zinc-800/80';
     let subText = 'Nicht erfasst';
     let subStyle = 'text-amber-300/80';
@@ -3256,7 +3793,7 @@ function renderHabitsTab() {
     }
 
     return `
-      <button onclick="toggleRoutine('${key}')"
+      <button onclick="${onClickJs}"
         class="p-3 rounded-2xl border text-left transition flex items-center justify-between gap-2 ${cardStyle}">
         <div class="min-w-0">
           <div class="text-xs font-semibold truncate">${title}</div>
@@ -3269,6 +3806,40 @@ function renderHabitsTab() {
     `;
   };
 
+  const totalDailyBasicsCount = enabledRoutines.length + enabledPositiveCustom.length;
+  const doneDailyBasicsCount =
+    enabledRoutines.filter(r => todayLog.routines[r.id] === true).length +
+    enabledPositiveCustom.filter(h => getCustomHabitValue(todayLog, h) === true).length;
+
+  const avoidSummaryCards = [];
+  if (habitCfg.categories.alcohol !== false) {
+    avoidSummaryCards.push(`
+      <div class="bg-zinc-900 border border-border rounded-2xl p-3">
+        <div class="text-[11px] text-zinc-400">🍷 Alkohol</div>
+        <div class="text-base font-bold text-emerald-400 mt-0.5">${calcCleanStreak('alcohol')}d clean</div>
+      </div>
+    `);
+  }
+  if (habitCfg.categories.nicotine !== false) {
+    avoidSummaryCards.push(`
+      <div class="bg-zinc-900 border border-border rounded-2xl p-3">
+        <div class="text-[11px] text-zinc-400">💨 Nikotin (Gesamt)</div>
+        <div class="text-base font-bold text-emerald-400 mt-0.5">${calcCleanStreak('nicotine')}d clean</div>
+        <div class="text-[10px] text-zinc-500 mt-0.5">Zigaretten: ${calcCleanStreak('cigarettes')}d · Vape: ${calcCleanStreak('vape')}d</div>
+      </div>
+    `);
+  }
+  enabledAvoidCustom.forEach(h => {
+    avoidSummaryCards.push(`
+      <div class="bg-zinc-900 border border-border rounded-2xl p-3">
+        <div class="text-[11px] text-zinc-400 truncate">${escapeHtmlAttr(h.icon)} ${escapeHtmlAttr(h.name)}</div>
+        <div class="text-base font-bold text-emerald-400 mt-0.5">${getCustomHabitStreak(h.id)}d clean</div>
+      </div>
+    `);
+  });
+
+  const isPositiveMetric = selectedHeatmapMetric === 'routine' || (activeCustomHabit && activeCustomHabit.type !== 'avoid');
+
   return `
     <div class="space-y-4">
       <div id="sec-heatmap" class="bg-card border border-border rounded-3xl p-4 space-y-3.5">
@@ -3277,28 +3848,46 @@ function renderHabitsTab() {
             <h2 class="text-sm font-semibold text-white">30-Tage-Heatmap</h2>
             <p class="text-[11px] text-zinc-400">Tippe auf einen Tag zum Umschalten (Grün / Rot / Gelb)</p>
           </div>
-          <div class="text-right text-[11px] text-zinc-400">
-            ${selectedHeatmapMetric === 'sport'
-              ? `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span>/30 aktiv`
-              : selectedHeatmapMetric === 'routine'
-                ? `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> ja · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> nein · <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen`
-                : `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> clean · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> kons. · <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen`
-            }
+          <div class="flex flex-col items-end gap-1 shrink-0">
+            <button onclick="openHabitCustomizerModal()"
+              class="px-2.5 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-[11px] font-medium text-zinc-200 transition">
+              ⚙️ Anpassen
+            </button>
+            ${selectedHeatmapMetric ? `
+              <div class="text-right text-[11px] text-zinc-400">
+                ${selectedHeatmapMetric === 'sport'
+                  ? `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span>/30 aktiv`
+                  : isPositiveMetric
+                    ? `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> ja · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> nein · <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen`
+                    : `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> clean · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> kons. · <span class="text-amber-300 font-semibold">${mainCounts.open}</span> offen`
+                }
+              </div>
+            ` : ''}
           </div>
         </div>
 
-        <div class="grid grid-cols-4 gap-1.5">
-          ${metricTabs.map(t => `
-            <button onclick="setHeatmapMetric('${t.id}')"
-              class="py-2 px-2.5 rounded-xl text-xs font-medium border transition truncate ${
-                selectedHeatmapMetric === t.id
-                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                  : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200'
-              }">
-              ${t.label}
+        ${metricTabs.length > 0 ? `
+          <div class="${metricTabs.length <= 4 ? `grid grid-cols-${Math.max(1, metricTabs.length)} gap-1.5` : 'flex flex-wrap gap-1.5'}">
+            ${metricTabs.map(t => `
+              <button onclick="setHeatmapMetric('${t.id}')"
+                class="py-2 px-2.5 rounded-xl text-xs font-medium border transition truncate ${
+                  selectedHeatmapMetric === t.id
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                    : 'bg-zinc-900 border-border text-zinc-400 hover:text-zinc-200'
+                }">
+                ${escapeHtmlAttr(t.label)}
+              </button>
+            `).join('')}
+          </div>
+        ` : `
+          <div class="border border-dashed border-zinc-700 rounded-2xl p-5 text-center space-y-2.5">
+            <p class="text-xs text-zinc-400">Aktuell sind keine Habit-Karten aktiviert.</p>
+            <button onclick="openHabitCustomizerModal()"
+              class="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+              ⚙️ Habits auswählen oder erstellen
             </button>
-          `).join('')}
-        </div>
+          </div>
+        `}
 
         ${selectedHeatmapMetric === 'alcohol' ? `
           <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-2.5">
@@ -3362,7 +3951,7 @@ function renderHabitsTab() {
           </div>
         ` : ''}
 
-        ${selectedHeatmapMetric === 'routine' ? `
+        ${selectedHeatmapMetric === 'routine' && enabledRoutines.length > 0 ? `
           <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-3.5">
             <div class="flex items-center justify-between">
               <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">✨ Routine & Supplements (30 Tage)</span>
@@ -3371,69 +3960,69 @@ function renderHabitsTab() {
               </span>
             </div>
 
-            <div class="space-y-1.5">
-              <div class="flex items-center justify-between text-xs">
-                <span class="font-medium text-zinc-200">💊 Kreatin</span>
-                <span class="text-[11px] text-zinc-400">
-                  <span class="text-emerald-400 font-semibold">${creatineCounts.clean}</span> ja ·
-                  <span class="text-rose-400 font-semibold">${creatineCounts.consumed}</span> nein ·
-                  <span class="text-amber-300 font-semibold">${creatineCounts.open}</span> offen · ${creatineStreak}d Streak
-                </span>
-              </div>
-              ${renderHeatmapGrid('creatine', true)}
-            </div>
-
-            <div class="space-y-1.5 pt-2 border-t border-zinc-900">
-              <div class="flex items-center justify-between text-xs">
-                <span class="font-medium text-zinc-200">🧴 Skincare</span>
-                <span class="text-[11px] text-zinc-400">
-                  <span class="text-emerald-400 font-semibold">${skincareCounts.clean}</span> ja ·
-                  <span class="text-rose-400 font-semibold">${skincareCounts.consumed}</span> nein ·
-                  <span class="text-amber-300 font-semibold">${skincareCounts.open}</span> offen · ${skincareStreak}d Streak
-                </span>
-              </div>
-              ${renderHeatmapGrid('skincare', true)}
-            </div>
-
-            <div class="space-y-1.5 pt-2 border-t border-zinc-900">
-              <div class="flex items-center justify-between text-xs">
-                <span class="font-medium text-zinc-200">💊 Sertralin</span>
-                <span class="text-[11px] text-zinc-400">
-                  <span class="text-emerald-400 font-semibold">${sertralineCounts.clean}</span> ja ·
-                  <span class="text-rose-400 font-semibold">${sertralineCounts.consumed}</span> nein ·
-                  <span class="text-amber-300 font-semibold">${sertralineCounts.open}</span> offen · ${sertralineStreak}d Streak
-                </span>
-              </div>
-              ${renderHeatmapGrid('sertraline', true)}
-            </div>
+            ${enabledRoutines.map((r, idx) => {
+              const rCounts = getCountsForMetric(r.id);
+              const rStreak = getRoutineStreak(r.id);
+              return `
+                <div class="space-y-1.5 ${idx > 0 ? 'pt-2 border-t border-zinc-900' : ''}">
+                  <div class="flex items-center justify-between text-xs">
+                    <span class="font-medium text-zinc-200">${r.icon} ${r.name}</span>
+                    <span class="text-[11px] text-zinc-400">
+                      <span class="text-emerald-400 font-semibold">${rCounts.clean}</span> ja ·
+                      <span class="text-rose-400 font-semibold">${rCounts.consumed}</span> nein ·
+                      <span class="text-amber-300 font-semibold">${rCounts.open}</span> offen · ${rStreak}d Streak
+                    </span>
+                  </div>
+                  ${renderHeatmapGrid(r.id, true)}
+                </div>
+              `;
+            }).join('')}
           </div>
         ` : ''}
 
-        <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border text-[11px] text-zinc-400">
-          <div class="flex items-center gap-3">
-            ${renderLegend()}
+        ${activeCustomHabit ? `
+          <div class="border border-border rounded-2xl p-3 bg-zinc-950/60 space-y-2.5">
+            <div class="flex items-center justify-between text-xs gap-2">
+              <span class="font-semibold text-zinc-200 truncate">${escapeHtmlAttr(activeCustomHabit.icon)} ${escapeHtmlAttr(activeCustomHabit.name)}</span>
+              <span class="text-[11px] text-zinc-400 shrink-0">
+                ${activeCustomHabit.type === 'avoid'
+                  ? `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> clean · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> kons. · ${getCustomHabitStreak(activeCustomHabit.id)}d clean`
+                  : `<span class="text-emerald-400 font-semibold">${mainCounts.clean}</span> ja · <span class="text-rose-400 font-semibold">${mainCounts.consumed}</span> nein · ${getCustomHabitStreak(activeCustomHabit.id)}d Streak`
+                }
+              </span>
+            </div>
+            ${renderHeatmapGrid(`custom:${activeCustomHabit.id}`, false)}
           </div>
-          <span>Letzte 30 Tage</span>
-        </div>
+        ` : ''}
+
+        ${selectedHeatmapMetric ? `
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border text-[11px] text-zinc-400">
+            <div class="flex items-center gap-3">
+              ${renderLegend()}
+            </div>
+            <span>Letzte 30 Tage</span>
+          </div>
+        ` : ''}
       </div>
 
-      <div id="sec-routines" class="bg-card border border-border rounded-3xl p-4 space-y-3">
-        <div class="flex items-center justify-between">
-          <div>
-            <h2 class="text-sm font-semibold text-white">Routine & Supplements</h2>
-            <p class="text-[11px] text-zinc-400">Tägliche Basics für ${state.selectedDate}</p>
+      ${totalDailyBasicsCount > 0 ? `
+        <div id="sec-routines" class="bg-card border border-border rounded-3xl p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-sm font-semibold text-white">Routine & Tägliche Habits</h2>
+              <p class="text-[11px] text-zinc-400">Tägliche Basics für ${state.selectedDate}</p>
+            </div>
+            <span class="text-[11px] text-zinc-400">
+              ${doneDailyBasicsCount}/${totalDailyBasicsCount} erledigt
+            </span>
           </div>
-          <span class="text-[11px] text-zinc-400">
-            ${(todayLog.routines.creatine === true ? 1 : 0) + (todayLog.routines.skincare === true ? 1 : 0) + (todayLog.routines.sertraline === true ? 1 : 0)}/3 erledigt
-          </span>
-        </div>
 
-        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-          ${renderRoutineCardButton('creatine', 'Kreatin', creatineStreak)}
-          ${renderRoutineCardButton('skincare', 'Skincare', skincareStreak)}
-          ${renderRoutineCardButton('sertraline', 'Sertralin', sertralineStreak)}
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            ${enabledRoutines.map(r => renderPositiveCardButton(`toggleRoutine('${r.id}')`, `${r.icon} ${r.name}`, todayLog.routines[r.id], getRoutineStreak(r.id))).join('')}
+            ${enabledPositiveCustom.map(h => renderPositiveCardButton(`cycleCustomHabitDay('${h.id}', '${state.selectedDate}')`, `${escapeHtmlAttr(h.icon)} ${escapeHtmlAttr(h.name)}`, getCustomHabitValue(todayLog, h), getCustomHabitStreak(h.id))).join('')}
+          </div>
         </div>
-      </div>
+      ` : ''}
 
       <div id="sec-insights" class="bg-card border border-border rounded-3xl p-4 space-y-3">
         <div>
@@ -3467,21 +4056,17 @@ function renderHabitsTab() {
         </div>
       </div>
 
-      <div id="sec-konsum" class="bg-card border border-border rounded-3xl p-4 space-y-3">
-        <h2 class="text-sm font-semibold text-white">Konsum & Verzicht Übersicht</h2>
-        <p class="text-xs text-zinc-400">Aktive Bereiche: <strong>Alkohol</strong> sowie <strong>Nikotin</strong> (gebündelt aus <strong>Zigaretten</strong> und <strong>Vape</strong>).</p>
-        <div class="grid grid-cols-2 gap-2.5 text-center pt-1">
-          <div class="bg-zinc-900 border border-border rounded-2xl p-3">
-            <div class="text-[11px] text-zinc-400">🍷 Alkohol</div>
-            <div class="text-base font-bold text-emerald-400 mt-0.5">${calcCleanStreak('alcohol')}d clean</div>
+      ${avoidSummaryCards.length > 0 ? `
+        <div id="sec-konsum" class="bg-card border border-border rounded-3xl p-4 space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-sm font-semibold text-white">Konsum & Verzicht Übersicht</h2>
+            <button onclick="openHabitCustomizerModal()" class="text-[11px] text-zinc-400 hover:text-zinc-200 transition">⚙️ Anpassen</button>
           </div>
-          <div class="bg-zinc-900 border border-border rounded-2xl p-3">
-            <div class="text-[11px] text-zinc-400">💨 Nikotin (Gesamt)</div>
-            <div class="text-base font-bold text-emerald-400 mt-0.5">${calcCleanStreak('nicotine')}d clean</div>
-            <div class="text-[10px] text-zinc-500 mt-0.5">Zigaretten: ${calcCleanStreak('cigarettes')}d · Vape: ${calcCleanStreak('vape')}d</div>
+          <div class="grid grid-cols-2 gap-2.5 text-center pt-1">
+            ${avoidSummaryCards.join('')}
           </div>
         </div>
-      </div>
+      ` : ''}
     </div>
   `;
 }
