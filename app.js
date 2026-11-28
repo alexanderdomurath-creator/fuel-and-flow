@@ -1143,7 +1143,13 @@ function switchTab(tab, pushHistory = true) {
     navHistory.push(tab);
   }
   currentTab = tab;
-  if (tab !== 'food') editingRecipe = null;
+  if (tab !== 'food') {
+    editingRecipe = null;
+    if (viewingRecipeId) {
+      viewingRecipeId = null;
+      recipeDetailHistoryPushed = false;
+    }
+  }
   render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1152,6 +1158,10 @@ function goBack() {
   if (editingRecipe) {
     editingRecipe = null;
     render();
+    return;
+  }
+  if (viewingRecipeId) {
+    closeRecipeDetail();
     return;
   }
   if (navHistory.length > 1) {
@@ -3437,7 +3447,7 @@ function renderCalorieMacroHistoryCard() {
 // ---------- RENDERING ----------
 function render() {
   const backBtn = document.getElementById('back-btn');
-  if (currentTab !== 'dashboard' || editingRecipe) {
+  if (currentTab !== 'dashboard' || editingRecipe || viewingRecipeId) {
     backBtn.classList.remove('hidden');
   } else {
     backBtn.classList.add('hidden');
@@ -4034,6 +4044,7 @@ function renderRecipeStarsHtml(rating, clickFnExpr) {
 }
 
 let viewingRecipeId = null;
+let recipeDetailHistoryPushed = false;
 
 function getRecipePhotos(rec) {
   if (!rec || !Array.isArray(rec.photos)) return [];
@@ -4046,15 +4057,53 @@ function openRecipeDetail(recipeId) {
   editingRecipe = null;
   viewingRecipeId = found.id;
   currentTab = 'food';
+  if (typeof window !== 'undefined' && window.history && typeof window.history.pushState === 'function') {
+    try {
+      const nextState = { ffView: 'recipeDetail', recipeId: found.id };
+      if (!recipeDetailHistoryPushed) {
+        window.history.pushState(nextState, '', window.location ? window.location.href : undefined);
+        recipeDetailHistoryPushed = true;
+      } else if (typeof window.history.replaceState === 'function') {
+        window.history.replaceState(nextState, '', window.location ? window.location.href : undefined);
+      }
+    } catch (e) {}
+  }
   render();
   if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
-function closeRecipeDetail() {
+function closeRecipeDetail(fromPopState = false) {
+  const hadHistoryEntry = recipeDetailHistoryPushed;
   viewingRecipeId = null;
+  recipeDetailHistoryPushed = false;
   render();
+  if (!fromPopState && hadHistoryEntry && typeof window !== 'undefined' && window.history && typeof window.history.back === 'function') {
+    try {
+      if (window.history.state && window.history.state.ffView === 'recipeDetail') {
+        window.history.back();
+      }
+    } catch (e) {}
+  }
+}
+
+function handleAppPopState(event) {
+  const modalBackdrop = typeof document !== 'undefined' ? document.getElementById('modal-backdrop') : null;
+  if (modalBackdrop && !modalBackdrop.classList.contains('hidden') && viewingRecipeId) {
+    closeModal();
+  }
+  if (editingRecipe) {
+    editingRecipe = null;
+    if (!event?.state || event.state.ffView !== 'recipeDetail') {
+      recipeDetailHistoryPushed = false;
+    }
+    render();
+    return;
+  }
+  if (viewingRecipeId) {
+    closeRecipeDetail(true);
+  }
 }
 
 function addSingleRecipeToShoppingList(recipeId) {
@@ -6073,6 +6122,83 @@ function openMealPlanModal(dateOverride = null) {
 
 let editingShoppingItemId = null;
 
+function getShoppingItemIcon(rawName) {
+  const n = String(rawName || '').toLowerCase();
+  // Obst
+  if (/avocado/.test(n)) return '🥑';
+  if (/banan/.test(n)) return '🍌';
+  if (/apfel|äpfel/.test(n)) return '🍎';
+  if (/birne/.test(n)) return '🍐';
+  if (/orange|mandarine|clementine|grapefruit/.test(n)) return '🍊';
+  if (/zitrone|limette/.test(n)) return '🍋';
+  if (/erdbeer/.test(n)) return '🍓';
+  if (/kirsch/.test(n)) return '🍒';
+  if (/pfirsich|nektarine|aprikose/.test(n)) return '🍑';
+  if (/melone|wassermelone/.test(n)) return '🍉';
+  if (/beere|heidelbeer|blaubeer|himbeer|brombeer|johannisbeer/.test(n)) return '🫐';
+  if (/traube|weintraube/.test(n)) return '🍇';
+  if (/mango/.test(n)) return '🥭';
+  if (/ananas/.test(n)) return '🍍';
+  if (/kiwi/.test(n)) return '🥝';
+  if (/kokos/.test(n)) return '🥥';
+  // Gemüse & Kräuter
+  if (/brokkoli|blumenkohl/.test(n)) return '🥦';
+  if (/tomate|passata|pesto/.test(n)) return '🍅';
+  if (/paprika|chili|peperoni/.test(n)) return '🫑';
+  if (/gurke|zucchini|aubergine/.test(n)) return '🥒';
+  if (/salat|spinat|rucola|feldsalat|kohl|mangold|kräuter|basilikum|petersilie|koriander|schnittlauch/.test(n)) return '🥬';
+  if (/möhre|karotte|rübe/.test(n)) return '🥕';
+  if (/zwiebel|lauch|porree|schalotte/.test(n)) return '🧅';
+  if (/knoblauch/.test(n)) return '🧄';
+  if (/ingwer/.test(n)) return '🫚';
+  if (/kartoffel|süßkartoffel|pommes/.test(n)) return '🥔';
+  if (/mais/.test(n)) return '🌽';
+  if (/pilz|champignon|pfifferling/.test(n)) return '🍄';
+  if (/bohne|linse|erbse|kichererbse|edamame|hummus/.test(n)) return '🫘';
+  if (/olive/.test(n)) return '🫒';
+  // Kühlregal, Eier, Milchprodukte & Proteine
+  if (/(^|\b)(eier|ei|eigelb|eiweiß)(\b|$)/.test(n)) return '🥚';
+  if (/milch|hafermilch|sojamilch|mandelmilch|kokosmilch|sahne|schmand|buttermilch|kefir/.test(n)) return '🥛';
+  if (/skyr|quark|magerquark|joghurt|pudding|dessert/.test(n)) return '🥣';
+  if (/käse|feta|mozzarella|gouda|parmesan|frischkäse|hüttenkäse|halloumi|cheddar|ricotta|burrata/.test(n)) return '🧀';
+  if (/butter|margarine/.test(n)) return '🧈';
+  if (/hähnchen|pute|huhn|geflügel|enten/.test(n)) return '🍗';
+  if (/rind|hack|steak|fleisch|schwein|wurst|schinken|salami|speck|bacon/.test(n)) return '🥩';
+  if (/lachs|fisch|thunfisch|forelle|kabeljau|hering|makrele|matjes/.test(n)) return '🐟';
+  if (/garnele|shrimp|scampi|muschel|tintenfisch/.test(n)) return '🦐';
+  if (/tofu|tempeh|seitan/.test(n)) return '🧊';
+  // Backwaren, Getreide & Vorrat
+  if (/brot|vollkornbrot|toast|baguette|ciabatta/.test(n)) return '🍞';
+  if (/brötchen|croissant|brezel|laugen/.test(n)) return '🥐';
+  if (/wrap|tortilla|fladen|pita/.test(n)) return '🌯';
+  if (/reis|basmati|risotto|quinoa|couscous|bulgur/.test(n)) return '🍚';
+  if (/nudel|pasta|spaghetti|penne|fusilli|gnocchi|lasagne/.test(n)) return '🍝';
+  if (/hafer|müsli|porridge|cornflakes|granola|mehl/.test(n)) return '🌾';
+  if (/nuss|nüsse|mandel|walnuss|cashew|erdnuss|pistazie|haselnuss|kern|samen|chia|leinsamen|sesam/.test(n)) return '🥜';
+  if (/honig|sirup|marmelade|konfitüre|nutella|aufstrich/.test(n)) return '🍯';
+  if (/öl|olivenöl|rapsöl|essig|balsamico|sojasauce|senf|ketchup|mayo/.test(n)) return '🫙';
+  if (/salz|pfeffer|gewürz|curry|zimt|kurkuma|paprikapulver|brühe/.test(n)) return '🧂';
+  if (/pizza|tiefkühl/.test(n)) return '🍕';
+  if (/suppe|eintopf/.test(n)) return '🍲';
+  // Snacks & Süßes
+  if (/schoko|riegel|proteinriegel|snickers|twix|mars|knoppers|hanuta|duplo|keks|cookie/.test(n)) return '🍫';
+  if (/chips|salzstangen|cracker|popcorn|knabber/.test(n)) return '🥨';
+  if (/eis|eiscreme|sorbet/.test(n)) return '🍨';
+  if (/kuchen|torte|muffin|donut/.test(n)) return '🍰';
+  // Getränke
+  if (/kaffee|espresso|cappuccino/.test(n)) return '☕';
+  if (/tee|matcha/.test(n)) return '🍵';
+  if (/bier|pils|weizen/.test(n)) return '🍺';
+  if (/wein|prosecco|sekt/.test(n)) return '🍷';
+  if (/wasser|saft|cola|limo|eistee|energy|proteinshake|whey|shake|drink/.test(n)) return '🥤';
+  // Haushalt & Drogerie
+  if (/toilettenpapier|klopapier|küchenrolle|taschentuch|serviette/.test(n)) return '🧻';
+  if (/seife|shampoo|duschgel|zahnpasta|creme|lotion|deo/.test(n)) return '🧴';
+  if (/spülmittel|waschmittel|reiniger|putz|schwamm|tabs/.test(n)) return '🫧';
+  if (/müllbeutel|backpapier|alufolie|frischhalte/.test(n)) return '🗑️';
+  return '🛒';
+}
+
 function suggestShoppingQuantity(rawName) {
   const n = String(rawName || '').trim().toLowerCase();
   if (!n) return { amount: 1, unit: 'Stk.' };
@@ -6342,13 +6468,39 @@ function setShoppingQtyDraftUnit(newUnit) {
   openShoppingListModal();
 }
 
+function openEditShoppingItemQtyPrompt(id) {
+  const item = ensureShoppingList().find(it => it.id === id);
+  if (!item) return;
+  const unit = getShoppingItemUnit(item);
+  const amount = Math.max(1, Math.round(Number(item.grams) || suggestShoppingQuantity(item.name).amount || 1));
+  shoppingQtyDraft = { editId: item.id, name: item.name, amount, unit, source: item.source || 'Manuell' };
+  openShoppingListModal();
+  const inp = document.getElementById('shop-prompt-amount');
+  if (inp) {
+    inp.focus();
+    inp.select?.();
+  }
+}
+
 function confirmShoppingQtyPrompt(event) {
   if (event) event.preventDefault();
   if (!shoppingQtyDraft) return;
   const inp = document.getElementById('shop-prompt-amount');
   const finalAmount = Math.max(1, Math.round(Number(inp ? inp.value : shoppingQtyDraft.amount) || shoppingQtyDraft.amount || 1));
-  const { name, unit, source } = shoppingQtyDraft;
+  const { editId, name, unit, source } = shoppingQtyDraft;
   shoppingQtyDraft = null;
+  if (editId) {
+    const item = ensureShoppingList().find(it => it.id === editId);
+    if (item) {
+      item.grams = finalAmount;
+      item.unit = unit;
+      recordShoppingHistoryItem(item, false);
+      saveState();
+      render();
+    }
+    openShoppingListModal();
+    return;
+  }
   mergeIngredientsIntoShoppingList([{ name, grams: finalAmount, unit }], source);
   openShoppingListModal();
   const mainInp = document.getElementById('shopping-manual-input');
@@ -6583,62 +6735,56 @@ function openShoppingListModal() {
         ` : ''}
 
         ${list.length > 0 ? `
-          ${[...openItems, ...doneItems].map(it => {
-            const unit = getShoppingItemUnit(it);
-            const curAmt = Math.max(1, Math.round(Number(it.grams) || 1));
-            const qtyStr = formatShoppingQty(it);
-            const step = unit === 'Stk.' ? 1 : (curAmt <= 100 ? 25 : 50);
-            const isEditingQty = editingShoppingItemId === it.id;
-            return `
-              <div class="rounded-2xl border transition ${
-                it.checked
-                  ? 'bg-zinc-950/60 border-zinc-900 text-zinc-500'
-                  : 'bg-card border-border text-zinc-100'
-              }">
-                <div class="flex items-center justify-between gap-2 px-3.5 py-3">
-                  <button type="button" onclick="toggleShoppingItem('${it.id}')" class="flex-1 min-w-0 flex items-center gap-3 text-left text-sm">
-                    <span class="w-5 h-5 rounded-lg border flex items-center justify-center shrink-0 text-xs font-bold ${
-                      it.checked ? 'bg-emerald-500/25 border-emerald-500/50 text-emerald-300' : 'border-zinc-600'
-                    }">${it.checked ? '✓' : ''}</span>
-                    <span class="truncate ${it.checked ? 'line-through' : 'font-medium'}">${escapeHtmlAttr(it.name)}</span>
-                  </button>
-                  <div class="flex items-center gap-1.5 shrink-0">
-                    <button type="button" onclick="toggleEditShoppingItemQty('${it.id}')" title="Menge / Einheit anpassen"
-                      class="px-2.5 py-1 rounded-xl text-xs font-semibold border transition ${
-                        isEditingQty
-                          ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                          : (it.checked
-                            ? 'bg-zinc-900/60 border-zinc-800 text-zinc-500'
-                            : 'bg-zinc-900 hover:bg-zinc-800 border-border text-emerald-400')
-                      }">
+          ${openItems.length > 0 ? `
+            <div class="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
+              ${openItems.map(it => {
+                const qtyStr = formatShoppingQty(it);
+                const icon = getShoppingItemIcon(it.name);
+                return `
+                  <div class="relative aspect-square rounded-2xl bg-card hover:bg-cardHover border border-emerald-500/30 p-2.5 flex flex-col items-center justify-between text-center transition select-none">
+                    <button type="button" onclick="deleteShoppingItem('${it.id}')" title="Entfernen" aria-label="Entfernen"
+                      class="absolute top-1.5 right-1.5 w-6 h-6 flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/15 text-[11px] transition z-10">✕</button>
+                    <button type="button" onclick="toggleShoppingItem('${it.id}')"
+                      class="w-full flex-1 flex flex-col items-center justify-center gap-1 pt-2 px-0.5 min-h-0">
+                      <span class="text-2xl leading-none">${icon}</span>
+                      <span class="text-xs font-semibold text-white leading-tight line-clamp-2 break-words w-full">${escapeHtmlAttr(it.name)}</span>
+                    </button>
+                    <button type="button" onclick="openEditShoppingItemQtyPrompt('${it.id}')" title="Menge / Einheit anpassen"
+                      class="w-full mt-1 py-1 px-1.5 rounded-xl bg-zinc-900/90 hover:bg-emerald-500/20 border border-border hover:border-emerald-500/45 text-[11px] font-semibold text-emerald-400 truncate transition">
                       ${qtyStr || 'Menge'}
                     </button>
-                    <button type="button" onclick="deleteShoppingItem('${it.id}')" title="Entfernen"
-                      class="w-8 h-8 flex items-center justify-center rounded-xl text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 text-xs shrink-0 transition">✕</button>
                   </div>
-                </div>
-                ${isEditingQty ? `
-                  <div class="flex items-center gap-1.5 px-3.5 pb-3 pt-1 border-t border-zinc-800/80">
-                    <button type="button" onclick="updateShoppingItemQty('${it.id}', Math.max(1, ${curAmt - step}))"
-                      class="px-2.5 py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">−${step}</button>
-                    <div class="flex-1 flex items-center gap-1 bg-zinc-950 border border-zinc-700 focus-within:border-emerald-500 rounded-xl px-2.5 py-1">
-                      <input id="shop-qty-${it.id}" type="number" inputmode="decimal" value="${curAmt}" min="1"
-                        onkeydown="if(event.key==='Enter'){event.preventDefault(); confirmShoppingItemQty('${it.id}');}"
-                        class="w-full bg-transparent text-xs font-semibold text-white text-center focus:outline-none" />
+                `;
+              }).join('')}
+            </div>
+          ` : ''}
+
+          ${doneItems.length > 0 ? `
+            <div class="${openItems.length > 0 ? 'pt-3 mt-2 border-t border-border/70' : ''} space-y-2">
+              <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 px-0.5">Erledigt (${doneItems.length})</div>
+              <div class="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
+                ${doneItems.map(it => {
+                  const qtyStr = formatShoppingQty(it);
+                  const icon = getShoppingItemIcon(it.name);
+                  return `
+                    <div class="relative aspect-square rounded-2xl bg-zinc-950/70 border border-zinc-900 p-2.5 flex flex-col items-center justify-between text-center opacity-60 hover:opacity-85 transition select-none">
+                      <span class="absolute top-1.5 left-1.5 w-5 h-5 rounded-md bg-emerald-500/20 border border-emerald-500/45 text-emerald-300 text-[10px] font-bold flex items-center justify-center">✓</span>
+                      <button type="button" onclick="deleteShoppingItem('${it.id}')" title="Entfernen" aria-label="Entfernen"
+                        class="absolute top-1.5 right-1.5 w-6 h-6 flex items-center justify-center rounded-lg text-zinc-600 hover:text-rose-400 hover:bg-rose-500/15 text-[11px] transition z-10">✕</button>
+                      <button type="button" onclick="toggleShoppingItem('${it.id}')"
+                        class="w-full flex-1 flex flex-col items-center justify-center gap-1 pt-2 px-0.5 min-h-0">
+                        <span class="text-xl leading-none grayscale">${icon}</span>
+                        <span class="text-xs font-medium text-zinc-400 line-through leading-tight line-clamp-2 break-words w-full">${escapeHtmlAttr(it.name)}</span>
+                      </button>
+                      <span class="w-full mt-1 py-0.5 px-1.5 rounded-lg bg-zinc-900/60 text-[10px] text-zinc-500 truncate">
+                        ${qtyStr || '✓'}
+                      </span>
                     </div>
-                    <button type="button" onclick="updateShoppingItemQty('${it.id}', ${curAmt + step})"
-                      class="px-2.5 py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">+${step}</button>
-                    <button type="button" onclick="toggleShoppingItemUnit('${it.id}')" title="Zwischen g und Stk. wechseln"
-                      class="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-sky-300 shrink-0 transition">
-                      ${unit}
-                    </button>
-                    <button type="button" onclick="confirmShoppingItemQty('${it.id}')" title="Übernehmen"
-                      class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold shrink-0 transition">✓</button>
-                  </div>
-                ` : ''}
+                  `;
+                }).join('')}
               </div>
-            `;
-          }).join('')}
+            </div>
+          ` : ''}
         ` : `
           <div class="rounded-3xl bg-card border border-dashed border-zinc-700 p-8 text-center space-y-3 mt-6">
             <div class="text-3xl">🛒</div>
@@ -6663,18 +6809,22 @@ function openShoppingListModal() {
               <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Zuletzt gekauft</span>
               <span class="text-[10px] text-zinc-500">Antippen → direkt auf die Liste</span>
             </div>
-            <div class="flex flex-wrap gap-1.5">
+            <div class="grid grid-cols-3 sm:grid-cols-4 gap-2">
               ${recentItems.map(rc => {
                 const safeName = String(rc.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                 const unit = rc.unit === 'Stk.' ? 'Stk.' : 'g';
                 const amt = Math.max(1, Math.round(Number(rc.grams) || 1));
                 const qtyLabel = unit === 'Stk.' ? `${amt} Stk.` : `${amt}g`;
+                const icon = getShoppingItemIcon(rc.name);
                 return `
                   <button type="button" onclick="readdRecentShoppingItem('${safeName}', ${amt}, '${unit}')"
-                    class="px-2.5 py-1.5 rounded-xl bg-card hover:bg-emerald-500/15 border border-border hover:border-emerald-500/45 text-xs text-zinc-200 hover:text-emerald-300 inline-flex items-center gap-1.5 transition">
-                    <span class="text-emerald-400 font-bold">+</span>
-                    <span>${escapeHtmlAttr(rc.name)}</span>
-                    <span class="text-[10px] text-zinc-400">${qtyLabel}</span>
+                    class="relative aspect-square rounded-2xl bg-zinc-900/90 hover:bg-emerald-500/15 border border-border hover:border-emerald-500/45 p-2.5 flex flex-col items-center justify-between text-center transition">
+                    <span class="absolute top-1.5 right-2 text-emerald-400 font-bold text-xs">+</span>
+                    <div class="flex-1 flex flex-col items-center justify-center gap-1 pt-1 min-h-0 w-full">
+                      <span class="text-xl leading-none">${icon}</span>
+                      <span class="text-xs font-medium text-zinc-200 leading-tight line-clamp-2 break-words w-full">${escapeHtmlAttr(rc.name)}</span>
+                    </div>
+                    <span class="w-full mt-1 py-0.5 px-1.5 rounded-lg bg-zinc-950/80 border border-zinc-800 text-[10px] font-medium text-zinc-400 truncate">${qtyLabel}</span>
                   </button>
                 `;
               }).join('')}
@@ -6783,7 +6933,7 @@ function openShoppingListModal() {
               </button>
               <button type="submit"
                 class="flex-1 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
-                ✓ Hinzufügen (${qtyPreview})
+                ✓ ${d.editId ? 'Speichern' : 'Hinzufügen'} (${qtyPreview})
               </button>
             </div>
           </form>
@@ -7466,6 +7616,11 @@ function editRecipeById(id) {
   const found = state.recipes.find(r => r.id === id);
   if (!found) return;
   editingRecipe = JSON.parse(JSON.stringify(found));
+  if (viewingRecipeId && typeof window !== 'undefined' && window.history && typeof window.history.pushState === 'function') {
+    try {
+      window.history.pushState({ ffView: 'recipeEdit', recipeId: found.id }, '', window.location ? window.location.href : undefined);
+    } catch (e) {}
+  }
   render();
 }
 
@@ -8779,6 +8934,7 @@ const GEMINI_FETCH_TIMEOUT_MS = 25000;
 let aiParsedMeal = null;
 let aiSelectedImageBase64 = null;
 let aiSelectedImageMime = 'image/jpeg';
+let aiSelectedImageDataUrl = null;
 let aiImagePrepPromise = null;
 let aiImagePrepSeq = 0;
 let aiAnalyzeAbortController = null;
@@ -8901,6 +9057,7 @@ function openAiMealModal() {
   aiParsedMeal = null;
   aiSelectedImageBase64 = null;
   aiSelectedImageMime = 'image/jpeg';
+  aiSelectedImageDataUrl = null;
   aiImagePrepPromise = null;
   aiImagePrepSeq++;
   document.getElementById('aiPhotoInput').value = '';
@@ -9017,6 +9174,7 @@ function handleAiPhotoSelect(event) {
   const seq = ++aiImagePrepSeq;
   aiSelectedImageBase64 = null;
   aiSelectedImageMime = 'image/jpeg';
+  aiSelectedImageDataUrl = null;
 
   const previewWrap = document.getElementById('aiPhotoPreviewWrap');
   const previewImg = document.getElementById('aiPhotoPreviewImg');
@@ -9035,6 +9193,7 @@ function handleAiPhotoSelect(event) {
 
       aiSelectedImageBase64 = prepared.base64;
       aiSelectedImageMime = prepared.mimeType || 'image/jpeg';
+      aiSelectedImageDataUrl = prepared.previewUrl || (prepared.base64 ? `data:${aiSelectedImageMime};base64,${prepared.base64}` : null);
 
       const approxKb = Math.max(1, Math.round((prepared.base64.length * 3) / 4 / 1024));
       if (previewImg && previewWrap) {
@@ -9340,7 +9499,7 @@ function renderAiMealPreview() {
       </div>
       <button type="button" onclick="saveAiMealAsRecipe()"
         style="width:100%;margin-top:8px;background:rgba(16,185,129,0.16);color:#34d399;border:1px solid rgba(16,185,129,0.4);border-radius:8px;padding:9px;font-weight:600;font-size:0.83rem;cursor:pointer;">
-        📖 Als Rezept speichern
+        ${aiSelectedImageDataUrl ? '📖 Als Rezept speichern (inkl. Foto)' : '📖 Als Rezept speichern'}
       </button>
     </div>
   `;
@@ -9369,15 +9528,44 @@ function saveAiMealAsRecipe() {
 
   if (!items.length) return;
 
-  state.recipes.unshift({
+  const photoDataUrl = (typeof aiSelectedImageDataUrl === 'string' && aiSelectedImageDataUrl.startsWith('data:image/'))
+    ? aiSelectedImageDataUrl
+    : (aiSelectedImageBase64 ? `data:${aiSelectedImageMime || 'image/jpeg'};base64,${aiSelectedImageBase64}` : null);
+  const newRecipe = {
     id: 'rec_' + now,
     name: recipeName,
-    items
-  });
+    items,
+    tags: [],
+    rating: 0,
+    eatenCount: 0,
+    ...(photoDataUrl ? {
+      photos: [{
+        id: 'rph_' + now,
+        dataUrl: photoDataUrl,
+        addedAt: new Date().toISOString()
+      }]
+    } : {})
+  };
+
+  state.recipes.unshift(newRecipe);
+  let photoDropped = false;
+  if (newRecipe.photos) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (quotaErr) {
+      delete newRecipe.photos;
+      photoDropped = true;
+    }
+  }
 
   saveState();
   closeAiMealModal();
-  switchTab('recipes');
+  openRecipeDetail(newRecipe.id);
+  if (photoDropped) {
+    showToast('Rezept gespeichert (Foto konnte wegen vollem Speicher nicht gesichert werden)');
+  } else if (newRecipe.photos && newRecipe.photos.length) {
+    showToast('📖 Rezept inkl. Foto gespeichert');
+  }
 }
 
 function saveAiMealToLog(asSingleEntry) {
@@ -11040,6 +11228,7 @@ document.addEventListener('visibilitychange', () => {
     pushStateToCloud(true);
   }
 });
+window.addEventListener('popstate', handleAppPopState);
 window.addEventListener('focus', () => pullStateFromCloud());
 window.addEventListener('online', () => {
   syncRetryAttempt = 0;
