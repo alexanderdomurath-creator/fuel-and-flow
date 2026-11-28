@@ -1427,13 +1427,59 @@ function translateFoodQueryDeToEn(rawQuery) {
   return clean;
 }
 
+const liveSearchTimers = {};
+const liveSearchSeq = {};
+const liveSearchControllers = {};
+const liveSearchCache = new Map();
+
+function getLocalFoodMatches(rawQuery) {
+  const q = String(rawQuery || '').trim().toLowerCase();
+  if (q.length < 2) return [];
+  const seen = new Set();
+  const starts = [];
+  const contains = [];
+
+  const consider = (item, sourceLabel) => {
+    if (!item || !item.name) return;
+    const name = String(item.name).trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) return;
+    const kcal100 = Math.round(Number(item.kcal100) || 0);
+    if (kcal100 <= 0) return;
+    if (!key.includes(q)) return;
+    seen.add(key);
+    const entry = {
+      name,
+      source: sourceLabel,
+      defaultGrams: Math.max(1, Math.round(Number(item.grams) || suggestDefaultGrams(name))),
+      kcal100,
+      p100: Math.round((Number(item.p100) || 0) * 10) / 10,
+      c100: Math.round((Number(item.c100) || 0) * 10) / 10,
+      f100: Math.round((Number(item.f100) || 0) * 10) / 10
+    };
+    if (key.startsWith(q)) starts.push(entry);
+    else contains.push(entry);
+  };
+
+  (state.snacks || []).forEach(s => consider(s, 'Gespeichert'));
+  (state.recipes || []).forEach(r => {
+    (r.items || []).forEach(it => consider(it, 'Deine Zutaten'));
+  });
+
+  return [...starts, ...contains].slice(0, 5);
+}
+
 function getFoodSuggestions(rawQuery) {
   const q = String(rawQuery || '').trim().toLowerCase();
   if (q.length < 2) return [];
 
   const titleCase = s => s.replace(/(^|\s)([a-zäöüß])/g, (_, sp, ch) => sp + ch.toUpperCase());
   const pool = new Map();
-  // Eigene bereits genutzte Rezeptzutaten zuerst merken
+  // Eigene bereits genutzte Snacks & Rezeptzutaten zuerst merken
+  (state.snacks || []).forEach(s => {
+    const base = String(s.name || '').split('(')[0].trim();
+    if (base.length >= 2) pool.set(base.toLowerCase(), base);
+  });
   (state.recipes || []).forEach(r => {
     (r.items || []).forEach(it => {
       const base = String(it.name || '').split('(')[0].trim();
@@ -1455,26 +1501,76 @@ function getFoodSuggestions(rawQuery) {
   return [...starts, ...contains].slice(0, 6);
 }
 
+function scheduleLiveFoodSearch(mode, rawVal) {
+  if (mode !== 'builder' && mode !== 'snack') return;
+  if (liveSearchTimers[mode]) {
+    clearTimeout(liveSearchTimers[mode]);
+    liveSearchTimers[mode] = null;
+  }
+  const q = String(rawVal || '').trim();
+  const boxId = mode === 'builder' ? 'builder-search-results' : 'snack-search-results';
+  const box = document.getElementById(boxId);
+
+  if (q.length < 2) {
+    liveSearchSeq[mode] = (liveSearchSeq[mode] || 0) + 1;
+    if (liveSearchControllers[mode]) {
+      try { liveSearchControllers[mode].abort(); } catch (e) {}
+      liveSearchControllers[mode] = null;
+    }
+    if (box) box.innerHTML = '';
+    return;
+  }
+
+  // Sofort (0ms): lokale Treffer oder Cache anzeigen
+  const cacheKey = q.toLowerCase();
+  if (liveSearchCache.has(cacheKey)) {
+    const cached = liveSearchCache.get(cacheKey);
+    searchResultsCache = cached;
+    if (mode === 'snack') renderSnackSearchResults(cached, false);
+    else renderBuilderSearchResults(cached, false);
+    return;
+  }
+
+  const localHits = getLocalFoodMatches(q);
+  if (localHits.length) {
+    searchResultsCache = localHits;
+    if (mode === 'snack') renderSnackSearchResults(localHits, true);
+    else renderBuilderSearchResults(localHits, true);
+  } else if (box) {
+    box.innerHTML = `<div class="text-[11px] text-zinc-400 py-1.5">⏳ Suche passende Einträge…</div>`;
+  }
+
+  liveSearchTimers[mode] = setTimeout(() => {
+    liveSearchTimers[mode] = null;
+    if (mode === 'snack') runSnackSearch(true);
+    else runBuilderSearch(true);
+  }, 300);
+}
+
 function renderFoodSuggestions(mode, rawVal) {
   const boxId = mode === 'builder'
     ? 'builder-search-suggestions'
     : (mode === 'snack' ? 'snack-search-suggestions' : 'global-food-suggestions');
   const box = document.getElementById(boxId);
-  if (!box) return;
-  const list = getFoodSuggestions(rawVal);
-  if (!list.length) {
-    box.innerHTML = '';
-    return;
+  if (box) {
+    const list = getFoodSuggestions(rawVal);
+    if (!list.length) {
+      box.innerHTML = '';
+    } else {
+      box.innerHTML = list.map(label => {
+        const safe = label.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return `
+          <button type="button" onclick="applyFoodSuggestion('${mode}', '${safe}')"
+            class="px-2.5 py-1 rounded-full bg-zinc-900 hover:bg-emerald-500/20 border border-border hover:border-emerald-500/40 text-[11px] text-zinc-200 hover:text-emerald-300 transition">
+            ${label}
+          </button>
+        `;
+      }).join('');
+    }
   }
-  box.innerHTML = list.map(label => {
-    const safe = label.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    return `
-      <button type="button" onclick="applyFoodSuggestion('${mode}', '${safe}')"
-        class="px-2.5 py-1 rounded-full bg-zinc-900 hover:bg-emerald-500/20 border border-border hover:border-emerald-500/40 text-[11px] text-zinc-200 hover:text-emerald-300 transition">
-        ${label}
-      </button>
-    `;
-  }).join('');
+  if (mode === 'builder' || mode === 'snack') {
+    scheduleLiveFoodSearch(mode, rawVal);
+  }
 }
 
 function applyFoodSuggestion(mode, term) {
@@ -1488,8 +1584,12 @@ function applyFoodSuggestion(mode, term) {
   const sugBox = document.getElementById(boxId);
   if (inp) inp.value = term;
   if (sugBox) sugBox.innerHTML = '';
-  if (mode === 'builder') runBuilderSearch();
-  else if (mode === 'snack') runSnackSearch();
+  if (liveSearchTimers[mode]) {
+    clearTimeout(liveSearchTimers[mode]);
+    liveSearchTimers[mode] = null;
+  }
+  if (mode === 'builder') runBuilderSearch(false);
+  else if (mode === 'snack') runSnackSearch(false);
   else runGlobalFoodSearch();
 }
 
@@ -1541,13 +1641,14 @@ function suggestDefaultGrams(foodName) {
   return 100;
 }
 
-async function searchFoodsLive(query) {
+async function searchFoodsLive(query, signal = null) {
   const q = (query || '').trim();
   if (q.length < 2) return [];
   const offResults = [];
   const usdaResults = [];
+  const fetchOpts = signal ? { signal } : {};
 
-  const offPromise = fetch(`https://de.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&lc=de&cc=de&page_size=12&fields=product_name,product_name_de,brands,nutriments`)
+  const offPromise = fetch(`https://de.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&lc=de&cc=de&page_size=12&fields=product_name,product_name_de,brands,nutriments`, fetchOpts)
     .then(r => r.json())
     .then(data => {
       (data.products || []).forEach(p => {
@@ -1571,7 +1672,7 @@ async function searchFoodsLive(query) {
 
   const enQuery = translateFoodQueryDeToEn(q);
   const wasTranslated = enQuery.toLowerCase() !== q.toLowerCase();
-  const usdaPromise = fetch(`https://api.nal.usda.gov/fdc/v1/foods/search?api_key=DEMO_KEY&query=${encodeURIComponent(enQuery)}&pageSize=8`)
+  const usdaPromise = fetch(`https://api.nal.usda.gov/fdc/v1/foods/search?api_key=DEMO_KEY&query=${encodeURIComponent(enQuery)}&pageSize=8`, fetchOpts)
     .then(r => r.json())
     .then(data => {
       (data.foods || []).forEach(f => {
@@ -1596,11 +1697,29 @@ async function searchFoodsLive(query) {
     .catch(() => {});
 
   await Promise.all([offPromise, usdaPromise]);
-  // Bei übersetzten deutschen Grundzutaten USDA-Grundlebensmittel ganz oben mit einmischen
-  const merged = wasTranslated
+  if (signal && signal.aborted) return null;
+
+  const localHits = getLocalFoodMatches(q);
+  const remoteMerged = wasTranslated
     ? [...usdaResults.slice(0, 4), ...offResults, ...usdaResults.slice(4)]
     : [...offResults, ...usdaResults];
-  searchResultsCache = merged.slice(0, 18);
+
+  const seenNames = new Set();
+  const deduped = [];
+  [...localHits, ...remoteMerged].forEach(it => {
+    const key = String(it.name || '').trim().toLowerCase();
+    if (!key || seenNames.has(key)) return;
+    seenNames.add(key);
+    deduped.push(it);
+  });
+
+  const finalList = deduped.slice(0, 18);
+  liveSearchCache.set(q.toLowerCase(), finalList);
+  if (liveSearchCache.size > 40) {
+    const firstKey = liveSearchCache.keys().next().value;
+    liveSearchCache.delete(firstKey);
+  }
+  searchResultsCache = finalList;
   return searchResultsCache;
 }
 
@@ -3613,37 +3732,67 @@ function addSnackItem(snackObj) {
   return item;
 }
 
-async function runSnackSearch() {
-  const inp = document.getElementById('snack-search-input');
+function renderSnackSearchResults(items, isLoadingMore = false) {
   const box = document.getElementById('snack-search-results');
-  if (!inp || !box) return;
-  const q = inp.value.trim();
-  if (q.length < 2) {
-    box.innerHTML = `<div class="text-xs text-zinc-500 py-1.5">Bitte mindestens 2 Zeichen eingeben.</div>`;
-    return;
-  }
-  box.innerHTML = `<div class="text-xs text-zinc-400 py-2">Suche läuft...</div>`;
-  const items = await searchFoodsLive(q);
-  if (!items.length) {
-    box.innerHTML = `<div class="text-xs text-zinc-500 py-2">Keine Treffer gefunden.</div>`;
+  if (!box) return;
+  if (!items || !items.length) {
+    box.innerHTML = isLoadingMore
+      ? `<div class="text-[11px] text-zinc-400 py-1.5">⏳ Suche passende Einträge…</div>`
+      : `<div class="text-xs text-zinc-500 py-2">Keine Treffer gefunden.</div>`;
     return;
   }
   box.innerHTML = items.map((it, idx) => {
     const defG = it.defaultGrams || suggestDefaultGrams(it.name);
     const estKcal = Math.round((it.kcal100 * defG) / 100);
     return `
-      <div class="flex items-center justify-between bg-zinc-900/90 border border-border rounded-xl px-3 py-2 text-xs gap-2">
+      <button type="button" onclick="addCachedFoodToSnacks(${idx})"
+        class="w-full text-left flex items-center justify-between bg-zinc-900/90 hover:bg-zinc-800/90 border border-border hover:border-amber-500/40 rounded-xl px-3 py-2 text-xs gap-2 transition">
         <div class="min-w-0 flex-1">
           <div class="font-medium text-zinc-200 truncate">${escapeHtmlAttr(it.name)}</div>
-          <div class="text-[10px] text-zinc-400">${estKcal} kcal / ${defG}g (${it.kcal100} kcal/100g · P ${it.p100}g)</div>
+          <div class="text-[10px] text-zinc-400">${estKcal} kcal / ${defG}g (${it.kcal100} kcal/100g · P ${it.p100}g · ${escapeHtmlAttr(it.source || '')})</div>
         </div>
-        <button type="button" onclick="addCachedFoodToSnacks(${idx})"
-          class="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/35 shrink-0 font-semibold text-[11px] transition">
-          + Merken (${defG}g)
-        </button>
-      </div>
+        <span class="px-2.5 py-1 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/35 shrink-0 font-semibold text-[11px]">
+          + ${defG}g
+        </span>
+      </button>
     `;
-  }).join('');
+  }).join('') + (isLoadingMore ? `<div class="text-[10px] text-zinc-500 text-center py-1">⏳ Lade weitere Online-Treffer…</div>` : '');
+}
+
+async function runSnackSearch(isAuto = false) {
+  const inp = document.getElementById('snack-search-input');
+  const box = document.getElementById('snack-search-results');
+  if (!inp || !box) return;
+  if (liveSearchTimers.snack) {
+    clearTimeout(liveSearchTimers.snack);
+    liveSearchTimers.snack = null;
+  }
+  const q = inp.value.trim();
+  if (q.length < 2) {
+    box.innerHTML = isAuto ? '' : `<div class="text-xs text-zinc-500 py-1.5">Bitte mindestens 2 Zeichen eingeben.</div>`;
+    return;
+  }
+
+  const seq = (liveSearchSeq.snack || 0) + 1;
+  liveSearchSeq.snack = seq;
+  if (liveSearchControllers.snack) {
+    try { liveSearchControllers.snack.abort(); } catch (e) {}
+  }
+  const controller = new AbortController();
+  liveSearchControllers.snack = controller;
+
+  const localHits = getLocalFoodMatches(q);
+  if (localHits.length) {
+    searchResultsCache = localHits;
+    renderSnackSearchResults(localHits, true);
+  } else {
+    box.innerHTML = `<div class="text-[11px] text-zinc-400 py-1.5">⏳ Suche läuft…</div>`;
+  }
+
+  const items = await searchFoodsLive(q, controller.signal);
+  if (seq !== liveSearchSeq.snack || items === null) return;
+  if (liveSearchControllers.snack === controller) liveSearchControllers.snack = null;
+  renderSnackSearchResults(items, false);
 }
 
 function addCachedFoodToSnacks(idx) {
@@ -4507,30 +4656,66 @@ function removeRecipeItem(idx) {
   render();
 }
 
-async function runBuilderSearch() {
-  const inp = document.getElementById('builder-search-input');
+function renderBuilderSearchResults(items, isLoadingMore = false) {
   const box = document.getElementById('builder-search-results');
-  if (!inp || !box) return;
-  box.innerHTML = `<div class="text-xs text-zinc-400 py-2">Suche läuft...</div>`;
-  const items = await searchFoodsLive(inp.value);
-  if (!items.length) {
-    box.innerHTML = `<div class="text-xs text-zinc-500 py-2">Keine Treffer gefunden.</div>`;
+  if (!box) return;
+  if (!items || !items.length) {
+    box.innerHTML = isLoadingMore
+      ? `<div class="text-[11px] text-zinc-400 py-1.5">⏳ Suche passende Zutaten…</div>`
+      : `<div class="text-xs text-zinc-500 py-2">Keine Treffer gefunden.</div>`;
     return;
   }
   box.innerHTML = items.map((it, idx) => {
     const defG = it.defaultGrams || suggestDefaultGrams(it.name);
     return `
-    <div class="flex items-center justify-between bg-zinc-900/90 border border-border rounded-xl px-3 py-2.5 text-xs gap-2">
-      <div class="min-w-0 flex-1">
-        <div class="font-medium text-zinc-200 truncate">${it.name}</div>
-        <div class="text-[10px] text-zinc-400">${it.kcal100} kcal/100g · P ${it.p100}g · ${it.source}</div>
-      </div>
-      <button onclick="addCachedFoodToRecipe(${idx})" class="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/35 shrink-0 font-semibold">
-        + ${defG}g
+      <button type="button" onclick="addCachedFoodToRecipe(${idx})"
+        class="w-full text-left flex items-center justify-between bg-zinc-900/90 hover:bg-zinc-800/90 border border-border hover:border-emerald-500/40 rounded-xl px-3 py-2.5 text-xs gap-2 transition">
+        <div class="min-w-0 flex-1">
+          <div class="font-medium text-zinc-200 truncate">${escapeHtmlAttr(it.name)}</div>
+          <div class="text-[10px] text-zinc-400">${it.kcal100} kcal/100g · P ${it.p100}g · ${escapeHtmlAttr(it.source || '')}</div>
+        </div>
+        <span class="px-3 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/35 shrink-0 font-semibold">
+          + ${defG}g
+        </span>
       </button>
-    </div>
-  `;
-  }).join('');
+    `;
+  }).join('') + (isLoadingMore ? `<div class="text-[10px] text-zinc-500 text-center py-1">⏳ Lade weitere Online-Treffer…</div>` : '');
+}
+
+async function runBuilderSearch(isAuto = false) {
+  const inp = document.getElementById('builder-search-input');
+  const box = document.getElementById('builder-search-results');
+  if (!inp || !box) return;
+  if (liveSearchTimers.builder) {
+    clearTimeout(liveSearchTimers.builder);
+    liveSearchTimers.builder = null;
+  }
+  const q = inp.value.trim();
+  if (q.length < 2) {
+    box.innerHTML = isAuto ? '' : `<div class="text-xs text-zinc-500 py-1.5">Bitte mindestens 2 Zeichen eingeben.</div>`;
+    return;
+  }
+
+  const seq = (liveSearchSeq.builder || 0) + 1;
+  liveSearchSeq.builder = seq;
+  if (liveSearchControllers.builder) {
+    try { liveSearchControllers.builder.abort(); } catch (e) {}
+  }
+  const controller = new AbortController();
+  liveSearchControllers.builder = controller;
+
+  const localHits = getLocalFoodMatches(q);
+  if (localHits.length) {
+    searchResultsCache = localHits;
+    renderBuilderSearchResults(localHits, true);
+  } else {
+    box.innerHTML = `<div class="text-[11px] text-zinc-400 py-1.5">⏳ Suche läuft…</div>`;
+  }
+
+  const items = await searchFoodsLive(q, controller.signal);
+  if (seq !== liveSearchSeq.builder || items === null) return;
+  if (liveSearchControllers.builder === controller) liveSearchControllers.builder = null;
+  renderBuilderSearchResults(items, false);
 }
 
 function addCachedFoodToRecipe(idx) {
