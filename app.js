@@ -6879,9 +6879,15 @@ function saveAiMealToLog(asSingleEntry) {
 }
 
 // ---------- SPRACH-QUICK-LOG (MAHLZEITEN & HABITS VIA GEMINI) ----------
+const GEMINI_FAST_MODELS_TO_TRY = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
+const VQL_MIC_SVG = '<svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>';
 let vqlMediaRecorder = null;
 let vqlAudioStream = null;
 let vqlAudioChunks = [];
+let vqlSpeechRecognition = null;
+let vqlSpeechActive = false;
+let vqlSpeechFinalText = '';
+let vqlSpeechInterimText = '';
 let vqlRecTimer = null;
 let vqlRecSeconds = 0;
 let vqlAbortController = null;
@@ -6890,6 +6896,16 @@ let vqlDraft = null;
 function stopVoiceQuickLogStreamOnly() {
   clearInterval(vqlRecTimer);
   vqlRecTimer = null;
+  vqlSpeechActive = false;
+  if (vqlSpeechRecognition) {
+    try {
+      vqlSpeechRecognition.onresult = null;
+      vqlSpeechRecognition.onend = null;
+      vqlSpeechRecognition.onerror = null;
+      vqlSpeechRecognition.abort();
+    } catch (e) {}
+    vqlSpeechRecognition = null;
+  }
   if (vqlMediaRecorder && vqlMediaRecorder.state !== 'inactive') {
     try { vqlMediaRecorder.onstop = null; vqlMediaRecorder.stop(); } catch (e) {}
   }
@@ -6916,14 +6932,19 @@ function saveVqlGeminiKey() {
 function openVoiceQuickLogModal() {
   stopVoiceQuickLogStreamOnly();
   vqlDraft = null;
+  vqlSpeechFinalText = '';
+  vqlSpeechInterimText = '';
   const savedKey = (localStorage.getItem(GEMINI_KEY_STORAGE) || '').trim();
 
   openModal(`
     <div class="space-y-4">
       <div class="flex items-start justify-between gap-2">
         <div>
-          <h3 class="text-base font-semibold text-white">🎙️ Sprach-Quick-Log</h3>
-          <p class="text-[11px] text-zinc-400">Mahlzeiten & Habits für <strong class="text-zinc-200">${formatDisplayDate(state.selectedDate)}</strong> einsprechen</p>
+          <h3 class="text-base font-semibold text-white flex items-center gap-2">
+            <span class="w-7 h-7 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 inline-flex items-center justify-center">${VQL_MIC_SVG}</span>
+            <span>Sprach-Quick-Log</span>
+          </h3>
+          <p class="text-[11px] text-zinc-400 mt-0.5">Mahlzeiten & Habits für <strong class="text-zinc-200">${formatDisplayDate(state.selectedDate)}</strong> einsprechen</p>
         </div>
         <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
       </div>
@@ -6945,15 +6966,15 @@ function openVoiceQuickLogModal() {
         </div>
         <div id="vqlTimerBadge" class="hidden text-lg font-mono font-bold text-rose-400 animate-pulse">00:00</div>
         <button id="vqlMainBtn" type="button" onclick="toggleVoiceQuickLogRecording()"
-          class="w-full py-3.5 rounded-2xl bg-violet-500 hover:bg-violet-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-violet-500/20">
-          <span>🎙️</span><span>Aufnahme starten</span>
+          class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-emerald-400 to-teal-500 hover:from-emerald-300 hover:to-teal-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20">
+          ${VQL_MIC_SVG}<span>Aufnahme starten</span>
         </button>
       </div>
 
       <div class="space-y-2 pt-1 border-t border-border">
         <label class="text-[11px] text-zinc-400 block">Oder kurz als Text eingeben:</label>
         <textarea id="vqlTextInput" rows="2" placeholder="z. B. 1 Snickers gegessen, Skincare erledigt, kein Nikotin"
-          class="w-full px-3 py-2.5 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500"></textarea>
+          class="w-full px-3 py-2.5 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500"></textarea>
         <button id="vqlTextSubmitBtn" type="button" onclick="submitVoiceQuickLogToGemini(null, null)"
           class="w-full py-2.5 rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-border text-zinc-200 font-semibold text-xs transition">
           ✨ Aus Text erkennen
@@ -6964,6 +6985,78 @@ function openVoiceQuickLogModal() {
       <div id="vqlPreview" class="space-y-3"></div>
     </div>
   `);
+}
+
+function getSpeechRecognitionCtor() {
+  if (typeof window === 'undefined') return null;
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function startVqlRecordingUi(hintText) {
+  vqlRecSeconds = 0;
+  const timerBadge = document.getElementById('vqlTimerBadge');
+  const statusEl = document.getElementById('vqlStatus');
+  const mainBtn = document.getElementById('vqlMainBtn');
+  if (timerBadge) {
+    timerBadge.textContent = '00:00';
+    timerBadge.classList.remove('hidden');
+  }
+  if (statusEl) {
+    statusEl.textContent = hintText;
+  }
+  if (mainBtn) {
+    mainBtn.className = 'w-full py-3.5 rounded-2xl bg-rose-500 hover:bg-rose-400 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-rose-500/25';
+    mainBtn.innerHTML = '<span>⏹</span><span>Stopp & sofort auswerten</span>';
+  }
+  clearInterval(vqlRecTimer);
+  vqlRecTimer = setInterval(() => {
+    vqlRecSeconds++;
+    const mm = String(Math.floor(vqlRecSeconds / 60)).padStart(2, '0');
+    const ss = String(vqlRecSeconds % 60).padStart(2, '0');
+    const tb = document.getElementById('vqlTimerBadge');
+    if (tb) tb.textContent = `${mm}:${ss}`;
+  }, 1000);
+}
+
+async function startVqlAudioRecorderFallback() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('Mikrofon wird in diesem Browser nicht unterstützt.');
+  }
+  vqlAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mime = pickSupportedAudioMime();
+  vqlAudioChunks = [];
+  // Niedrige Sprach-Bitrate (24 kbps) für extrem schnellen Upload
+  const recOpts = mime ? { mimeType: mime, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 };
+  try {
+    vqlMediaRecorder = new MediaRecorder(vqlAudioStream, recOpts);
+  } catch (e) {
+    vqlMediaRecorder = mime ? new MediaRecorder(vqlAudioStream, { mimeType: mime }) : new MediaRecorder(vqlAudioStream);
+  }
+
+  vqlMediaRecorder.ondataavailable = (ev) => {
+    if (ev.data && ev.data.size > 0) vqlAudioChunks.push(ev.data);
+  };
+
+  vqlMediaRecorder.onstop = async () => {
+    const actualMime = (vqlMediaRecorder && vqlMediaRecorder.mimeType) || mime || 'audio/webm';
+    if (vqlAudioStream) {
+      vqlAudioStream.getTracks().forEach(t => t.stop());
+      vqlAudioStream = null;
+    }
+    vqlMediaRecorder = null;
+    const blob = new Blob(vqlAudioChunks, { type: actualMime });
+    if (!blob.size) return;
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result || '').split(',')[1] || '');
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    await submitVoiceQuickLogToGemini(base64, actualMime.split(';')[0]);
+  };
+
+  vqlMediaRecorder.start();
+  startVqlRecordingUi('🔴 Aufnahme läuft… Sprich Mahlzeiten, Snacks und/oder Habits ein.');
 }
 
 async function toggleVoiceQuickLogRecording() {
@@ -6990,6 +7083,27 @@ async function toggleVoiceQuickLogRecording() {
     return;
   }
 
+  // Falls Live-Spracherkennung läuft -> stoppen & sofort als kompakten Text an Gemini-Lite senden (ultra-schnell!)
+  if (vqlSpeechActive && vqlSpeechRecognition) {
+    clearInterval(vqlRecTimer);
+    vqlSpeechActive = false;
+    const btn = document.getElementById('vqlMainBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span>⚡</span><span>Werte blitzschnell aus…</span>';
+    }
+    const capturedNow = `${vqlSpeechFinalText} ${vqlSpeechInterimText}`.trim();
+    try { vqlSpeechRecognition.stop(); } catch (e) {}
+    if (capturedNow) {
+      const textInp = document.getElementById('vqlTextInput');
+      if (textInp) textInp.value = capturedNow;
+      vqlSpeechRecognition = null;
+      await submitVoiceQuickLogToGemini(null, null, capturedNow);
+    }
+    return;
+  }
+
+  // Falls Audio-Aufnahme läuft -> stoppen & auswerten
   if (vqlMediaRecorder && vqlMediaRecorder.state === 'recording') {
     clearInterval(vqlRecTimer);
     const btn = document.getElementById('vqlMainBtn');
@@ -7001,61 +7115,83 @@ async function toggleVoiceQuickLogRecording() {
     return;
   }
 
+  // Schnellpfad: Native Live-Spracherkennung (transkribiert schon beim Sprechen -> ~1s statt Audio-Upload!)
+  const SpeechRec = getSpeechRecognitionCtor();
+  if (SpeechRec) {
+    try {
+      vqlSpeechFinalText = '';
+      vqlSpeechInterimText = '';
+      const rec = new SpeechRec();
+      rec.lang = appLang === 'es' ? 'es-ES' : 'de-DE';
+      rec.continuous = true;
+      rec.interimResults = true;
+      vqlSpeechRecognition = rec;
+      vqlSpeechActive = true;
+
+      rec.onresult = (ev) => {
+        let fin = '';
+        let interim = '';
+        for (let i = 0; i < ev.results.length; i++) {
+          const t = ev.results[i][0]?.transcript || '';
+          if (ev.results[i].isFinal) fin += t + ' ';
+          else interim += t;
+        }
+        vqlSpeechFinalText = fin.trim();
+        vqlSpeechInterimText = interim.trim();
+        const combined = `${vqlSpeechFinalText} ${vqlSpeechInterimText}`.trim();
+        const statusEl = document.getElementById('vqlStatus');
+        if (statusEl && combined) {
+          statusEl.textContent = `🔴 „${combined}“`;
+        }
+      };
+
+      rec.onerror = async (ev) => {
+        const code = ev?.error || '';
+        if (code === 'aborted' || code === 'no-speech') return;
+        // Automatischer Fallback auf kompakte Audio-Aufnahme
+        stopVoiceQuickLogStreamOnly();
+        try {
+          await startVqlAudioRecorderFallback();
+        } catch (fallbackErr) {
+          if (errEl) {
+            errEl.textContent = `Mikrofon-Fehler: ${fallbackErr.message || fallbackErr}`;
+            errEl.classList.remove('hidden');
+          }
+        }
+      };
+
+      rec.onend = async () => {
+        if (!vqlSpeechActive) return;
+        vqlSpeechActive = false;
+        clearInterval(vqlRecTimer);
+        vqlSpeechRecognition = null;
+        const captured = `${vqlSpeechFinalText} ${vqlSpeechInterimText}`.trim();
+        if (captured) {
+          const textInp = document.getElementById('vqlTextInput');
+          if (textInp) textInp.value = captured;
+          await submitVoiceQuickLogToGemini(null, null, captured);
+        } else {
+          const tb = document.getElementById('vqlTimerBadge');
+          if (tb) tb.classList.add('hidden');
+          const mainBtn = document.getElementById('vqlMainBtn');
+          if (mainBtn) {
+            mainBtn.disabled = false;
+            mainBtn.className = 'w-full py-3.5 rounded-2xl bg-gradient-to-r from-emerald-400 to-teal-500 hover:from-emerald-300 hover:to-teal-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20';
+            mainBtn.innerHTML = `${VQL_MIC_SVG}<span>Aufnahme starten</span>`;
+          }
+        }
+      };
+
+      rec.start();
+      startVqlRecordingUi('🔴 Hört live zu… Sprich Mahlzeiten, Snacks und/oder Habits ein.');
+      return;
+    } catch (e) {
+      stopVoiceQuickLogStreamOnly();
+    }
+  }
+
   try {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('Mikrofon wird in diesem Browser nicht unterstützt.');
-    }
-    vqlAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mime = pickSupportedAudioMime();
-    vqlAudioChunks = [];
-    vqlMediaRecorder = mime ? new MediaRecorder(vqlAudioStream, { mimeType: mime }) : new MediaRecorder(vqlAudioStream);
-
-    vqlMediaRecorder.ondataavailable = (ev) => {
-      if (ev.data && ev.data.size > 0) vqlAudioChunks.push(ev.data);
-    };
-
-    vqlMediaRecorder.onstop = async () => {
-      const actualMime = (vqlMediaRecorder && vqlMediaRecorder.mimeType) || mime || 'audio/webm';
-      if (vqlAudioStream) {
-        vqlAudioStream.getTracks().forEach(t => t.stop());
-        vqlAudioStream = null;
-      }
-      vqlMediaRecorder = null;
-      const blob = new Blob(vqlAudioChunks, { type: actualMime });
-      if (!blob.size) return;
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(String(reader.result || '').split(',')[1] || '');
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
-      await submitVoiceQuickLogToGemini(base64, actualMime.split(';')[0]);
-    };
-
-    vqlMediaRecorder.start();
-    vqlRecSeconds = 0;
-    const timerBadge = document.getElementById('vqlTimerBadge');
-    const statusEl = document.getElementById('vqlStatus');
-    const mainBtn = document.getElementById('vqlMainBtn');
-    if (timerBadge) {
-      timerBadge.textContent = '00:00';
-      timerBadge.classList.remove('hidden');
-    }
-    if (statusEl) {
-      statusEl.textContent = '🔴 Aufnahme läuft… Sprich Mahlzeiten, Snacks und/oder Habits ein.';
-    }
-    if (mainBtn) {
-      mainBtn.className = 'w-full py-3.5 rounded-2xl bg-rose-500 hover:bg-rose-400 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-rose-500/25';
-      mainBtn.innerHTML = '<span>⏹</span><span>Stopp & auswerten</span>';
-    }
-
-    vqlRecTimer = setInterval(() => {
-      vqlRecSeconds++;
-      const mm = String(Math.floor(vqlRecSeconds / 60)).padStart(2, '0');
-      const ss = String(vqlRecSeconds % 60).padStart(2, '0');
-      const tb = document.getElementById('vqlTimerBadge');
-      if (tb) tb.textContent = `${mm}:${ss}`;
-    }, 1000);
+    await startVqlAudioRecorderFallback();
   } catch (err) {
     stopVoiceQuickLogStreamOnly();
     if (errEl) {
@@ -7148,10 +7284,10 @@ function parseVoiceQuickLogResult(data) {
   };
 }
 
-async function submitVoiceQuickLogToGemini(audioBase64, audioMimeType) {
+async function submitVoiceQuickLogToGemini(audioBase64, audioMimeType, overrideText = null) {
   const errEl = document.getElementById('vqlError');
   const previewEl = document.getElementById('vqlPreview');
-  const textNote = (document.getElementById('vqlTextInput')?.value || '').trim();
+  const textNote = overrideText !== null ? String(overrideText).trim() : (document.getElementById('vqlTextInput')?.value || '').trim();
   const mainBtn = document.getElementById('vqlMainBtn');
   const txtBtn = document.getElementById('vqlTextSubmitBtn');
 
@@ -7186,20 +7322,19 @@ async function submitVoiceQuickLogToGemini(audioBase64, audioMimeType) {
   if (mainBtn) mainBtn.disabled = true;
   if (txtBtn) {
     txtBtn.disabled = true;
-    txtBtn.textContent = '⏳ Analysiere Eingabe…';
+    txtBtn.textContent = '⚡ Analysiere…';
   }
   if (previewEl) {
-    previewEl.innerHTML = '<div class="text-xs text-zinc-400 text-center py-2">⏳ Gemini analysiert Mahlzeiten & Habits…</div>';
+    previewEl.innerHTML = '<div class="text-xs text-zinc-400 text-center py-2">⚡ Schnelle Auswertung läuft…</div>';
   }
 
   const habitCatalog = buildVoiceQuickLogHabitCatalog();
   const targetLang = appLang === 'es' ? 'Spanisch (Español)' : 'Deutsch';
-  const promptText = `Du bist ein präziser Quick-Log-Assistent für eine Ernährungs- & Habit-App.
-Extrahiere aus der Sprachaufnahme${textNote ? ` bzw. dem Text ("${textNote}")` : ''} alle genannten:
-1. Mahlzeiten / Snacks ("meals"): Schätze realistisch Portionsgewicht in Gramm ("grams") sowie Kalorien ("kcal"), Protein ("p"), Kohlenhydrate ("c") und Fett ("f") für genau diese verzehrte Portionsgröße (NICHT pro 100g!). Benenne sie klar auf ${targetLang}. Wenn keine Mahlzeit genannt wurde, gib ein leeres Array [] zurück.
-2. Habit-Updates ("habitUpdates"): Nur Habits aufnehmen, die explizit erwähnt wurden! Nutze exakt die passenden target-IDs aus dieser aktiven Liste:
-${habitCatalog.length ? habitCatalog.join('\n') : '(Keine aktiven Habits)'}
-3. Gib in "transcript" kurz wieder, was verstanden wurde.`;
+  const promptText = `Extrahiere aus ${audioBase64 ? 'der Audio-Aufnahme' : `dem Text ("${textNote}")`} knapp als JSON (${targetLang}):
+- meals: konsumierte Speisen/Snacks mit Portionsgewicht (grams) und Nährwerten für DIESE Portion (kcal, p, c, f). Leer [] falls keine.
+- habitUpdates: nur explizit genannte Habits mit exakt passender target-ID:
+${habitCatalog.length ? habitCatalog.join('\n') : '(keine)'}
+- transcript: kurzer verstandener Satz.`;
 
   const parts = [{ text: promptText }];
   if (audioBase64) {
@@ -7214,6 +7349,8 @@ ${habitCatalog.length ? habitCatalog.join('\n') : '(Keine aktiven Habits)'}
   const requestBody = JSON.stringify({
     contents: [{ parts }],
     generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 512,
       responseMimeType: 'application/json',
       responseJsonSchema: {
         type: 'object',
@@ -7255,14 +7392,14 @@ ${habitCatalog.length ? habitCatalog.join('\n') : '(Keine aktiven Habits)'}
   try {
     let res = null;
     let lastError = 'Unbekannter Fehler';
-    for (const model of GEMINI_MODELS_TO_TRY) {
+    for (const model of GEMINI_FAST_MODELS_TO_TRY) {
       const controller = new AbortController();
       vqlAbortController = controller;
       let timedOut = false;
       const timeoutId = setTimeout(() => {
         timedOut = true;
         try { controller.abort(); } catch (e) {}
-      }, GEMINI_FETCH_TIMEOUT_MS);
+      }, 15000);
       try {
         res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
           method: 'POST',
@@ -7293,6 +7430,7 @@ ${habitCatalog.length ? habitCatalog.join('\n') : '(Keine aktiven Habits)'}
     const result = await res.json();
     const rawJson = extractGeminiJsonText(result);
     const parsed = parseVoiceQuickLogResult(JSON.parse(rawJson));
+    if (!parsed.transcript && textNote) parsed.transcript = textNote;
     if (!parsed.meals.length && !parsed.habitUpdates.length) {
       throw new Error('Es wurden weder Mahlzeiten noch aktive Habits erkannt. Versuch es etwas konkreter.');
     }
@@ -7309,8 +7447,8 @@ ${habitCatalog.length ? habitCatalog.join('\n') : '(Keine aktiven Habits)'}
     if (tb) tb.classList.add('hidden');
     if (mainBtn) {
       mainBtn.disabled = false;
-      mainBtn.className = 'w-full py-3.5 rounded-2xl bg-violet-500 hover:bg-violet-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-violet-500/20';
-      mainBtn.innerHTML = '<span>🎙️</span><span>Neu aufnehmen</span>';
+      mainBtn.className = 'w-full py-3.5 rounded-2xl bg-gradient-to-r from-emerald-400 to-teal-500 hover:from-emerald-300 hover:to-teal-400 text-zinc-950 font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20';
+      mainBtn.innerHTML = `${VQL_MIC_SVG}<span>Neu aufnehmen</span>`;
     }
     if (txtBtn) {
       txtBtn.disabled = false;
