@@ -103,8 +103,8 @@
 
   <!-- Ausgelagerte Anwendungslogik -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-  <script src="app.js?v=20261128-8"></script>
-  <script src="sport.js?v=20261128-8"></script>
+  <script src="app.js?v=20261128-9"></script>
+  <script src="sport.js?v=20261128-9"></script>
 
 <!-- Barcode & Schnell-Portionierung Modal -->
   <div id="barcodeModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-3">
@@ -168,7 +168,10 @@
           <button id="btnAddScannedToRecipe" onclick="confirmScannedFood('recipe')" class="hidden flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
             ✓ Ins Rezept übernehmen
           </button>
-          <button onclick="confirmScannedFood('log')" class="flex-1 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-semibold text-xs transition">
+          <button id="btnAddScannedToSnack" onclick="confirmScannedFood('snack')" class="hidden flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+            🍫 Als Snack speichern
+          </button>
+          <button id="btnAddScannedToLog" onclick="confirmScannedFood('log')" class="flex-1 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-semibold text-xs transition">
             + Ins Tages-Log
           </button>
         </div>

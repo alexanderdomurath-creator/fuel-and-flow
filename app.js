@@ -249,6 +249,7 @@ function buildInitialState() {
       { id: 'sp_run', name: 'Laufen' },
       { id: 'sp_surf', name: 'Surfen / Mobility' }
     ],
+    snacks: [],
     habitConfig: createDefaultHabitConfig(),
     weightHistory: [],
     logs: {}
@@ -281,6 +282,7 @@ let state = (() => {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
         parsed.recipes = Array.isArray(parsed.recipes) ? parsed.recipes : [];
+        parsed.snacks = Array.isArray(parsed.snacks) ? parsed.snacks : [];
         parsed.sportHabits = Array.isArray(parsed.sportHabits) ? parsed.sportHabits : [];
         parsed.workouts = Array.isArray(parsed.workouts) ? parsed.workouts : [];
         const rawW = Array.isArray(parsed.weightHistory) ? parsed.weightHistory : [];
@@ -310,6 +312,7 @@ let lastSyncStatusErr = false;
 function normalizeLoadedState(obj) {
   if (!obj || typeof obj !== 'object') return obj;
   obj.recipes = Array.isArray(obj.recipes) ? obj.recipes : [];
+  obj.snacks = Array.isArray(obj.snacks) ? obj.snacks : [];
   obj.sportHabits = Array.isArray(obj.sportHabits) ? obj.sportHabits : [];
   obj.workouts = Array.isArray(obj.workouts) ? obj.workouts : [];
   obj.weightHistory = stripDemoWeightEntries(Array.isArray(obj.weightHistory) ? obj.weightHistory : []);
@@ -339,6 +342,7 @@ function mergeCloudStates(localSt, remoteSt) {
   merged.weightHistory = mergeByKey(primary.weightHistory, secondary.weightHistory, w => w.date)
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
   merged.recipes = mergeByKey(primary.recipes, secondary.recipes, r => r.id);
+  merged.snacks = mergeByKey(primary.snacks, secondary.snacks, s => s.id);
   merged.sportHabits = mergeByKey(primary.sportHabits, secondary.sportHabits, h => h.id);
 
   // Tageslogs zusammenführen, ohne Einträge oder Habits von einem Gerät zu verlieren
@@ -1452,7 +1456,9 @@ function getFoodSuggestions(rawQuery) {
 }
 
 function renderFoodSuggestions(mode, rawVal) {
-  const boxId = mode === 'builder' ? 'builder-search-suggestions' : 'global-food-suggestions';
+  const boxId = mode === 'builder'
+    ? 'builder-search-suggestions'
+    : (mode === 'snack' ? 'snack-search-suggestions' : 'global-food-suggestions');
   const box = document.getElementById(boxId);
   if (!box) return;
   const list = getFoodSuggestions(rawVal);
@@ -1472,13 +1478,18 @@ function renderFoodSuggestions(mode, rawVal) {
 }
 
 function applyFoodSuggestion(mode, term) {
-  const inpId = mode === 'builder' ? 'builder-search-input' : 'global-food-query';
-  const boxId = mode === 'builder' ? 'builder-search-suggestions' : 'global-food-suggestions';
+  const inpId = mode === 'builder'
+    ? 'builder-search-input'
+    : (mode === 'snack' ? 'snack-search-input' : 'global-food-query');
+  const boxId = mode === 'builder'
+    ? 'builder-search-suggestions'
+    : (mode === 'snack' ? 'snack-search-suggestions' : 'global-food-suggestions');
   const inp = document.getElementById(inpId);
   const sugBox = document.getElementById(boxId);
   if (inp) inp.value = term;
   if (sugBox) sugBox.innerHTML = '';
   if (mode === 'builder') runBuilderSearch();
+  else if (mode === 'snack') runSnackSearch();
   else runGlobalFoodSearch();
 }
 
@@ -1487,6 +1498,10 @@ function suggestDefaultGrams(foodName) {
   // Körniger Frischkäse / Hüttenkäse / Cottage Cheese (1 Becher = 200 g) vor normalem Frischkäse prüfen
   if (/(körnige[rn]?\s+frischkäse|hüttenkäse|cottage cheese)/.test(n)) {
     return 200;
+  }
+  // Riegel & typische Snacks: 50 g
+  if (/(riegel|proteinriegel|schokoriegel|snickers|\bmars\b|twix|bounty|hanuta|duplo|knoppers|corny|kinder bueno|kitkat|protein bar|\bbar\b)/.test(n)) {
+    return 50;
   }
   // Öle, Knoblauch, Gewürze, Kräuter: 5 g
   if (/(öl\b|\boil\b|olive oil|canola|sunflower oil|coconut oil|flaxseed oil|sesame oil|knoblauch|garlic|ingwer|ginger|gewürz|spice|pfeffer|pepper\b|salz|salt\b|chili|petersilie|basilikum|koriander|parsley|basil|zimt|cinnamon|curry|kurkuma)/.test(n)) {
@@ -3572,6 +3587,245 @@ function renderRecipesTab() {
   `;
 }
 
+let editingSnackId = null;
+
+function ensureSnacksArray() {
+  if (!Array.isArray(state.snacks)) state.snacks = [];
+  return state.snacks;
+}
+
+function addSnackItem(snackObj) {
+  const snacks = ensureSnacksArray();
+  const cleanName = String(snackObj?.name || '').trim();
+  if (!cleanName) return null;
+  const grams = Math.max(1, Math.round(Number(snackObj.grams) || suggestDefaultGrams(cleanName) || 50));
+  const item = {
+    id: 'snk_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    name: cleanName,
+    grams,
+    kcal100: Math.max(0, Math.round(Number(snackObj.kcal100) || 0)),
+    p100: Math.max(0, Math.round((Number(snackObj.p100) || 0) * 10) / 10),
+    c100: Math.max(0, Math.round((Number(snackObj.c100) || 0) * 10) / 10),
+    f100: Math.max(0, Math.round((Number(snackObj.f100) || 0) * 10) / 10)
+  };
+  snacks.unshift(item);
+  saveState();
+  return item;
+}
+
+async function runSnackSearch() {
+  const inp = document.getElementById('snack-search-input');
+  const box = document.getElementById('snack-search-results');
+  if (!inp || !box) return;
+  const q = inp.value.trim();
+  if (q.length < 2) {
+    box.innerHTML = `<div class="text-xs text-zinc-500 py-1.5">Bitte mindestens 2 Zeichen eingeben.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="text-xs text-zinc-400 py-2">Suche läuft...</div>`;
+  const items = await searchFoodsLive(q);
+  if (!items.length) {
+    box.innerHTML = `<div class="text-xs text-zinc-500 py-2">Keine Treffer gefunden.</div>`;
+    return;
+  }
+  box.innerHTML = items.map((it, idx) => {
+    const defG = it.defaultGrams || suggestDefaultGrams(it.name);
+    const estKcal = Math.round((it.kcal100 * defG) / 100);
+    return `
+      <div class="flex items-center justify-between bg-zinc-900/90 border border-border rounded-xl px-3 py-2 text-xs gap-2">
+        <div class="min-w-0 flex-1">
+          <div class="font-medium text-zinc-200 truncate">${escapeHtmlAttr(it.name)}</div>
+          <div class="text-[10px] text-zinc-400">${estKcal} kcal / ${defG}g (${it.kcal100} kcal/100g · P ${it.p100}g)</div>
+        </div>
+        <button type="button" onclick="addCachedFoodToSnacks(${idx})"
+          class="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/35 shrink-0 font-semibold text-[11px] transition">
+          + Merken (${defG}g)
+        </button>
+      </div>
+    `;
+  }).join('');
+}
+
+function addCachedFoodToSnacks(idx) {
+  const food = searchResultsCache[idx];
+  if (!food) return;
+  const grams = food.defaultGrams || suggestDefaultGrams(food.name);
+  const saved = addSnackItem({
+    name: food.name,
+    grams,
+    kcal100: food.kcal100,
+    p100: food.p100,
+    c100: food.c100,
+    f100: food.f100
+  });
+  render();
+  if (saved && typeof showToast === 'function') {
+    showToast(`🍫 „${saved.name}“ gespeichert — per + in die Bilanz loggen`);
+  }
+}
+
+function logSnackToDay(snackId) {
+  const snack = ensureSnacksArray().find(s => s.id === snackId);
+  if (!snack) return;
+  const g = Math.max(1, Number(snack.grams) || 50);
+  const factor = g / 100;
+  const log = ensureDayLog(state.selectedDate);
+  log.entries.push({
+    id: 'ent_' + Date.now(),
+    name: `${snack.name} (${g}g)`,
+    kcal: Math.round(snack.kcal100 * factor),
+    p: Math.round(snack.p100 * factor * 10) / 10,
+    c: Math.round(snack.c100 * factor * 10) / 10,
+    f: Math.round(snack.f100 * factor * 10) / 10
+  });
+  saveState();
+  render();
+  if (typeof showToast === 'function') {
+    showToast(`✓ „${snack.name} (${g}g)“ in die Tagesbilanz übernommen`);
+  }
+}
+
+function toggleEditSnackGrams(snackId) {
+  editingSnackId = editingSnackId === snackId ? null : snackId;
+  render();
+}
+
+function updateSnackGrams(snackId, newGrams) {
+  const snack = ensureSnacksArray().find(s => s.id === snackId);
+  if (!snack) return;
+  snack.grams = Math.max(1, Math.round(Number(newGrams) || 50));
+  saveState();
+  render();
+}
+
+function confirmSnackGrams(snackId) {
+  const inp = document.getElementById(`snack-grams-${snackId}`);
+  if (inp) {
+    updateSnackGrams(snackId, inp.value);
+  }
+  editingSnackId = null;
+  render();
+  if (typeof showToast === 'function') showToast('✓ Snack-Menge aktualisiert');
+}
+
+function deleteSnackById(snackId) {
+  const snacks = ensureSnacksArray();
+  const snack = snacks.find(s => s.id === snackId);
+  if (!snack) return;
+  if (!confirm(`Snack „${snack.name}“ aus der Liste entfernen?`)) return;
+  state.snacks = snacks.filter(s => s.id !== snackId);
+  if (editingSnackId === snackId) editingSnackId = null;
+  saveState();
+  render();
+}
+
+function renderSnacksSection() {
+  const snacks = ensureSnacksArray();
+  return `
+    <section class="bg-card border border-amber-500/25 rounded-3xl p-4 space-y-3">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <h2 class="text-base font-semibold text-white flex items-center gap-1.5">
+            <span>🍫</span><span>Schnelle Snacks</span>
+          </h2>
+          <p class="text-[11px] text-zinc-400">Snacks speichern & erst per <span class="text-emerald-400 font-semibold">+</span> in die Tagesbilanz loggen</p>
+        </div>
+        <button type="button" onclick="openBarcodeModal('snack')"
+          class="px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 text-xs font-semibold flex items-center gap-1.5 shrink-0 transition">
+          <span>📷</span><span>Barcode</span>
+        </button>
+      </div>
+
+      <div class="space-y-2">
+        <div class="flex gap-2 min-w-0">
+          <input id="snack-search-input" type="text" placeholder="Snack suchen (z. B. Schokoriegel, Proteinriegel, Apfel…)"
+            oninput="renderFoodSuggestions('snack', this.value)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault(); runSnackSearch();}"
+            class="flex-1 min-w-0 px-3 py-2 rounded-xl bg-zinc-900 border border-border text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400" />
+          <button type="button" onclick="runSnackSearch()"
+            class="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs shrink-0 transition">
+            Suchen
+          </button>
+        </div>
+        <div id="snack-search-suggestions" class="flex flex-wrap gap-1.5"></div>
+        <div id="snack-search-results" class="space-y-1.5 max-h-52 overflow-y-auto"></div>
+      </div>
+
+      ${snacks.length > 0 ? `
+        <div class="space-y-2 pt-2 border-t border-border">
+          ${snacks.map(s => {
+            const g = Math.max(1, Number(s.grams) || 50);
+            const factor = g / 100;
+            const kcal = Math.round(s.kcal100 * factor);
+            const p = Math.round(s.p100 * factor * 10) / 10;
+            const c = Math.round(s.c100 * factor * 10) / 10;
+            const f = Math.round(s.f100 * factor * 10) / 10;
+            const step = g <= 25 ? 5 : 10;
+            const isEditing = editingSnackId === s.id;
+            return `
+              <div class="bg-zinc-900/90 border border-border rounded-2xl p-3 space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0 flex-1">
+                    <div class="text-xs font-semibold text-white truncate">${escapeHtmlAttr(s.name)}</div>
+                    <div class="text-[11px] text-zinc-400 mt-0.5">
+                      <span class="text-amber-300 font-medium">${g}g</span> · ${kcal} kcal · P ${p}g · C ${c}g · F ${f}g
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <button type="button" onclick="logSnackToDay('${s.id}')" title="Konsumiert → in Tagesbilanz loggen" aria-label="Snack in Tagesbilanz loggen"
+                      class="w-8 h-8 flex items-center justify-center rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-400 transition">
+                      <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14M5 12h14"/>
+                      </svg>
+                    </button>
+                    <button type="button" onclick="toggleEditSnackGrams('${s.id}')" title="Portionsgröße ändern" aria-label="Portionsgröße ändern"
+                      class="w-8 h-8 flex items-center justify-center rounded-xl border transition ${
+                        isEditing
+                          ? 'bg-amber-500/20 border-amber-500/45 text-amber-300'
+                          : 'bg-zinc-950 hover:bg-zinc-800 border-border text-zinc-400 hover:text-white'
+                      }">
+                      <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                        <path d="m15 5 4 4"/>
+                      </svg>
+                    </button>
+                    <button type="button" onclick="deleteSnackById('${s.id}')" title="Snack löschen" aria-label="Snack löschen"
+                      class="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-950 hover:bg-rose-500/15 border border-border hover:border-rose-500/30 text-zinc-400 hover:text-rose-400 transition">
+                      <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 6h18"/>
+                        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                ${isEditing ? `
+                  <div class="flex items-center gap-1.5 pt-1 border-t border-zinc-800">
+                    <button type="button" onclick="updateSnackGrams('${s.id}', Math.max(1, ${g - step}))"
+                      class="px-2.5 py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">−${step}</button>
+                    <div class="flex-1 flex items-center gap-1 bg-zinc-950 border border-zinc-700 focus-within:border-amber-400 rounded-xl px-2.5 py-1">
+                      <input id="snack-grams-${s.id}" type="number" inputmode="decimal" value="${g}" min="1"
+                        onkeydown="if(event.key==='Enter'){event.preventDefault(); confirmSnackGrams('${s.id}');}"
+                        class="w-full bg-transparent text-xs font-semibold text-white text-center focus:outline-none" />
+                      <span class="text-[11px] text-zinc-400 shrink-0">g</span>
+                    </div>
+                    <button type="button" onclick="updateSnackGrams('${s.id}', ${g + step})"
+                      class="px-2.5 py-1.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-border text-xs font-semibold text-zinc-300">+${step}</button>
+                    <button type="button" onclick="confirmSnackGrams('${s.id}')" title="Übernehmen"
+                      class="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold shrink-0 transition">✓</button>
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : `
+        <p class="text-[11px] text-zinc-500 pt-1">Noch keine Snacks gespeichert – suche oben nach einem Snack oder scanne einen Barcode.</p>
+      `}
+    </section>
+  `;
+}
+
 function setFoodSubTab(sub) {
   foodSubTab = sub;
   if (sub !== 'recipes') editingRecipe = null;
@@ -3579,12 +3833,16 @@ function setFoodSubTab(sub) {
 }
 
 function renderFoodTab() {
+  if (editingRecipe) {
+    return renderRecipesTab();
+  }
   return `
     <div class="flex gap-2">
       <button onclick="openAiMealModal()" class="flex-1 px-3 py-2.5 rounded-2xl text-xs font-semibold transition flex items-center justify-center gap-1.5 border bg-violet-500/15 hover:bg-violet-500/25 border-violet-500/30 text-violet-300">
         <span>✨</span><span>KI-Analyse</span>
       </button>
     </div>
+    ${renderSnacksSection()}
     ${renderRecipesTab()}
   `;
 }
@@ -5052,8 +5310,16 @@ function importJsonBackup(event) {
 let scannerStream = null;
 let scannerRafId = null;
 let currentScannedFood = null;
+let barcodeScanContext = 'default'; // 'default' | 'recipe' | 'snack'
 
-async function openBarcodeModal() {
+async function openBarcodeModal(mode = 'auto') {
+  if (mode === 'snack') {
+    barcodeScanContext = 'snack';
+  } else if (mode === 'recipe' || (mode === 'auto' && typeof editingRecipe !== 'undefined' && editingRecipe)) {
+    barcodeScanContext = 'recipe';
+  } else {
+    barcodeScanContext = 'default';
+  }
   const modal = document.getElementById('barcodeModal');
   if (!modal) return;
   modal.classList.remove('hidden');
@@ -5189,12 +5455,24 @@ function renderScannedFoodPanel() {
   document.getElementById('portionQuickButtons').innerHTML = btnsHtml;
   document.getElementById('scannedGramsInput').value = currentScannedFood.servingGrams || 100;
 
-  // Rezept-Button nur zeigen, wenn gerade ein Rezept bearbeitet wird
+  // Ziel-Buttons je nach Kontext anzeigen (Rezept vs. Schnelle Snacks vs. Tages-Log)
   const recipeBtn = document.getElementById('btnAddScannedToRecipe');
-  if (typeof editingRecipe !== 'undefined' && editingRecipe) {
-    recipeBtn.classList.remove('hidden');
-  } else {
-    recipeBtn.classList.add('hidden');
+  const snackBtn = document.getElementById('btnAddScannedToSnack');
+  const logBtn = document.getElementById('btnAddScannedToLog');
+  const isRecipeCtx = barcodeScanContext === 'recipe' && typeof editingRecipe !== 'undefined' && editingRecipe;
+  const isSnackCtx = barcodeScanContext === 'snack';
+
+  if (recipeBtn) {
+    if (isRecipeCtx) recipeBtn.classList.remove('hidden');
+    else recipeBtn.classList.add('hidden');
+  }
+  if (snackBtn) {
+    if (isSnackCtx) snackBtn.classList.remove('hidden');
+    else snackBtn.classList.add('hidden');
+  }
+  if (logBtn) {
+    if (isSnackCtx) logBtn.classList.add('hidden');
+    else logBtn.classList.remove('hidden');
   }
 
   updateScannedPreview();
@@ -5215,7 +5493,9 @@ function stepScannedGrams(dir) {
 }
 
 function confirmScannedPrimary() {
-  if (typeof editingRecipe !== 'undefined' && editingRecipe) {
+  if (barcodeScanContext === 'snack') {
+    confirmScannedFood('snack');
+  } else if (typeof editingRecipe !== 'undefined' && editingRecipe) {
     confirmScannedFood('recipe');
   } else {
     confirmScannedFood('log');
@@ -5242,6 +5522,23 @@ function confirmScannedFood(target) {
   if (!currentScannedFood) return;
   const g = Math.max(1, Number(document.getElementById('scannedGramsInput').value) || 100);
   const factor = g / 100;
+
+  if (target === 'snack') {
+    const saved = addSnackItem({
+      name: currentScannedFood.name,
+      grams: g,
+      kcal100: currentScannedFood.kcal100,
+      p100: currentScannedFood.p100,
+      c100: currentScannedFood.c100,
+      f100: currentScannedFood.f100
+    });
+    closeBarcodeModal();
+    render();
+    if (saved && typeof showToast === 'function') {
+      showToast(`🍫 „${saved.name}“ gespeichert — per + in die Bilanz loggen`);
+    }
+    return;
+  }
 
   if (target === 'recipe' && typeof editingRecipe !== 'undefined' && editingRecipe) {
     editingRecipe.items.push({
