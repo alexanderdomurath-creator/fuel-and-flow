@@ -2704,7 +2704,6 @@ function renderDashboard() {
   `;
 
   const bilanzSectionHtml = `
-    ${quickHabitsHtml}
     <!-- Calories & Macros Card -->
     <section class="bg-card border border-border rounded-3xl p-4 space-y-4">
       <div class="flex items-start justify-between">
@@ -2766,6 +2765,8 @@ function renderDashboard() {
     </section>
 
     ${renderCalorieMacroHistoryCard()}
+
+    ${quickHabitsHtml}
   `;
 
   const koerperSectionHtml = `
@@ -2828,6 +2829,7 @@ function renderDashboard() {
 function renderRecipesTab() {
   if (editingRecipe) {
     const tot = calcRecipeTotals(editingRecipe);
+    const nameSuggestions = suggestRecipeNames(editingRecipe.items);
     return `
       <div class="bg-card border border-border rounded-3xl p-4 space-y-4">
         <div class="flex items-center justify-between">
@@ -2835,11 +2837,24 @@ function renderRecipesTab() {
           <button onclick="editingRecipe=null; render();" class="text-xs text-zinc-400 hover:text-white">Abbrechen</button>
         </div>
 
-        <div>
+        <div class="space-y-1.5">
           <label class="text-xs text-zinc-400">Rezeptname</label>
-          <input id="rec-name-input" type="text" value="${editingRecipe.name}"
-            oninput="editingRecipe.name = this.value"
+          <input id="rec-name-input" type="text" value="${String(editingRecipe.name || '').replace(/"/g, '&quot;')}"
+            oninput="editingRecipe.name = this.value; editingRecipe._autoNamed = false;"
             class="w-full mt-1 px-3.5 py-2.5 rounded-2xl bg-zinc-900 border border-border text-sm text-white focus:outline-none focus:border-emerald-500" />
+          ${nameSuggestions.length > 0 ? `
+            <div class="flex flex-wrap items-center gap-1.5 pt-0.5">
+              <span class="text-[10px] text-zinc-500">💡 Vorschlag:</span>
+              ${nameSuggestions.map(sug => `
+                <button type="button" onclick="applySuggestedRecipeName('${sug.replace(/'/g, "\\'").replace(/"/g, '&quot;')}')"
+                  class="px-2 py-0.5 rounded-lg text-[11px] border transition ${
+                    editingRecipe.name === sug
+                      ? 'bg-emerald-500/20 border-emerald-500/45 text-emerald-300 font-medium'
+                      : 'bg-zinc-900 hover:bg-zinc-800 border-border text-zinc-300'
+                  }">${sug}</button>
+              `).join('')}
+            </div>
+          ` : ''}
         </div>
 
         <div class="grid grid-cols-4 gap-2 bg-zinc-900/90 border border-border rounded-2xl p-3 text-center">
@@ -2921,6 +2936,8 @@ function renderRecipesTab() {
           <div id="builder-search-suggestions" class="flex flex-wrap gap-1.5"></div>
           <div id="builder-search-results" class="space-y-1.5 max-h-60 overflow-y-auto"></div>
         </div>
+
+        <div id="rec-validation-error" class="hidden rounded-xl bg-rose-500/15 border border-rose-500/40 px-3 py-2 text-xs text-rose-300 font-medium"></div>
 
         <div class="flex gap-2 pt-2">
           <button onclick="saveEditedRecipe(false)" class="flex-1 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs">
@@ -3470,8 +3487,103 @@ function renderHabitsTab() {
 }
 
 // ---------- RECIPE BUILDER ACTIONS ----------
+function cleanIngredientTitleWord(raw) {
+  let s = String(raw || '')
+    .replace(/\([^)]*\)/g, '')
+    .replace(/\b(roh|gekocht|gebraten|frisch|zart|kernig|ungesüßt|natur|mager|raw|cooked|plain|fresh)\b/gi, '')
+    .replace(/\d+\s*(%|g|ml|kcal)\b/gi, '')
+    .split(',')[0]
+    .split(' - ')[0]
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function suggestRecipeNames(items) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const minorRx = /\b(öl|olivenöl|rapsöl|kokosöl|oil|aceite|salz|pfeffer|gewürz|zimt|knoblauch|ajo|wasser|zucker|honig|süßstoff|essig|sojasauce|senf|backpulver)\b/i;
+  const cleaned = items
+    .map(it => ({
+      label: cleanIngredientTitleWord(it.name),
+      grams: Number(it.grams) || 0,
+      p100: Number(it.p100) || 0,
+      minor: minorRx.test(String(it.name || '')) || (Number(it.grams) || 0) <= 15
+    }))
+    .filter(x => x.label.length >= 2);
+
+  if (!cleaned.length) return [];
+  const pool = cleaned.some(x => !x.minor) ? cleaned.filter(x => !x.minor) : cleaned;
+  pool.sort((a, b) => (b.grams * (1 + b.p100 / 30)) - (a.grams * (1 + a.p100 / 30)));
+
+  const uniq = [];
+  pool.forEach(x => {
+    if (!uniq.some(u => u.toLowerCase() === x.label.toLowerCase())) uniq.push(x.label);
+  });
+  if (!uniq.length) return [];
+
+  const isEs = appLang === 'es';
+  const a = uniq[0];
+  const b = uniq[1] || '';
+  const c = uniq[2] || '';
+  const joinedAll = uniq.join(' ').toLowerCase();
+  const out = [];
+
+  if (uniq.length === 1) {
+    out.push(a);
+  } else {
+    if (/hafer|flocken|müsli|porridge|avena/.test(joinedAll)) {
+      const oat = uniq.find(x => /hafer|flocken|müsli|porridge|avena/i.test(x)) || a;
+      const other = uniq.find(x => x !== oat) || b;
+      out.push(isEs ? `Porridge con ${other}` : `Porridge mit ${other}`);
+      out.push(`${oat}-${other}-Bowl`);
+    } else if (/reis|quinoa|couscous|bulgur|arroz/.test(joinedAll)) {
+      const base = uniq.find(x => /reis|quinoa|couscous|bulgur|arroz/i.test(x)) || b;
+      const main = uniq.find(x => x !== base) || a;
+      out.push(isEs ? `Bowl de ${main} y ${base}` : `${main}-${base}-Bowl`);
+      out.push(isEs ? `${main} con ${base}` : `${main} mit ${base}`);
+    } else if (/quark|skyr|joghurt|yogur|hüttenkäse|frischkäse|queso fresco/.test(joinedAll)) {
+      const dairy = uniq.find(x => /quark|skyr|joghurt|yogur|hüttenkäse|frischkäse|queso fresco/i.test(x)) || a;
+      const other = uniq.find(x => x !== dairy) || b;
+      out.push(isEs ? `Bowl de ${dairy} con ${other}` : `${dairy}-Bowl mit ${other}`);
+      out.push(`${dairy} & ${other}`);
+    } else if (/nudel|pasta|spaghetti|penne/.test(joinedAll)) {
+      const pasta = uniq.find(x => /nudel|pasta|spaghetti|penne/i.test(x)) || a;
+      const other = uniq.find(x => x !== pasta) || b;
+      out.push(isEs ? `${pasta} con ${other}` : `${pasta} mit ${other}`);
+    }
+
+    out.push(isEs ? `${a} con ${b}` : `${a} mit ${b}`);
+    out.push(`${a} & ${b}`);
+    if (c) out.push(`${a}, ${b} & ${c}`);
+  }
+
+  return [...new Set(out)].slice(0, 3);
+}
+
+function maybeAutoUpdateRecipeName() {
+  if (!editingRecipe) return;
+  const cur = String(editingRecipe.name || '').trim();
+  const isDefault = !cur || cur === 'Neues Rezept' || cur === 'Nueva receta';
+  if (!isDefault && !editingRecipe._autoNamed) return;
+  const sugs = suggestRecipeNames(editingRecipe.items);
+  if (sugs.length > 0) {
+    editingRecipe.name = sugs[0];
+    editingRecipe._autoNamed = true;
+  } else if (editingRecipe._autoNamed) {
+    editingRecipe.name = appLang === 'es' ? 'Nueva receta' : 'Neues Rezept';
+  }
+}
+
+function applySuggestedRecipeName(name) {
+  if (!editingRecipe || !name) return;
+  editingRecipe.name = name;
+  editingRecipe._autoNamed = false;
+  render();
+}
+
 function startNewRecipe() {
-  editingRecipe = { id: 'rec_' + Date.now(), name: 'Neues Rezept', items: [] };
+  editingRecipe = { id: 'rec_' + Date.now(), name: appLang === 'es' ? 'Nueva receta' : 'Neues Rezept', items: [], _autoNamed: true };
   render();
 }
 
@@ -3498,6 +3610,7 @@ function confirmRecipeItemGrams(idx) {
 function removeRecipeItem(idx) {
   if (!editingRecipe) return;
   editingRecipe.items.splice(idx, 1);
+  maybeAutoUpdateRecipeName();
   render();
 }
 
@@ -3540,19 +3653,35 @@ function addCachedFoodToRecipe(idx) {
     c100: food.c100,
     f100: food.f100
   });
+  maybeAutoUpdateRecipeName();
   render();
 }
 
 function saveEditedRecipe(asCopy) {
   if (!editingRecipe) return;
+  if (!Array.isArray(editingRecipe.items) || editingRecipe.items.length === 0) {
+    const errBox = document.getElementById('rec-validation-error');
+    if (errBox) {
+      errBox.textContent = appLang === 'es'
+        ? '⚠️ No has introducido ningún ingrediente. Añade al menos un ingrediente antes de guardar.'
+        : '⚠️ Du hast noch keine Zutaten eingegeben. Bitte füge mindestens eine Zutat hinzu.';
+      errBox.classList.remove('hidden');
+    }
+    showToast(appLang === 'es' ? '⚠️ No has introducido ingredientes' : '⚠️ Keine Zutaten eingegeben');
+    document.getElementById('builder-search-input')?.focus();
+    return;
+  }
+  const cleanRec = { ...editingRecipe };
+  delete cleanRec._autoNamed;
+  cleanRec.name = String(cleanRec.name || '').trim() || suggestRecipeNames(cleanRec.items)[0] || 'Rezept';
   if (asCopy) {
-    editingRecipe.id = 'rec_' + Date.now();
-    editingRecipe.name = editingRecipe.name + ' (Kopie)';
-    state.recipes.push(editingRecipe);
+    cleanRec.id = 'rec_' + Date.now();
+    cleanRec.name = cleanRec.name + (appLang === 'es' ? ' (Copia)' : ' (Kopie)');
+    state.recipes.push(cleanRec);
   } else {
-    const idx = state.recipes.findIndex(r => r.id === editingRecipe.id);
-    if (idx >= 0) state.recipes[idx] = editingRecipe;
-    else state.recipes.push(editingRecipe);
+    const idx = state.recipes.findIndex(r => r.id === cleanRec.id);
+    if (idx >= 0) state.recipes[idx] = cleanRec;
+    else state.recipes.push(cleanRec);
   }
   saveState();
   editingRecipe = null;
@@ -4489,6 +4618,7 @@ function confirmScannedFood(target) {
       c100: currentScannedFood.c100,
       f100: currentScannedFood.f100
     });
+    maybeAutoUpdateRecipeName();
     closeBarcodeModal();
     render();
     return;
@@ -5496,6 +5626,7 @@ const ES_EXACT = {
   'Rezept-Baukasten': 'Editor de recetas',
   'Abbrechen': 'Cancelar',
   'Rezeptname': 'Nombre de la receta',
+  '💡 Vorschlag:': '💡 Sugerencia:',
   'Entfernen': 'Quitar',
   'Zutat entfernen': 'Quitar ingrediente',
   'Gramm-Angabe übernehmen': 'Confirmar gramos',
