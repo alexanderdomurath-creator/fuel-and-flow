@@ -252,6 +252,7 @@ function buildInitialState() {
     snacks: [],
     mealPlan: { days: {} },
     shoppingList: [],
+    shoppingHistory: [],
     habitConfig: createDefaultHabitConfig(),
     weightHistory: [],
     logs: {}
@@ -289,6 +290,7 @@ let state = (() => {
           ? parsed.mealPlan
           : { days: {} };
         parsed.shoppingList = Array.isArray(parsed.shoppingList) ? parsed.shoppingList : [];
+        parsed.shoppingHistory = Array.isArray(parsed.shoppingHistory) ? parsed.shoppingHistory : [];
         parsed.sportHabits = Array.isArray(parsed.sportHabits) ? parsed.sportHabits : [];
         parsed.workouts = Array.isArray(parsed.workouts) ? parsed.workouts : [];
         const rawW = Array.isArray(parsed.weightHistory) ? parsed.weightHistory : [];
@@ -408,6 +410,7 @@ function normalizeLoadedState(obj) {
     ? obj.mealPlan
     : { days: {} };
   obj.shoppingList = Array.isArray(obj.shoppingList) ? obj.shoppingList : [];
+  obj.shoppingHistory = Array.isArray(obj.shoppingHistory) ? obj.shoppingHistory : [];
   obj.sportHabits = Array.isArray(obj.sportHabits) ? obj.sportHabits : [];
   obj.workouts = Array.isArray(obj.workouts) ? obj.workouts : [];
   obj.weightHistory = stripDemoWeightEntries(Array.isArray(obj.weightHistory) ? obj.weightHistory : []);
@@ -453,6 +456,36 @@ function mergeCloudStates(localSt, remoteSt) {
   merged.recipes = mergeByKey(primary.recipes, secondary.recipes, r => r.id).filter(r => !isDeleted(r.id));
   merged.snacks = mergeByKey(primary.snacks, secondary.snacks, s => s.id).filter(s => !isDeleted(s.id));
   merged.shoppingList = mergeByKey(primary.shoppingList, secondary.shoppingList, it => it.id).filter(it => !isDeleted(it.id));
+  const shopHistMap = new Map();
+  [...(secondary.shoppingHistory || []), ...(primary.shoppingHistory || [])].forEach(it => {
+    const cleanName = String(it?.name || '').trim();
+    if (!cleanName) return;
+    const key = cleanName.toLowerCase();
+    const prev = shopHistMap.get(key);
+    const curTs = parseSyncTs(it.lastBoughtAt);
+    const prevTs = prev ? parseSyncTs(prev.lastBoughtAt) : -1;
+    if (!prev) {
+      shopHistMap.set(key, {
+        name: cleanName,
+        grams: Math.max(1, Math.round(Number(it.grams) || 1)),
+        unit: it.unit === 'Stk.' ? 'Stk.' : 'g',
+        count: Math.max(1, Math.round(Number(it.count) || 1)),
+        lastBoughtAt: it.lastBoughtAt || new Date().toISOString()
+      });
+    } else {
+      const newer = curTs >= prevTs ? it : prev;
+      shopHistMap.set(key, {
+        name: String(newer.name || prev.name).trim(),
+        grams: Math.max(1, Math.round(Number(newer.grams) || prev.grams || 1)),
+        unit: newer.unit === 'Stk.' ? 'Stk.' : 'g',
+        count: Math.max(prev.count || 1, Math.round(Number(it.count) || 1)),
+        lastBoughtAt: curTs >= prevTs ? (it.lastBoughtAt || prev.lastBoughtAt) : prev.lastBoughtAt
+      });
+    }
+  });
+  merged.shoppingHistory = [...shopHistMap.values()]
+    .sort((a, b) => parseSyncTs(b.lastBoughtAt) - parseSyncTs(a.lastBoughtAt) || (b.count || 0) - (a.count || 0))
+    .slice(0, 30);
   const allPlanDates = new Set([
     ...Object.keys((secondary.mealPlan && secondary.mealPlan.days) || {}),
     ...Object.keys((primary.mealPlan && primary.mealPlan.days) || {})
@@ -4000,6 +4033,362 @@ function renderRecipeStarsHtml(rating, clickFnExpr) {
   `).join('')}</div>`;
 }
 
+let viewingRecipeId = null;
+
+function getRecipePhotos(rec) {
+  if (!rec || !Array.isArray(rec.photos)) return [];
+  return rec.photos.filter(p => p && typeof p.dataUrl === 'string' && p.dataUrl.startsWith('data:image/'));
+}
+
+function openRecipeDetail(recipeId) {
+  const found = (state.recipes || []).find(r => r.id === recipeId);
+  if (!found) return;
+  editingRecipe = null;
+  viewingRecipeId = found.id;
+  currentTab = 'food';
+  render();
+  if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+
+function closeRecipeDetail() {
+  viewingRecipeId = null;
+  render();
+}
+
+function addSingleRecipeToShoppingList(recipeId) {
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec) return;
+  const items = (rec.items || []).map(it => ({
+    name: it.name,
+    grams: Math.max(1, Math.round(Number(it.grams) || 100))
+  }));
+  if (!items.length) {
+    showToast('Dieses Rezept hat noch keine Zutaten.');
+    return;
+  }
+  const cnt = mergeIngredientsIntoShoppingList(items, rec.name);
+  showToast(`🛒 ${cnt} Zutat(en) auf die Einkaufsliste gesetzt`);
+}
+
+function addRecipeToTodayPlanFromDetail(recipeId) {
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec) return;
+  addRecipeToMealPlan(getTodayStr(), rec.id, false);
+  showToast(`📅 „${rec.name}“ für heute eingeplant`);
+}
+
+async function handleRecipePhotoUpload(event, recipeId) {
+  const input = event?.target;
+  const files = input?.files ? Array.from(input.files) : [];
+  if (!files.length) return;
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec) return;
+  if (!Array.isArray(rec.photos)) rec.photos = [];
+  const MAX_PHOTOS = 6;
+  const remaining = MAX_PHOTOS - rec.photos.length;
+  if (remaining <= 0) {
+    showToast(`Maximal ${MAX_PHOTOS} Fotos pro Rezept möglich.`);
+    try { input.value = ''; } catch (e) {}
+    return;
+  }
+
+  const toProcess = files.slice(0, remaining);
+  const statusEl = document.getElementById('recipe-photo-upload-status');
+  if (statusEl) {
+    statusEl.textContent = '⏳ Foto wird komprimiert…';
+    statusEl.className = 'text-[11px] text-zinc-400';
+  }
+
+  let added = 0;
+  try {
+    for (let i = 0; i < toProcess.length; i++) {
+      const prepared = await prepareAiPhotoFile(toProcess[i], 720, 0.72);
+      if (prepared && prepared.previewUrl) {
+        rec.photos.unshift({
+          id: 'rph_' + (Date.now() + i) + '_' + Math.floor(Math.random() * 1000),
+          dataUrl: prepared.previewUrl,
+          addedAt: new Date().toISOString()
+        });
+        added++;
+      }
+    }
+    if (added > 0) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (quotaErr) {
+        rec.photos.splice(0, added);
+        showToast('Speicherplatz voll – bitte zuerst ältere Rezeptfotos entfernen.');
+        render();
+        return;
+      }
+      saveState();
+      render();
+      showToast(added === 1 ? '📸 Foto zum Rezept hinzugefügt' : `📸 ${added} Fotos zum Rezept hinzugefügt`);
+    }
+  } catch (err) {
+    showToast(`Foto-Fehler: ${err?.message || 'Konnte nicht geladen werden'}`);
+    if (statusEl) {
+      statusEl.textContent = `Fehler: ${err?.message || 'Unbekannter Fehler'}`;
+      statusEl.className = 'text-[11px] text-rose-400';
+    }
+  } finally {
+    if (input) {
+      try { input.value = ''; } catch (e) {}
+    }
+  }
+}
+
+function deleteRecipePhoto(recipeId, photoId) {
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  if (!rec || !Array.isArray(rec.photos)) return;
+  if (!confirm('Dieses Rezeptfoto entfernen?')) return;
+  rec.photos = rec.photos.filter(p => p.id !== photoId);
+  saveState();
+  render();
+  showToast('Foto entfernt');
+}
+
+function openRecipePhotoLightbox(recipeId, photoId) {
+  const rec = (state.recipes || []).find(r => r.id === recipeId);
+  const photo = getRecipePhotos(rec).find(p => p.id === photoId);
+  if (!photo) return;
+  const dateLabel = photo.addedAt
+    ? new Date(photo.addedAt).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
+    : '';
+  openModal(`
+    <div class="space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <h3 class="text-sm font-semibold text-white truncate">${escapeHtmlAttr(rec.name)}</h3>
+          ${dateLabel ? `<p class="text-[11px] text-zinc-400">Aufgenommen / gespeichert am ${dateLabel}</p>` : ''}
+        </div>
+        <button type="button" onclick="closeModal()" class="text-zinc-400 hover:text-white px-2 py-1">✕</button>
+      </div>
+      <div class="rounded-2xl overflow-hidden bg-zinc-950 border border-border">
+        <img src="${photo.dataUrl}" alt="${escapeHtmlAttr(rec.name)}" class="w-full max-h-[68vh] object-contain mx-auto" />
+      </div>
+      <div class="flex gap-2">
+        <button type="button" onclick="closeModal(); deleteRecipePhoto('${rec.id}', '${photo.id}')"
+          class="px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-rose-500/15 border border-border hover:border-rose-500/35 text-zinc-400 hover:text-rose-300 text-xs font-semibold transition">
+          Foto löschen
+        </button>
+        <button type="button" onclick="closeModal()"
+          class="flex-1 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold transition">
+          Schließen
+        </button>
+      </div>
+    </div>
+  `);
+}
+
+function renderRecipeDetailPage(rec) {
+  const tot = calcRecipeTotals(rec);
+  const rating = getRecipeRating(rec);
+  const tags = getRecipeTags(rec);
+  const eatenCount = getRecipeEatenCount(rec);
+  const photos = getRecipePhotos(rec);
+  const canAddMorePhotos = photos.length < 6;
+
+  return `
+    <div class="space-y-4">
+      <!-- Detail-Navigation -->
+      <div class="flex items-center justify-between gap-2">
+        <button type="button" onclick="closeRecipeDetail()"
+          class="px-3 py-2 rounded-2xl bg-card hover:bg-cardHover border border-border text-zinc-200 text-xs font-semibold inline-flex items-center gap-1.5 transition">
+          <span>←</span><span>Meine Rezepte</span>
+        </button>
+        <div class="flex items-center gap-1.5">
+          <button type="button" onclick="editRecipeById('${rec.id}')"
+            class="px-3 py-2 rounded-2xl bg-card hover:bg-cardHover border border-border text-zinc-200 hover:text-white text-xs font-semibold inline-flex items-center gap-1.5 transition">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+              <path d="m15 5 4 4"/>
+            </svg>
+            <span>Bearbeiten</span>
+          </button>
+          <button type="button" onclick="deleteRecipeById('${rec.id}')" title="Rezept löschen" aria-label="Rezept löschen"
+            class="w-9 h-9 flex items-center justify-center rounded-2xl bg-card hover:bg-rose-500/15 border border-border hover:border-rose-500/35 text-zinc-400 hover:text-rose-400 transition">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 6h18"/>
+              <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+              <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Kopfkarte mit Fotos, Bewertung, Tags & Makros -->
+      <div class="bg-card border border-border rounded-3xl p-4 space-y-4">
+        <!-- Eigene Fotos -->
+        <div class="space-y-2.5">
+          ${photos.length > 0 ? `
+            <div class="relative rounded-2xl overflow-hidden bg-zinc-950 border border-border group">
+              <button type="button" onclick="openRecipePhotoLightbox('${rec.id}', '${photos[0].id}')" class="block w-full">
+                <img src="${photos[0].dataUrl}" alt="${escapeHtmlAttr(rec.name)}" class="w-full max-h-72 object-cover" />
+              </button>
+              <button type="button" onclick="deleteRecipePhoto('${rec.id}', '${photos[0].id}')" title="Foto löschen" aria-label="Foto löschen"
+                class="absolute top-2.5 right-2.5 w-8 h-8 rounded-xl bg-black/65 hover:bg-rose-500/85 text-zinc-200 hover:text-white flex items-center justify-center text-xs backdrop-blur-sm transition">
+                ✕
+              </button>
+              <div class="absolute bottom-2.5 left-2.5 px-2.5 py-1 rounded-xl bg-black/65 backdrop-blur-sm text-[10px] font-medium text-zinc-200">
+                📸 ${photos.length} ${photos.length === 1 ? 'eigenes Foto' : 'eigene Fotos'}
+              </div>
+            </div>
+            ${photos.length > 1 ? `
+              <div class="grid grid-cols-4 gap-2">
+                ${photos.slice(1).map(ph => `
+                  <div class="relative aspect-square rounded-xl overflow-hidden bg-zinc-950 border border-border">
+                    <button type="button" onclick="openRecipePhotoLightbox('${rec.id}', '${ph.id}')" class="block w-full h-full">
+                      <img src="${ph.dataUrl}" alt="${escapeHtmlAttr(rec.name)}" class="w-full h-full object-cover" />
+                    </button>
+                    <button type="button" onclick="deleteRecipePhoto('${rec.id}', '${ph.id}')" title="Foto löschen"
+                      class="absolute top-1 right-1 w-5 h-5 rounded-lg bg-black/70 hover:bg-rose-500/85 text-zinc-200 text-[10px] flex items-center justify-center">
+                      ✕
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          ` : `
+            <div class="rounded-2xl bg-zinc-950/70 border border-dashed border-zinc-700 p-4 text-center space-y-2">
+              <div class="text-xs font-medium text-zinc-300">📸 Eigene Fotos hinzufügen</div>
+              <p class="text-[11px] text-zinc-500">Halte dein selbst gekochtes Gericht direkt in diesem Rezept fest.</p>
+            </div>
+          `}
+
+          ${canAddMorePhotos ? `
+            <div class="flex gap-2">
+              <label class="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-xs font-medium text-zinc-200 cursor-pointer transition">
+                <span>📸 Kamera</span>
+                <input type="file" accept="image/*" capture="environment" onchange="handleRecipePhotoUpload(event, '${rec.id}')" class="hidden" />
+              </label>
+              <label class="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-border text-xs font-medium text-zinc-200 cursor-pointer transition">
+                <span>🖼️ Foto auswählen</span>
+                <input type="file" accept="image/*" multiple onchange="handleRecipePhotoUpload(event, '${rec.id}')" class="hidden" />
+              </label>
+            </div>
+          ` : ''}
+          <div id="recipe-photo-upload-status" class="text-[11px] text-zinc-500 empty:hidden"></div>
+        </div>
+
+        <!-- Titel, Bewertung, Zähler & Tags -->
+        <div class="space-y-2">
+          <div class="flex items-start justify-between gap-2">
+            <h2 class="text-lg font-bold text-white leading-snug">${escapeHtmlAttr(rec.name)}</h2>
+            ${rec.prepMinutes ? `<span class="shrink-0 px-2.5 py-1 rounded-xl bg-zinc-900 border border-border text-[11px] font-semibold text-zinc-300">⏱️ ${rec.prepMinutes} Min.</span>` : ''}
+          </div>
+          ${rec.summary ? `<p class="text-xs text-zinc-300 leading-relaxed">${escapeHtmlAttr(rec.summary)}</p>` : ''}
+          <div class="flex items-center flex-wrap gap-2 pt-0.5">
+            ${renderRecipeStarsHtml(rating, `rateRecipeById('${rec.id}', __N__)`)}
+            <span class="px-2.5 py-0.5 rounded-lg bg-zinc-900 border border-border text-[11px] font-medium ${eatenCount > 0 ? 'text-emerald-300 border-emerald-500/30' : 'text-zinc-500'}">
+              🍽️ ${eatenCount}× gegessen
+            </span>
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5 pt-1">
+            ${tags.map(tag => `
+              <span class="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-[11px] font-medium text-emerald-300">
+                #${escapeHtmlAttr(tag)}
+              </span>
+            `).join('')}
+            <button type="button" onclick="openQuickRecipeTagModal('${rec.id}')"
+              class="px-2.5 py-0.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-dashed border-zinc-700 text-[11px] text-zinc-400 hover:text-zinc-200 transition">
+              + Tag
+            </button>
+          </div>
+        </div>
+
+        <!-- Makro-Übersicht -->
+        <div class="grid grid-cols-4 gap-2 bg-zinc-900/90 border border-border rounded-2xl p-3 text-center">
+          <div>
+            <div class="text-[10px] text-zinc-400">Kalorien</div>
+            <div class="text-base font-bold text-emerald-400">${Math.round(tot.kcal)}</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-zinc-400">Protein</div>
+            <div class="text-base font-bold text-sky-400">${Math.round(tot.p)}g</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-zinc-400">Carbs</div>
+            <div class="text-base font-bold text-amber-400">${Math.round(tot.c)}g</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-zinc-400">Fett</div>
+            <div class="text-base font-bold text-rose-400">${Math.round(tot.f)}g</div>
+          </div>
+        </div>
+
+        <!-- Schnellaktionen -->
+        <div class="grid grid-cols-2 gap-2">
+          <button type="button" onclick="logRecipeToDay('${rec.id}', 1)"
+            class="py-2.5 px-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+            + Heute loggen (1×)
+          </button>
+          <button type="button" onclick="logRecipeToDay('${rec.id}', 0.5)"
+            class="py-2.5 px-3 rounded-2xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 font-semibold text-xs transition">
+            + ½ Portion loggen
+          </button>
+          <button type="button" onclick="addSingleRecipeToShoppingList('${rec.id}')"
+            class="py-2.5 px-3 rounded-2xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 font-semibold text-xs transition">
+            🛒 Auf Einkaufsliste
+          </button>
+          <button type="button" onclick="addRecipeToTodayPlanFromDetail('${rec.id}')"
+            class="py-2.5 px-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-200 font-semibold text-xs transition">
+            📅 Für heute planen
+          </button>
+        </div>
+      </div>
+
+      <!-- Zutaten -->
+      <div class="bg-card border border-border rounded-3xl p-4 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-white">Zutaten (${(rec.items || []).length})</h3>
+          <button type="button" onclick="editRecipeById('${rec.id}')" class="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium">
+            Mengen anpassen
+          </button>
+        </div>
+        <div class="space-y-1.5">
+          ${(rec.items || []).map(it => {
+            const g = Math.max(0, Number(it.grams) || 0);
+            const kcal = Math.round((Number(it.kcal100) || 0) * g / 100);
+            const p = Math.round((Number(it.p100) || 0) * g / 100 * 10) / 10;
+            return `
+              <div class="flex items-center justify-between gap-2 px-3 py-2.5 rounded-2xl bg-zinc-900/90 border border-border text-xs">
+                <div class="min-w-0 flex-1">
+                  <div class="font-medium text-zinc-100 truncate">${escapeHtmlAttr(it.name)}</div>
+                  <div class="text-[10px] text-zinc-400">${kcal} kcal · P ${p}g</div>
+                </div>
+                <span class="px-2.5 py-1 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-semibold text-emerald-300 shrink-0">${g}g</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- Zubereitung & Inspiration -->
+      ${Array.isArray(rec.steps) && rec.steps.length ? `
+        <div class="bg-card border border-border rounded-3xl p-4 space-y-2.5">
+          <h3 class="text-sm font-semibold text-white">Zubereitung</h3>
+          <ol class="space-y-2">
+            ${rec.steps.map((st, idx) => `
+              <li class="flex items-start gap-2.5 text-xs text-zinc-200 leading-relaxed">
+                <span class="w-5 h-5 rounded-lg bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">${idx + 1}</span>
+                <span>${escapeHtmlAttr(st)}</span>
+              </li>
+            `).join('')}
+          </ol>
+        </div>
+      ` : ''}
+
+      <div class="bg-card border border-border rounded-3xl p-4 space-y-2">
+        <div class="text-xs font-semibold text-zinc-300">Inspiration & externe Links</div>
+        ${renderRecipeReferenceLinksHtml(rec.name, rec.searchQuery)}
+      </div>
+    </div>
+  `;
+}
+
 function renderRecipesTab() {
   if (editingRecipe) {
     const tot = calcRecipeTotals(editingRecipe);
@@ -4181,6 +4570,14 @@ function renderRecipesTab() {
     `;
   }
 
+  if (viewingRecipeId) {
+    const detailRec = (state.recipes || []).find(r => r.id === viewingRecipeId);
+    if (detailRec) {
+      return renderRecipeDetailPage(detailRec);
+    }
+    viewingRecipeId = null;
+  }
+
   const allUsedTags = [...new Set((state.recipes || []).flatMap(r => getRecipeTags(r)))];
   if (selectedRecipeTagFilter !== 'all' && !allUsedTags.some(t => t.toLowerCase() === selectedRecipeTagFilter.toLowerCase())) {
     selectedRecipeTagFilter = 'all';
@@ -4257,19 +4654,36 @@ function renderRecipesTab() {
         const rating = getRecipeRating(rec);
         const tags = getRecipeTags(rec);
         const eatenCount = getRecipeEatenCount(rec);
+        const photos = getRecipePhotos(rec);
         return `
-          <div class="bg-card border border-border rounded-3xl p-4 space-y-2.5">
-            <div class="flex items-start justify-between gap-2">
+          <div class="bg-card border border-border hover:border-zinc-700 rounded-3xl p-4 space-y-2.5 transition">
+            <div class="flex items-start justify-between gap-2.5">
+              ${photos.length > 0 ? `
+                <button type="button" onclick="openRecipeDetail('${rec.id}')" class="w-14 h-14 rounded-2xl overflow-hidden border border-border shrink-0 bg-zinc-950">
+                  <img src="${photos[0].dataUrl}" alt="${escapeHtmlAttr(rec.name)}" class="w-full h-full object-cover" />
+                </button>
+              ` : ''}
               <div class="min-w-0 flex-1">
-                <h3 class="text-sm font-semibold text-white truncate">${escapeHtmlAttr(rec.name)}</h3>
-                <p class="text-xs text-zinc-400 mt-0.5">
-                  ${Math.round(tot.kcal)} kcal · P ${Math.round(tot.p)}g · C ${Math.round(tot.c)}g · F ${Math.round(tot.f)}g
-                </p>
+                <button type="button" onclick="openRecipeDetail('${rec.id}')" class="w-full text-left group">
+                  <div class="flex items-center gap-1.5">
+                    <h3 class="text-sm font-semibold text-white group-hover:text-emerald-300 truncate transition">${escapeHtmlAttr(rec.name)}</h3>
+                    <span class="text-[11px] text-zinc-500 group-hover:text-emerald-400 shrink-0 transition">›</span>
+                  </div>
+                  <p class="text-xs text-zinc-400 mt-0.5">
+                    ${Math.round(tot.kcal)} kcal · P ${Math.round(tot.p)}g · C ${Math.round(tot.c)}g · F ${Math.round(tot.f)}g
+                  </p>
+                </button>
                 <div class="flex items-center flex-wrap gap-2 mt-1.5">
                   ${renderRecipeStarsHtml(rating, `rateRecipeById('${rec.id}', __N__)`)}
                   <span class="px-2 py-0.5 rounded-lg bg-zinc-900 border border-border text-[10px] font-medium ${eatenCount > 0 ? 'text-emerald-300 border-emerald-500/30' : 'text-zinc-500'}">
                     🍽️ ${eatenCount}× gegessen
                   </span>
+                  ${photos.length > 0 ? `
+                    <button type="button" onclick="openRecipeDetail('${rec.id}')"
+                      class="px-2 py-0.5 rounded-lg bg-zinc-900 border border-border text-[10px] font-medium text-zinc-300">
+                      📸 ${photos.length}
+                    </button>
+                  ` : ''}
                 </div>
               </div>
               <div class="flex items-center gap-1.5 shrink-0">
@@ -4609,6 +5023,72 @@ function ensureMealPlan() {
 function ensureShoppingList() {
   if (!Array.isArray(state.shoppingList)) state.shoppingList = [];
   return state.shoppingList;
+}
+
+function ensureShoppingHistory() {
+  if (!Array.isArray(state.shoppingHistory)) state.shoppingHistory = [];
+  return state.shoppingHistory;
+}
+
+function recordShoppingHistoryItem(rawItem, incrementCount = true) {
+  const cleanName = String(rawItem?.name || '').trim();
+  if (cleanName.length < 2) return;
+  const hist = ensureShoppingHistory();
+  const sug = suggestShoppingQuantity(cleanName);
+  const unit = rawItem?.unit === 'Stk.' ? 'Stk.' : (rawItem?.unit === 'g' ? 'g' : sug.unit);
+  const grams = Math.max(1, Math.round(Number(rawItem?.grams) || sug.amount || 1));
+  const key = cleanName.toLowerCase();
+  const idx = hist.findIndex(it => String(it?.name || '').trim().toLowerCase() === key);
+  const nowIso = new Date().toISOString();
+  if (idx >= 0) {
+    const prev = hist[idx];
+    const updated = {
+      name: cleanName,
+      grams,
+      unit,
+      count: incrementCount ? (Math.max(1, Number(prev.count) || 1) + 1) : Math.max(1, Number(prev.count) || 1),
+      lastBoughtAt: incrementCount ? nowIso : (prev.lastBoughtAt || nowIso)
+    };
+    hist.splice(idx, 1);
+    hist.unshift(updated);
+  } else {
+    hist.unshift({
+      name: cleanName,
+      grams,
+      unit,
+      count: 1,
+      lastBoughtAt: nowIso
+    });
+  }
+  if (hist.length > 30) hist.length = 30;
+}
+
+function getRecentShoppingSuggestions(limit = 12) {
+  const openKeys = new Set(
+    ensureShoppingList()
+      .filter(it => !it.checked)
+      .map(it => String(it?.name || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  return [...ensureShoppingHistory()]
+    .filter(it => {
+      const k = String(it?.name || '').trim().toLowerCase();
+      return k.length >= 2 && !openKeys.has(k);
+    })
+    .sort((a, b) => parseSyncTs(b.lastBoughtAt) - parseSyncTs(a.lastBoughtAt) || (b.count || 0) - (a.count || 0))
+    .slice(0, limit);
+}
+
+function readdRecentShoppingItem(name, amount, unit) {
+  const cleanName = String(name || '').trim();
+  if (!cleanName) return;
+  const sug = suggestShoppingQuantity(cleanName);
+  const finalUnit = unit === 'Stk.' || unit === 'g' ? unit : sug.unit;
+  const finalAmount = Math.max(1, Math.round(Number(amount) || sug.amount || 1));
+  mergeIngredientsIntoShoppingList([{ name: cleanName, grams: finalAmount, unit: finalUnit }], 'Zuletzt gekauft');
+  openShoppingListModal();
+  const qtyLabel = finalUnit === 'Stk.' ? `${finalAmount} Stk.` : `${finalAmount}g`;
+  showToast(`✓ ${qtyLabel} ${cleanName} wieder auf der Einkaufsliste`);
 }
 
 function getMealPlanDates(count = 7) {
@@ -5049,10 +5529,7 @@ function jumpToRecipeFromMealPlan(recipeId) {
   }
   mpLastSavedRecipe = null;
   closeModal();
-  currentTab = 'food';
-  editingRecipe = JSON.parse(JSON.stringify(found));
-  render();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  openRecipeDetail(found.id);
 }
 
 function savePlannedMealAsRecipe(dateStr, itemId) {
@@ -5660,6 +6137,7 @@ function mergeIngredientsIntoShoppingList(rawItems, sourceLabel = 'Rezept') {
         source: sourceLabel
       });
     }
+    recordShoppingHistoryItem({ name, grams: grams > 0 ? grams : suggestShoppingQuantity(name).amount, unit }, true);
     addedOrUpdated++;
   });
 
@@ -5769,12 +6247,20 @@ function renderShoppingSuggestions(rawVal) {
   }
 
   const pool = new Map();
+  const historyMap = new Map();
   const addToPool = (label) => {
     const clean = String(label || '').trim();
     if (clean.length < 2) return;
     const key = clean.toLowerCase();
     if (!pool.has(key)) pool.set(key, clean);
   };
+  ensureShoppingHistory().forEach(it => {
+    const clean = String(it?.name || '').trim();
+    if (clean.length >= 2) {
+      historyMap.set(clean.toLowerCase(), it);
+      addToPool(clean);
+    }
+  });
   ensureShoppingList().forEach(it => addToPool(it.name));
   SHOPPING_STAPLE_SUGGESTIONS.forEach(addToPool);
   getFoodSuggestions(qRaw).forEach(addToPool);
@@ -5793,7 +6279,10 @@ function renderShoppingSuggestions(rawVal) {
 
   box.innerHTML = matches.map(label => {
     const safe = label.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const sug = suggestShoppingQuantity(label);
+    const histHit = historyMap.get(label.toLowerCase());
+    const sug = histHit
+      ? { amount: Math.max(1, Math.round(Number(histHit.grams) || 1)), unit: histHit.unit === 'Stk.' ? 'Stk.' : 'g' }
+      : suggestShoppingQuantity(label);
     const amount = parsed.explicitAmount > 0 ? parsed.explicitAmount : sug.amount;
     const unit = parsed.explicitUnit || sug.unit;
     const qtyLabel = unit === 'Stk.' ? `${amount} Stk.` : `${amount}g`;
@@ -5806,15 +6295,69 @@ function renderShoppingSuggestions(rawVal) {
   }).join('');
 }
 
+let shoppingQtyDraft = null;
+
+function openShoppingQtyPrompt(name, amount, unit, source = 'Manuell') {
+  const cleanName = String(name || '').trim();
+  if (!cleanName) return;
+  const sug = suggestShoppingQuantity(cleanName);
+  const safeUnit = unit === 'Stk.' || unit === 'g' ? unit : sug.unit;
+  const safeAmount = Number(amount) > 0 ? Math.round(Number(amount)) : sug.amount;
+  shoppingQtyDraft = { name: cleanName, amount: safeAmount, unit: safeUnit, source };
+  openShoppingListModal();
+  const inp = document.getElementById('shop-prompt-amount');
+  if (inp) {
+    inp.focus();
+    inp.select?.();
+  }
+}
+
+function closeShoppingQtyPrompt() {
+  shoppingQtyDraft = null;
+  openShoppingListModal();
+}
+
+function setShoppingQtyDraftAmount(val) {
+  if (!shoppingQtyDraft) return;
+  shoppingQtyDraft.amount = Math.max(1, Math.round(Number(val) || 1));
+  openShoppingListModal();
+}
+
+function stepShoppingQtyDraft(dir) {
+  if (!shoppingQtyDraft) return;
+  const inp = document.getElementById('shop-prompt-amount');
+  const cur = Math.max(1, Math.round(Number(inp ? inp.value : shoppingQtyDraft.amount) || 1));
+  const step = shoppingQtyDraft.unit === 'Stk.' ? 1 : (cur <= 100 ? 25 : 50);
+  shoppingQtyDraft.amount = Math.max(1, cur + dir * step);
+  openShoppingListModal();
+}
+
+function setShoppingQtyDraftUnit(newUnit) {
+  if (!shoppingQtyDraft) return;
+  const targetUnit = newUnit === 'Stk.' ? 'Stk.' : 'g';
+  if (shoppingQtyDraft.unit === targetUnit) return;
+  shoppingQtyDraft.unit = targetUnit;
+  if (targetUnit === 'Stk.' && shoppingQtyDraft.amount >= 30) shoppingQtyDraft.amount = 1;
+  if (targetUnit === 'g' && shoppingQtyDraft.amount <= 20) shoppingQtyDraft.amount = 250;
+  openShoppingListModal();
+}
+
+function confirmShoppingQtyPrompt(event) {
+  if (event) event.preventDefault();
+  if (!shoppingQtyDraft) return;
+  const inp = document.getElementById('shop-prompt-amount');
+  const finalAmount = Math.max(1, Math.round(Number(inp ? inp.value : shoppingQtyDraft.amount) || shoppingQtyDraft.amount || 1));
+  const { name, unit, source } = shoppingQtyDraft;
+  shoppingQtyDraft = null;
+  mergeIngredientsIntoShoppingList([{ name, grams: finalAmount, unit }], source);
+  openShoppingListModal();
+  const mainInp = document.getElementById('shopping-manual-input');
+  if (mainInp) mainInp.focus();
+}
+
 function pickShoppingSuggestion(name, amount = 0, unit = null) {
   if (!name) return;
-  const sug = suggestShoppingQuantity(name);
-  const finalAmount = Number(amount) > 0 ? Math.round(Number(amount)) : sug.amount;
-  const finalUnit = unit === 'Stk.' || unit === 'g' ? unit : sug.unit;
-  mergeIngredientsIntoShoppingList([{ name, grams: finalAmount, unit: finalUnit }], 'Vorschlag');
-  openShoppingListModal();
-  const inp = document.getElementById('shopping-manual-input');
-  if (inp) inp.focus();
+  openShoppingQtyPrompt(name, amount, unit, 'Vorschlag');
 }
 
 function addManualShoppingItem(event) {
@@ -5827,8 +6370,7 @@ function addManualShoppingItem(event) {
   const sug = suggestShoppingQuantity(name);
   const amount = parsed.explicitAmount > 0 ? parsed.explicitAmount : sug.amount;
   const unit = parsed.explicitUnit || sug.unit;
-  mergeIngredientsIntoShoppingList([{ name, grams: amount, unit }], 'Manuell');
-  openShoppingListModal();
+  openShoppingQtyPrompt(name, amount, unit, 'Manuell');
 }
 
 function toggleEditShoppingItemQty(id) {
@@ -5840,6 +6382,7 @@ function updateShoppingItemQty(id, newAmount) {
   const item = ensureShoppingList().find(it => it.id === id);
   if (!item) return;
   item.grams = Math.max(1, Math.round(Number(newAmount) || 1));
+  recordShoppingHistoryItem(item, false);
   saveState();
   render();
   openShoppingListModal();
@@ -5856,6 +6399,7 @@ function toggleShoppingItemUnit(id) {
     item.unit = 'Stk.';
     if ((Number(item.grams) || 0) >= 30) item.grams = 1;
   }
+  recordShoppingHistoryItem(item, false);
   saveState();
   render();
   openShoppingListModal();
@@ -5867,6 +6411,7 @@ function confirmShoppingItemQty(id) {
     const item = ensureShoppingList().find(it => it.id === id);
     if (item) {
       item.grams = Math.max(1, Math.round(Number(inp.value) || 1));
+      recordShoppingHistoryItem(item, false);
       saveState();
       render();
     }
@@ -5879,6 +6424,9 @@ function toggleShoppingItem(id) {
   const item = ensureShoppingList().find(it => it.id === id);
   if (!item) return;
   item.checked = !item.checked;
+  if (item.checked) {
+    recordShoppingHistoryItem(item, true);
+  }
   saveState();
   render();
   openShoppingListModal();
@@ -5894,7 +6442,10 @@ function deleteShoppingItem(id) {
 
 function clearCheckedShoppingItems() {
   const list = ensureShoppingList();
-  list.filter(it => it.checked).forEach(it => markDeletedId(it.id));
+  list.filter(it => it.checked).forEach(it => {
+    recordShoppingHistoryItem(it, false);
+    markDeletedId(it.id);
+  });
   state.shoppingList = list.filter(it => !it.checked);
   saveState();
   render();
@@ -5941,6 +6492,7 @@ function toggleShoppingImportDrawer() {
 }
 
 function closeShoppingListModal() {
+  shoppingQtyDraft = null;
   const overlay = document.getElementById('shoppingFullscreenOverlay');
   if (overlay) overlay.remove();
 }
@@ -5953,6 +6505,7 @@ function openShoppingListModal() {
   const list = ensureShoppingList();
   const openItems = list.filter(it => !it.checked);
   const doneItems = list.filter(it => it.checked);
+  const recentItems = getRecentShoppingSuggestions(12);
   const selectedRecipeTotal = Object.values(shoppingRecipeCounts).reduce((s, n) => s + (Number(n) || 0), 0);
 
   let overlay = document.getElementById('shoppingFullscreenOverlay');
@@ -6103,6 +6656,31 @@ function openShoppingListModal() {
             </div>
           </div>
         `}
+
+        ${recentItems.length > 0 ? `
+          <div class="pt-3 mt-2 border-t border-border/70 space-y-2">
+            <div class="flex items-center justify-between gap-2 px-0.5">
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Zuletzt gekauft</span>
+              <span class="text-[10px] text-zinc-500">Antippen → direkt auf die Liste</span>
+            </div>
+            <div class="flex flex-wrap gap-1.5">
+              ${recentItems.map(rc => {
+                const safeName = String(rc.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                const unit = rc.unit === 'Stk.' ? 'Stk.' : 'g';
+                const amt = Math.max(1, Math.round(Number(rc.grams) || 1));
+                const qtyLabel = unit === 'Stk.' ? `${amt} Stk.` : `${amt}g`;
+                return `
+                  <button type="button" onclick="readdRecentShoppingItem('${safeName}', ${amt}, '${unit}')"
+                    class="px-2.5 py-1.5 rounded-xl bg-card hover:bg-emerald-500/15 border border-border hover:border-emerald-500/45 text-xs text-zinc-200 hover:text-emerald-300 inline-flex items-center gap-1.5 transition">
+                    <span class="text-emerald-400 font-bold">+</span>
+                    <span>${escapeHtmlAttr(rc.name)}</span>
+                    <span class="text-[10px] text-zinc-400">${qtyLabel}</span>
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
       </div>
     </div>
 
@@ -6131,13 +6709,87 @@ function openShoppingListModal() {
           ` : ''}
           ${list.length > 0 ? `
             <button type="button" onclick="clearAllShoppingItems()"
-              class="px-3 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold text-xs transition">
-              🗑️ Alle löschen
+              class="px-3 py-2 rounded-xl bg-zinc-900 hover:bg-rose-500/15 border border-border hover:border-rose-500/35 text-zinc-400 hover:text-rose-300 font-semibold text-xs inline-flex items-center gap-1.5 transition">
+              <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18"/>
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+              </svg>
+              <span>Alle löschen</span>
             </button>
           ` : ''}
         </div>
       </div>
     </footer>
+
+    ${shoppingQtyDraft ? (() => {
+      const d = shoppingQtyDraft;
+      const isStk = d.unit === 'Stk.';
+      const presets = isStk ? [1, 2, 3, 4, 6, 10] : [100, 200, 250, 400, 500, 1000];
+      const step = isStk ? 1 : (d.amount <= 100 ? 25 : 50);
+      const qtyPreview = isStk ? `${d.amount} Stk.` : `${d.amount}g`;
+      return `
+        <div class="fixed inset-0 z-[60] bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-3">
+          <form onsubmit="confirmShoppingQtyPrompt(event)" class="w-full max-w-sm rounded-3xl bg-card border border-border p-5 space-y-4 shadow-2xl">
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <div class="text-[11px] uppercase tracking-wider text-zinc-400 font-semibold">Menge anpassen</div>
+                <h4 class="text-base font-semibold text-white truncate mt-0.5">${escapeHtmlAttr(d.name)}</h4>
+              </div>
+              <button type="button" onclick="closeShoppingQtyPrompt()" class="text-zinc-400 hover:text-white px-2 py-1 text-sm">✕</button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-1.5 bg-zinc-950 p-1 rounded-2xl border border-border">
+              <button type="button" onclick="setShoppingQtyDraftUnit('g')"
+                class="py-1.5 rounded-xl text-xs font-semibold transition ${!isStk ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/45' : 'text-zinc-400 hover:text-zinc-200'}">
+                Gramm (g)
+              </button>
+              <button type="button" onclick="setShoppingQtyDraftUnit('Stk.')"
+                class="py-1.5 rounded-xl text-xs font-semibold transition ${isStk ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/45' : 'text-zinc-400 hover:text-zinc-200'}">
+                Stück (Stk.)
+              </button>
+            </div>
+
+            <div class="flex flex-wrap gap-1.5">
+              ${presets.map(p => `
+                <button type="button" onclick="setShoppingQtyDraftAmount(${p})"
+                  class="px-2.5 py-1.5 rounded-xl text-xs font-medium border transition ${
+                    d.amount === p
+                      ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                      : 'bg-zinc-900 hover:bg-zinc-800 border-border text-zinc-300'
+                  }">
+                  ${isStk ? `${p} Stk.` : `${p}g`}
+                </button>
+              `).join('')}
+            </div>
+
+            <div class="flex items-center gap-2">
+              <button type="button" onclick="stepShoppingQtyDraft(-1)"
+                class="px-3.5 py-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-sm font-bold text-zinc-200 shrink-0 transition">−${step}</button>
+              <div class="flex-1 flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 focus-within:border-emerald-500 rounded-2xl px-3.5 py-2.5">
+                <input id="shop-prompt-amount" type="number" inputmode="decimal" min="1" value="${d.amount}"
+                  oninput="if(shoppingQtyDraft){shoppingQtyDraft.amount=Math.max(1,Math.round(Number(this.value)||1));}"
+                  class="w-full bg-transparent text-lg font-bold text-white text-center focus:outline-none" />
+                <span class="text-xs font-semibold text-zinc-400 shrink-0">${d.unit}</span>
+              </div>
+              <button type="button" onclick="stepShoppingQtyDraft(1)"
+                class="px-3.5 py-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-sm font-bold text-zinc-200 shrink-0 transition">+${step}</button>
+            </div>
+
+            <div class="flex gap-2 pt-1">
+              <button type="button" onclick="closeShoppingQtyPrompt()"
+                class="px-4 py-2.5 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-border text-zinc-300 font-semibold text-xs transition">
+                Abbrechen
+              </button>
+              <button type="submit"
+                class="flex-1 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition">
+                ✓ Hinzufügen (${qtyPreview})
+              </button>
+            </div>
+          </form>
+        </div>
+      `;
+    })() : ''}
   `;
 
   if (appLang === 'es' && typeof applyI18nToSubtree === 'function') {
@@ -6147,12 +6799,15 @@ function openShoppingListModal() {
 
 function setFoodSubTab(sub) {
   foodSubTab = sub;
-  if (sub !== 'recipes') editingRecipe = null;
+  if (sub !== 'recipes') {
+    editingRecipe = null;
+    viewingRecipeId = null;
+  }
   render();
 }
 
 function renderFoodTab() {
-  if (editingRecipe) {
+  if (editingRecipe || viewingRecipeId) {
     return renderRecipesTab();
   }
   const openShopCount = ensureShoppingList().filter(it => !it.checked).length;
@@ -6802,6 +7457,7 @@ function applySuggestedRecipeName(name) {
 }
 
 function startNewRecipe() {
+  viewingRecipeId = null;
   editingRecipe = { id: 'rec_' + Date.now(), name: appLang === 'es' ? 'Nueva receta' : 'Neues Rezept', items: [], _autoNamed: true };
   render();
 }
@@ -6948,6 +7604,7 @@ function deleteRecipeById(id) {
   if (!rec) return;
   if (!confirm(`Rezept "${rec.name}" wirklich löschen?`)) return;
   state.recipes = state.recipes.filter(r => r.id !== id);
+  if (viewingRecipeId === id) viewingRecipeId = null;
   markDeletedId(id);
   saveState();
   render();
@@ -8305,13 +8962,13 @@ function compressDrawableToJpeg(source, srcW, srcH, maxDim = 1024, quality = 0.8
   return { base64: parts[1], mimeType: 'image/jpeg', previewUrl: dataUrl };
 }
 
-async function prepareAiPhotoFile(file) {
+async function prepareAiPhotoFile(file, maxDim = 1024, quality = 0.8) {
   // 1. Schneller, speicherschonender Weg über createImageBitmap (ideal für große Smartphone-Kamerafotos)
   if (typeof createImageBitmap === 'function') {
     let bitmap = null;
     try {
       bitmap = await createImageBitmap(file);
-      return compressDrawableToJpeg(bitmap, bitmap.width, bitmap.height);
+      return compressDrawableToJpeg(bitmap, bitmap.width, bitmap.height, maxDim, quality);
     } catch (e) {
       // Fallback unten nutzen
     } finally {
@@ -8332,7 +8989,7 @@ async function prepareAiPhotoFile(file) {
         el.onerror = () => { clearTimeout(timer); reject(new Error('Bildformat konnte nicht dekodiert werden.')); };
         el.src = objUrl;
       });
-      return compressDrawableToJpeg(img, img.naturalWidth || img.width, img.naturalHeight || img.height);
+      return compressDrawableToJpeg(img, img.naturalWidth || img.width, img.naturalHeight || img.height, maxDim, quality);
     } catch (e) {
       // Fallback 3 unten nutzen (z. B. HEIC/HEIF auf manchen Browsern)
     } finally {
